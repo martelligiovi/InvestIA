@@ -6,7 +6,7 @@ Create an honest local snapshot of existing APP source, tests, docs and lockfile
 ## Tasks
 - [x] G1: Establish root ignore rules and commit safeguards. Delegated worker plus independent verifier; narrow preparation trigger. Commit: `3be1f92` (`chore(git): protect local state and secrets`). Ignore probes and staged whitespace check passed.
 - [x] G2: Verify and commit current application. Delegated verifier for command execution, parent stages/commits. Commit: `e58046c` (`feat(app): establish verified InvestIA baseline`). 97 APP files; 15,067 added lines including lockfile. No historical split possible without a base. Source inspection confirmed secret-scan matches were development fixtures. One pre-existing extra blank line at investigation-store.ts EOF removed after staged whitespace check flagged it; recheck passed.
-- [ ] G3: Commit this verification record and inspect final local Git state. Inline mechanical documentation/Git state. In progress; commit identity will be recorded in external memory to avoid self-referential commit-hash rewrites.
+- [x] G3: Verification record committed as `adead7a` (`docs(git): record baseline verification and scope`); final Git inspection reported a clean working tree. Inline mechanical documentation/Git state. This closure update is committed separately; its identity is recorded externally to avoid self-referential commit-hash rewrites.
 
 ## Verification and limitations
 - Workspace typecheck, frontend typecheck and frontend build: passed.
@@ -19,4 +19,4 @@ Create an honest local snapshot of existing APP source, tests, docs and lockfile
 - Branch: fix/native-fetch-receiver. Local identity and origin configured from explicit user input; remote content not inspected and no network operation performed.
 
 ## Next step
-Commit this record, confirm clean working tree, then await user authorization for any remote inspection or push.
+Local baseline complete. Await user authorization for remote inspection or push. Remote history was not inspected, so compatibility is not yet established.
