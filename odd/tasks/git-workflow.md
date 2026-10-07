@@ -1,7 +1,7 @@
 # Lightweight Git workflow
 
 ## Decision and scope
-GitHub Flow: stable main, short-lived feat/fix/chore/docs branches, PRs, green CI, squash merges and version tags for actual releases. No permanent develop/release branch. Solo-owner required approvals start at zero to avoid self-approval deadlock. User authorized local implementation; new push/PR/merge/settings changes remain separate. English artifacts; no APP behavior changes.
+GitHub Flow: stable main, short-lived feat/fix/chore/docs branches, PRs, green CI, squash merges and version tags for actual releases. No permanent develop/release branch. Solo-owner required approvals start at zero to avoid self-approval deadlock. User authorized local implementation and subsequently authorized publishing main/workflow changes and configuring the default branch/protections. No force push or weakening of protections. PR creation/merge remains a separate operation. English artifacts; no APP behavior changes.
 
 ## Tasks and evidence
 - [x] F1: Contribution guide, PR template, offline CI and narrow task ignore exception. Delegated worker (multi-file/preparation triggers), independent verification. Commit `841604d`; 207 insertions / 1 deletion. Corrected exact-version claim: Node/pnpm exact, Python latest 3.11 patch.
@@ -16,4 +16,10 @@ Local Node 24.18.0 differs from CI pin; Python 3.11.9. Frozen install and hosted
 
 Local main remains baseline b7e9859; work isolated on chore/git-workflow. Remote still defaults to fix/native-fetch-receiver. Pending explicit authorization/access: publish main/workflow branch, set default main, open/merge PR, enable squash-only/delete-head settings and protected main (PR required, no force/deletion). Require Offline checks only after actual hosted run; do not weaken existing protections. No remote changes performed.
 
-Forecast 200-300 changed lines; current diff versus main 235 additions / one deletion before closure edits. Delivery strategy ask-on-risk; no PR prepared. Next step: obtain remote activation authorization; implementation is local only.
+Forecast 200-300 changed lines; final local implementation diff versus main: 226 additions / one deletion. Delivery strategy ask-on-risk; no PR prepared.
+
+## Remote activation
+- [ ] F4: Publish main and chore/git-workflow, set default main and squash-only/automatic head cleanup. Route inline Git/API state changes; user explicitly authorized. Preserve existing remote branches.
+- [ ] F5: Observe hosted Offline checks, then configure and read back protected main (PR/check required, zero mandatory reviews for solo owner, no force/deletion). Route delegated verifier for hosted checks; parent API settings. Never claim hosted success from local evidence.
+- [ ] F6: Record actual remote state and any pending PR/merge. Route mechanical documentation; commit evidence and preserve honest limitations.
+F4 in progress. GitHub API access verified via Git credential manager without exposing/storing credentials; admin permission present; repository public. Existing remote main absent and original branch tip matches baseline. gh unavailable; use authenticated API with credentials confined to process memory. Remote existing settings allow all merge methods and do not auto-delete heads. Next step: publish authorized branches and apply repository settings.
