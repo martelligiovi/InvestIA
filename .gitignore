@@ -32,8 +32,9 @@ playwright-report/
 reports/
 *.log
 
-# Keep only the baseline task; unignore each parent needed for traversal.
+# Keep approved Git task records; unignore each parent needed for traversal.
 /odd/*
 !/odd/tasks/
 /odd/tasks/*
 !/odd/tasks/git-baseline.md
+!/odd/tasks/git-workflow.md

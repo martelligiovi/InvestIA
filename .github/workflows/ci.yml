@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-checks:
+    name: Offline checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Standard action major tags are mutable; see CONTRIBUTING.md for the risk.
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm from the workspace packageManager
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: APP/package.json
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install locked workspace dependencies
+        run: pnpm --dir APP install --frozen-lockfile
+
+      - name: Build frontend before static-serving tests
+        run: pnpm --dir APP build
+
+      - name: Run offline workspace tests
+        run: pnpm --dir APP test
+
+      - name: Typecheck workspace
+        run: pnpm --dir APP typecheck
+
+      - name: Run offline Python bridge tests
+        run: python -B -m unittest discover -s APP/packages/adapter-holehe/python/tests -p test_holehe_bridge.py -v
