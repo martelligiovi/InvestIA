@@ -2,11 +2,12 @@
 
 Use GitHub Flow: keep `main` stable, make one focused change on a short-lived
 branch, and merge a reviewed, checked pull request with **Squash and merge**.
-This guide defines the intended workflow; GitHub activation is still pending.
+GitHub settings are active; the workflow branch still needs PR integration into
+`main`. See the activation record below for exact hosted-check evidence.
 
 ## Quick path
 
-1. Start from an up-to-date `main` once it is published as the default branch.
+1. Start from an up-to-date `main`, the published default branch.
 2. Create a short-lived branch: `feat/<topic>`, `fix/<topic>`, `docs/<topic>`,
    `chore/<topic>`, `refactor/<topic>`, or `test/<topic>`.
 3. Keep one clear purpose per PR. Separate unrelated cleanup or behavior changes.
@@ -85,28 +86,46 @@ Prefer a revert PR over rewriting shared history when undoing a merged change.
 Do not force-push or delete `main`; avoid resetting or rebasing published shared
 history. Correct a bad release with a follow-up change and an approved new version.
 
-## Pending GitHub activation (owner checklist)
+## GitHub activation status and owner checklist
 
-These are manual steps, **not active settings or completed remote work**. The
-remote default is currently `fix/native-fetch-receiver`; local `main` exists.
+### Observed activation
 
-1. Obtain explicit authorization to publish local `main`, push this workflow branch,
-   and open/merge the workflow PR. Confirm the intended baseline before publishing.
-2. After authorized creation/push of remote `main`, set the repository default branch
-   to `main` in GitHub settings. Target the workflow PR at `main`.
+Authorized publication and settings changes succeeded: remote `main` is at baseline
+`b7e9859`, and `chore/git-workflow` was published at
+`1907743848373eabc1d35c89087280bc201bcdc8`. The default branch is `main`;
+**squash merging only** and automatic deletion of merged head branches are enabled.
+
+Hosted **Offline checks** passed in run `37672500866` on that exact workflow-branch
+commit (GitHub Actions app ID `15368`). Protection readback for `main` requires a
+PR and **Offline checks**, with strict/up-to-date checks enabled (`strict=true`,
+app ID `15368`). Protections apply to administrators and require linear history
+and conversation resolution. Required approvals are zero for the solo owner;
+force pushes and branch deletion are disabled.
+
+**Pending:** no PR has been created or merged. The workflow code remains on
+`chore/git-workflow`; `main` contains only the baseline. PR integration still
+requires separate authorization. New commits require their own hosted runs; the
+recorded success does not establish success for any later head.
+
+### Reproducible maintainer checklist (guidance, not execution evidence)
+
+1. Obtain explicit authorization before publishing branches or opening/merging the
+   workflow PR. Confirm the intended baseline before publishing.
+2. Publish remote `main` and the workflow branch as authorized, set the repository
+   default branch to `main`, and target the workflow PR at `main`.
 3. Under pull request settings, enable **squash merging only**; disable merge commits
    and rebase merging. Enable automatic deletion of merged head branches.
-4. Run this workflow on GitHub and inspect the actual **Offline checks** result.
-   Do not require an unobserved/nonexistent status check or claim local runs are
-   hosted evidence.
-5. Protect `main`: require a PR before merging, disallow force pushes and branch
-   deletion, and require the observed **Offline checks** check only after that run.
-   Apply protections to administrators where appropriate; do not weaken them to
-   bypass failures.
+4. Run this workflow on GitHub and inspect the actual **Offline checks** result for
+   the exact commit. Do not require an unobserved/nonexistent status check or claim
+   local runs are hosted evidence. Verify new hosted runs for subsequent commits.
+5. Protect `main`: require a PR, disallow force pushes and branch deletion, and
+   require the observed **Offline checks** check with its GitHub Actions app selector
+   and strict/up-to-date checks. Apply protections to administrators; require linear
+   history and conversation resolution. Do not weaken protections to bypass failures.
 6. Keep required approving reviews **optional for a solo owner** (zero required
    approvals) so an author cannot be blocked on impossible self-approval. Request
    independent review when available; revisit mandatory approval counts when
    another maintainer can actually approve.
 7. Verify the default branch, merge options, cleanup, protections, and check selector
-   in GitHub. Record observed activation separately; this document alone activates
-   nothing.
+   in GitHub. Record observed activation and pending PR integration separately;
+   this checklist alone activates nothing.
