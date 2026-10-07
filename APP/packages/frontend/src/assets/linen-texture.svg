@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+  <defs>
+    <filter id="linen-grain" x="0" y="0" width="192" height="192" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency=".82 .9" numOctaves="2" seed="17" stitchTiles="stitch" result="grain"/>
+      <feColorMatrix in="grain" type="saturate" values="0" result="monochrome"/>
+      <feComponentTransfer in="monochrome">
+        <feFuncA type="table" tableValues="0 .16"/>
+      </feComponentTransfer>
+    </filter>
+  </defs>
+  <rect width="192" height="192" fill="#68625D" filter="url(#linen-grain)" opacity=".28"/>
+  <g fill="none" stroke-linecap="round" stroke-width=".65">
+    <path d="M7 13h2M24 31h3M58 9h2M81 22h2M112 12h3M143 28h2M176 8h2M13 69h3M43 55h2M72 78h3M101 61h2M132 84h2M163 58h3M185 76h2M5 113h2M33 132h3M64 107h2M91 126h2M122 115h3M151 138h2M179 119h2M19 172h2M49 158h3M79 184h2M108 165h2M139 178h3M169 154h2" stroke="#D9D0C1" stroke-opacity=".28"/>
+    <path d="M17 42v2M51 19v3M94 37v2M126 18v2M158 46v3M31 92v2M61 66v2M116 95v3M146 72v2M174 101v2M8 148v2M85 151v3M105 139v2M134 164v2M186 147v3" stroke="#1A1817" stroke-opacity=".09"/>
+  </g>
+</svg>

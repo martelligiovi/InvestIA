@@ -1,0 +1,7 @@
+holehe==1.61
+bs4==0.0.2
+colorama==0.4.6
+httpx==0.28.1
+termcolor==2.5.0
+tqdm==4.67.1
+trio==0.30.0

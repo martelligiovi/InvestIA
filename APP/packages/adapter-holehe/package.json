@@ -1,0 +1,14 @@
+{
+  "name": "@investia/adapter-holehe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@investia/core": "workspace:*",
+    "zod": "^3.25.76"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/holehe.test.ts test/process-runner.test.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}

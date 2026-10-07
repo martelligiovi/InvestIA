@@ -1,0 +1,31 @@
+{
+  "name": "@investia/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "dependencies": {
+    "@investia/adapter-holehe": "workspace:*",
+    "@investia/core": "workspace:*",
+    "@langchain/langgraph": "^1.4.19",
+    "@langchain/langgraph-checkpoint-postgres": "^1.0.5",
+    "@fastify/static": "^8.2.0",
+    "fastify": "^5.6.2",
+    "neo4j-driver": "^6.2.0",
+    "pg": "^8.16.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.5"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/main.ts",
+    "test": "node --experimental-strip-types --test test/api.test.ts test/config.test.ts test/static-serving.test.ts test/investigation-run-graph.test.ts test/neo4j-investigation-projector.test.ts test/neo4j-projection.integration.test.ts test/postgres-checkpoint.integration.test.ts test/postgres-store.test.ts test/postgres.integration.test.ts test/startup.test.ts test/workflow.test.ts test/workflow.integration.test.ts",
+    "typecheck": "tsc --noEmit"
+  }
+}

@@ -1,0 +1,22 @@
+# Allow only image inputs; never send host dependencies, venvs or environment files.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.json
+!packages/
+!packages/*/
+!packages/*/package.json
+!packages/*/src/
+!packages/*/src/**
+!packages/frontend/index.html
+!packages/frontend/vite.config.ts
+!packages/*/tsconfig.json
+!packages/adapter-holehe/python/
+!packages/adapter-holehe/python/requirements.txt
+!packages/adapter-holehe/python/holehe_bridge.py
+# Keep host dependency links excluded even when workspace directories are allowed.
+**/node_modules
+**/node_modules/**

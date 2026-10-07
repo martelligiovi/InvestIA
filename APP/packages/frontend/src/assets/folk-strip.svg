@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 360" shape-rendering="crispEdges">
+  <rect x="2" y="2" width="68" height="356" fill="#F4EFE6" fill-opacity=".3" stroke="#1A1817" stroke-width="2" stroke-dasharray="2 4"/>
+  <g transform="translate(12 12)">
+    <g id="stitch" fill="#B81D24">
+      <path d="M18 0h12v8h8v8h8v12h8v12h-8v8h-8v8h-8v8H18v-8h-8v-8H2v-8h-8V28h8v-8h8v-8h8z"/>
+      <path d="M18 12h12v8h8v12h-8v8H18v-8h-8V20h8z" fill="#F4EFE6"/>
+      <path d="M20 22h8v8h8v8H20z"/>
+      <path d="M20 -4h8v12h-8zM20 60h8v12h-8zM-4 28h12v8H-4zM32 28h12v8H32z"/>
+      <path d="M6 8h8v8H6zM34 8h8v8h-8zM34 48h8v8h-8zM6 48h8v8H6z" fill="#1A1817"/>
+    </g>
+    <use href="#stitch" y="0"/>
+    <use href="#stitch" y="82"/>
+    <use href="#stitch" y="164"/>
+    <use href="#stitch" y="246"/>
+  </g>
+</svg>

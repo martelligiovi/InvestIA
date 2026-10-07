@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 300" role="img" aria-hidden="true">
+  <defs>
+    <pattern id="halftone" width="7" height="7" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.2" fill="#68625D" fill-opacity=".62"/>
+    </pattern>
+    <pattern id="red-weave" width="12" height="12" patternUnits="userSpaceOnUse">
+      <path d="M0 3h12M3 0v12" stroke="#F4EFE6" stroke-opacity=".23" stroke-width="1"/>
+      <path d="M0 9h12M9 0v12" stroke="#1A1817" stroke-opacity=".18" stroke-width="1"/>
+    </pattern>
+    <clipPath id="mountains">
+      <path d="M0 198 49 156 82 168 132 98 161 129 207 62 244 111 277 93 325 166 373 142 423 184 469 130 516 162 560 112 605 170 660 151 720 194v106H0z"/>
+    </clipPath>
+  </defs>
+  <path d="M0 198 49 156 82 168 132 98 161 129 207 62 244 111 277 93 325 166 373 142 423 184 469 130 516 162 560 112 605 170 660 151 720 194" fill="none" stroke="#1A1817" stroke-width="3"/>
+  <g clip-path="url(#mountains)">
+    <rect x="0" y="60" width="720" height="240" fill="#D9D0C1" fill-opacity=".56"/>
+    <path d="M0 225 82 168 132 98 161 129 207 62 244 111 277 93 325 166 373 142 423 184 469 130 516 162 560 112 605 170 660 151 720 194v106H0z" fill="url(#halftone)"/>
+    <path d="m0 223 132-102 29 22 46-57 37 50 33-16 48 73 48-29 50 43 46-54 47 32 44-50 45 58 55-19 70 43v84H0z" fill="none" stroke="#68625D" stroke-width="2"/>
+    <path d="M0 249h720M0 264h720M0 279h720" stroke="#68625D" stroke-opacity=".44" stroke-width="1" stroke-dasharray="2 7"/>
+  </g>
+  <path d="M0 224h112v76H0z" fill="#B81D24"/>
+  <path d="M0 224h112v76H0z" fill="url(#red-weave)"/>
+  <path d="M97 174v108h250" fill="none" stroke="#1A1817" stroke-width="2"/>
+  <path d="M315 242h145M340 255h145M365 268h145" stroke="#1A1817" stroke-opacity=".72" stroke-width="2" stroke-dasharray="2 8"/>
+</svg>

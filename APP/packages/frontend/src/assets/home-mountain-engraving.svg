@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 270" fill="none">
+  <defs>
+    <pattern id="hatch" width="7" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(24)">
+      <path d="M1 0v6M5 5v4" stroke="#1a1817" stroke-width=".7" opacity=".55"/>
+    </pattern>
+    <pattern id="scree" width="13" height="11" patternUnits="userSpaceOnUse">
+      <path d="m2 3 2-1m5 5 2 1M6 10h1" stroke="#68625d" stroke-width=".8"/>
+    </pattern>
+    <clipPath id="range">
+      <path d="M0 150 31 131 58 105 78 112 112 68 137 25 151 38 162 32 190 72 212 57 246 103 268 93 302 133 328 120 356 143 384 136 418 169 445 158 478 190 504 186 548 222 581 234 620 265H0Z"/>
+    </clipPath>
+  </defs>
+  <!-- Asymmetric alpine silhouette, pale snow caps and shaded rock faces. -->
+  <g clip-path="url(#range)">
+    <path fill="#d9d0c1" d="M0 0h620v270H0z"/>
+    <path fill="url(#scree)" d="M0 0h620v270H0z"/>
+    <path d="m137 25-17 66-26 33 19-6-12 45 37-38 13-87 18 57 24 22-3-45-28-40-11 6Z" fill="#f4efe6"/>
+    <path d="m212 57-6 39-22 28 23-7 19 23-6-38 26 1Z" fill="#f4efe6"/>
+    <path d="m328 120-10 29-20 15 27-9 17 17-7-26 21-3Z" fill="#f4efe6"/>
+    <path d="m137 25 1 100-23 49-40 54 66-24 31-65-10-44-11-57Zm75 32 8 45 6 38-39 48 63-38 8-26-12-21Zm56 36-13 44-32 63 54-39 25-28Zm116 43-5 48-24 31 63-46Z" fill="url(#hatch)"/>
+    <path d="m58 105 9 50-39 43 46-20 31-48Zm104-73 28 40 3 45 29 23-39-13-14-32Zm84 71 18 28 38 2-25 28-31-21Zm82 17 7 26 20 22 24 16-37-12-17-17-27 9Z" fill="#68625d" opacity=".48"/>
+    <g stroke="#1a1817" stroke-width=".85" opacity=".7">
+      <path d="m137 25-17 66-26 33m57-86-13 87-23 49-40 54m87-196 7 63 14 32 39 13m-10-83-6 39-22 28m36-22 6 38-39 48m81-95-13 44-32 63m105-80-10 29-20 15m86-28-5 48-24 31"/>
+      <path d="m117 86-8 33m17-47-10 53m15-40-8 47m19-56 6 36m8-29 7 34m9-19 7 21m25-31-9 29m12-21-8 34m17-26 9 26m37-4-18 33m21-26-18 40m32-38-18 35m59-19-11 29m16-24-9 31m70-19-13 24m19-16-11 27"/>
+      <path d="m0 204 36-8 26 5 37-16 39 7 35-15 31 14 28-9 37 14 28-5 42 18 29-4 39 17 25-3 47 26 41 5m-455-28 27-9 21 3 42-11 26 9 38-7 48 18 32-2 55 24 35-1 47 15m-385 7 62-16 49 4 37-9 41 12 38 3 60 15 38 1"/>
+    </g>
+    <path d="M0 245c84-23 116-15 174-6s101-9 172 6 133 13 274 20v5H0Z" fill="url(#hatch)" opacity=".6"/>
+  </g>
+  <path d="M0 150 31 131 58 105 78 112 112 68 137 25 151 38 162 32 190 72 212 57 246 103 268 93 302 133 328 120 356 143 384 136 418 169 445 158 478 190 504 186 548 222 581 234 620 265" stroke="#68625d" stroke-width="1.2"/>
+  <!-- Print-collage registration accents kept separate from the landscape. -->
+  <path d="M0 204h98v66H0z" fill="#b81d24" opacity=".85"/>
+  <path d="M40 12v222h310" stroke="#1a1817" stroke-width="1" opacity=".6"/>
+  <path d="M0 204h98v66H0z" fill="url(#scree)"/>
+</svg>
