@@ -1,0 +1,39 @@
+# Root-local agent state and personal reference/research material.
+/.pi/
+/.atl/
+/Frontend referencia/
+/Verdad desestructurada/
+/Verdad estructurada/
+
+# Real environment files are local; only the application template is versioned.
+.env*
+!/APP/.env.example
+
+# Dependencies, virtual environments, generated builds, caches and reports.
+node_modules/
+.pnpm-store/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.tsbuildinfo
+dist/
+build/
+coverage/
+.nyc_output/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.turbo/
+.vite/
+test-results/
+playwright-report/
+reports/
+*.log
+
+# Keep only the baseline task; unignore each parent needed for traversal.
+/odd/*
+!/odd/tasks/
+/odd/tasks/*
+!/odd/tasks/git-baseline.md
