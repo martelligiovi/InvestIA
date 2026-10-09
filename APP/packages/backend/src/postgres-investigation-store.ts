@@ -148,7 +148,9 @@ function isStoredAction(value: unknown): boolean {
 
   const approvalPresent = value.approval !== undefined;
   if (approvalPresent && !isApproval(value.approval)) return false;
-  if (["queued", "claimed", "succeeded", "failed"].includes(String(value.status)) && !approvalPresent) return false;
+  if (value.queuedByCatalog !== undefined && value.queuedByCatalog !== true) return false;
+  if (["queued", "claimed", "succeeded", "failed"].includes(String(value.status)) &&
+    !approvalPresent && value.queuedByCatalog !== true) return false;
 
   const claimPresent = value.claim !== undefined;
   if (claimPresent && (!isRecord(value.claim) || !isNonEmptyString(value.claim.id) || !isTimestamp(value.claim.claimedAt))) {
@@ -182,6 +184,13 @@ function decode(row: StoredRow): Investigation {
   } catch {
     throw new InvestigationSchemaError("Stored investigation name is invalid.");
   }
+  const intention = Object.prototype.hasOwnProperty.call(document, "intention") ? candidate.intention : "";
+  const advancementMode = Object.prototype.hasOwnProperty.call(document, "advancementMode")
+    ? candidate.advancementMode : "manual";
+  if (typeof intention !== "string" || intention !== intention.trim() ||
+    (advancementMode !== "automatic" && advancementMode !== "manual")) {
+    throw new InvestigationSchemaError("Stored investigation creation metadata is invalid.");
+  }
   const revision = Number(row.revision);
   if (
     candidate.id !== row.id || !Number.isSafeInteger(revision) || revision < 0 ||
@@ -193,13 +202,17 @@ function decode(row: StoredRow): Investigation {
     (candidate.authorization !== undefined && !isAuthorization(candidate.authorization)) ||
     !candidate.actions.every(isStoredAction)
   ) throw new InvestigationSchemaError("Stored investigation document does not match its schema.");
-  return structuredClone({ ...candidate, name } as Investigation);
+  return structuredClone({ ...candidate, name, intention, advancementMode } as Investigation);
 }
 
 function assertSnapshot(investigation: Investigation): void {
   if (
     typeof investigation.id !== "string" || investigation.id.trim().length === 0 ||
     !isNormalizedInvestigationName(investigation.name) ||
+    (investigation.intention !== undefined &&
+      (typeof investigation.intention !== "string" || investigation.intention !== investigation.intention.trim())) ||
+    (investigation.advancementMode !== undefined &&
+      investigation.advancementMode !== "automatic" && investigation.advancementMode !== "manual") ||
     !Number.isSafeInteger(investigation.revision) || investigation.revision < 0 ||
     !Number.isFinite(Date.parse(investigation.createdAt)) || !Number.isFinite(Date.parse(investigation.updatedAt)) ||
     typeof investigation.paused !== "boolean" || !Array.isArray(investigation.emailSeeds) ||
@@ -281,8 +294,10 @@ export class PostgresInvestigationStore implements InvestigationStore {
 
   async claimNextAction(input: ClaimActionRequest): Promise<ActionClaim | undefined> {
     return this.mutate(input.investigationId, (current) => {
-      if (current.paused || current.authorization?.granted !== true) return { result: undefined };
-      const action = current.actions.find((candidate) => candidate.status === "queued" && candidate.approval !== undefined);
+      if (current.paused || current.authorization?.granted !== true ||
+        (input.automaticOnly === true && current.advancementMode !== "automatic")) return { result: undefined };
+      const action = current.actions.find((candidate) => candidate.status === "queued" &&
+        (candidate.queuedByCatalog === true || candidate.approval !== undefined));
       if (action === undefined) return { result: undefined };
       const claimedAction = {
         ...action,

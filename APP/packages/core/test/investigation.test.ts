@@ -50,7 +50,8 @@ class MemoryInvestigationStore implements InvestigationStore {
     if (
       current === undefined || current.paused || current.authorization?.granted !== true
     ) return undefined;
-    const action = current.actions.find((candidate) => candidate.status === "queued" && candidate.approval);
+    if (input.automaticOnly && current.advancementMode !== "automatic") return undefined;
+    const action = current.actions.find((candidate) => candidate.status === "queued" && (candidate.approval || candidate.queuedByCatalog));
     if (action === undefined) return undefined;
 
     const claimedAction = {
@@ -142,6 +143,45 @@ async function approvedAction(
   await service.authorize(investigation.id, true, "Operator authorized this action.");
   return { investigationId: investigation.id, actionId: action.id };
 }
+
+test("seeds queue catalog work without human approvals or repeated intention", async () => {
+  const { service } = makeHarness();
+  for (const mode of ["automatic", "manual"] as const) {
+    const created = await service.createInvestigation("Caso", "Intención única", mode);
+    const seeded = await service.addEmailSeed(created.id, "ana@example.test", "Semilla aportada");
+    assert.equal(seeded.actions.length, 1);
+    assert.equal(seeded.actions[0]?.status, "queued");
+    assert.equal(seeded.actions[0]?.approval, undefined);
+    assert.equal(seeded.actions[0]?.queuedByCatalog, true);
+    assert.ok(!seeded.audit.some((event) => event.kind === "action_approved"));
+    assert.ok(!seeded.actions[0]?.proposalReason.includes(created.intention!));
+    assert.equal(await service.executeNextAction(created.id), undefined);
+    await service.authorize(created.id, true, "Autorización del caso");
+    await service.pause(created.id, "Pausa del caso");
+    assert.equal(await service.executeNextAction(created.id), undefined);
+    await service.resume(created.id, "Reanudar caso");
+    assert.equal((await service.executeNextAction(created.id))?.status, "succeeded");
+  }
+});
+
+test("creation persists intention once and defaults new cases to automatic", async () => {
+  const { service } = makeHarness();
+  const created = await service.createInvestigation("Caso", "  Comprobar exposición pública  ");
+  assert.equal(created.intention, "Comprobar exposición pública");
+  assert.equal(created.advancementMode, "automatic");
+  const updated = await service.addEmailSeed(created.id, "ana@example.test", "Semilla inicial");
+  assert.equal(updated.intention, created.intention);
+  assert.equal(updated.audit[0]?.reason, "Semilla inicial");
+  assert.equal((await service.loadInvestigation(created.id))?.advancementMode, "automatic");
+  const manual = await service.createInvestigation("Manual", "Verificar registro", "manual");
+  assert.equal(manual.advancementMode, "manual");
+  const compatible = await service.createInvestigation();
+  assert.equal(compatible.intention, "");
+  assert.equal(compatible.advancementMode, "automatic");
+  await assert.rejects(service.createInvestigation("Caso", "   "), /intention/i);
+  await assert.rejects(service.createInvestigation("Caso", 42 as unknown as string), /intention/i);
+  await assert.rejects(service.createInvestigation("Caso", "Verificar", "other" as "manual"), /mode/i);
+});
 
 test("creates, lists, loads, and adds validated email seeds with revisions", async () => {
   const { service } = makeHarness();

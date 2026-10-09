@@ -7,8 +7,6 @@ export interface WorkspaceDetailsProps {
   readonly investigation: Investigation;
   readonly node: WorkspaceNode | null;
   readonly disabled: boolean;
-  readonly onPropose: (email: string, reason: string) => Promise<boolean>;
-  readonly onApprove: (actionId: string, reason: string) => Promise<boolean>;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
 }
 
@@ -32,29 +30,9 @@ function TechnicalValue({ label, value }: { readonly label: string; readonly val
   );
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, onPropose, onApprove, onValidate }: WorkspaceDetailsProps) {
-  const [proposalReason, setProposalReason] = useState("");
-  const [approvalReason, setApprovalReason] = useState("");
+export function WorkspaceDetails({ investigation, node, disabled, onValidate }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [formError, setFormError] = useState("");
-
-  async function propose(email: string) {
-    if (proposalReason.trim() === "") {
-      setFormError("Escribí un motivo para proponer la comprobación.");
-      return;
-    }
-    const done = await onPropose(email, proposalReason);
-    if (done) setProposalReason("");
-  }
-
-  async function approve(actionId: string) {
-    if (approvalReason.trim() === "") {
-      setFormError("Escribí un motivo para aprobar la acción.");
-      return;
-    }
-    const done = await onApprove(actionId, approvalReason);
-    if (done) setApprovalReason("");
-  }
 
   async function validate(evidenceId: string, status: ValidationStatus) {
     if (validationReason.trim() === "") {
@@ -93,23 +71,7 @@ export function WorkspaceDetails({ investigation, node, disabled, onPropose, onA
                   <dt>Estado</dt><dd>Dato aportado al expediente</dd>
                 </dl>
               </section>
-              <section className="detail-control" aria-labelledby="github-proposal-heading">
-                <h3 id="github-proposal-heading">Proponer comprobación de registro en GitHub</h3>
-                <p>Holehe · registro en GitHub. Proponer no aprueba ni ejecuta.</p>
-                {investigation.actions.some((action) => action.spec.seed.value === node.seedValue) ? (
-                  <p className="detail-note">Ya hay una acción GitHub registrada para esta semilla.</p>
-                ) : (
-                  <>
-                    <label className="form-field">
-                      <span>Motivo para proponer</span>
-                      <textarea value={proposalReason} maxLength={2_000} onChange={(event) => updateReason(setProposalReason, event.currentTarget.value)} disabled={disabled} rows={3} />
-                    </label>
-                    <button className="workspace-button workspace-button--primary" type="button" disabled={disabled || proposalReason.trim() === ""} onClick={() => void propose(node.seedValue!)}>
-                      Proponer comprobación de registro en GitHub
-                    </button>
-                  </>
-                )}
-              </section>
+              <p className="detail-note">Las semillas nuevas incorporan su comprobación de registro en GitHub a la cola del expediente, sin aprobación por nodo.</p>
             </>
           )}
 
@@ -120,15 +82,15 @@ export function WorkspaceDetails({ investigation, node, disabled, onPropose, onA
                 <dl className="fact-list">
                   <dt>Proveedor</dt><dd>{node.action.spec.provider}</dd>
                   <dt>Semilla</dt><dd className="break-value">{node.action.spec.seed.value}</dd>
-                  <dt>Estado de la acción</dt><dd><StateValue value={node.action.status} /></dd>
+                  <dt>Estado de la acción</dt><dd><StateValue value={node.state} /></dd>
                 </dl>
                 <details className="detail-provenance">
-                  <summary>Propuesta y trazabilidad</summary>
+                  <summary>Origen y trazabilidad</summary>
                 <dl className="fact-list">
                   <dt>Identificador</dt><dd><TechnicalValue label="Identificador de acción" value={node.action.id} /></dd>
                   <dt>Catálogo</dt><dd><TechnicalValue label="Catálogo de acción" value={node.action.spec.catalogId} /></dd>
-                  <dt>Motivo de propuesta</dt><dd>{node.action.proposalReason}</dd>
-                  <dt>Propuesta</dt><dd>{formatDate(node.action.proposedAt)}</dd>
+                  <dt>{node.action.queuedByCatalog ? "Origen del catálogo" : "Motivo de propuesta histórica"}</dt><dd>{node.action.proposalReason}</dd>
+                  <dt>Registrada</dt><dd>{formatDate(node.action.proposedAt)}</dd>
                   {node.action.approval !== undefined && <>
                     <dt>Motivo de aprobación</dt><dd>{node.action.approval.reason}</dd>
                     <dt>Aprobada</dt><dd>{formatDate(node.action.approval.at)}</dd>
@@ -146,20 +108,24 @@ export function WorkspaceDetails({ investigation, node, disabled, onPropose, onA
                   <p className="detail-warning" role="note">Acción reclamada: efecto externo incierto o aún en curso. Esta interfaz no la vuelve a ejecutar.</p>
                 )}
               </section>
-              {node.action.status === "proposed" && node.action.approval === undefined && (
-                <section className="detail-control" aria-labelledby="approval-heading">
-                  <h3 id="approval-heading">Aprobación explícita</h3>
-                  <p>Aprobar solo la incorpora a la cola; no inicia una ejecución.</p>
-                  <label className="form-field">
-                    <span>Motivo de aprobación</span>
-                    <textarea value={approvalReason} maxLength={2_000} onChange={(event) => updateReason(setApprovalReason, event.currentTarget.value)} disabled={disabled} rows={3} />
-                  </label>
-                  <button className="workspace-button workspace-button--primary" type="button" disabled={disabled || approvalReason.trim() === ""} onClick={() => void approve(node.action!.id)}>
-                    Aprobar acción
-                  </button>
-                </section>
-              )}
+              {node.action.status === "proposed" && <p className="detail-note">Propuesta histórica conservada; no forma parte de la cola ejecutable.</p>}
             </>
+          )}
+
+          {node.kind === "result" && node.action !== undefined && (
+            <section className="detail-fact" aria-labelledby="selected-result-heading">
+              <h3 id="selected-result-heading">{node.state === "failed" ? "Error de ejecución" : "Sin información admitida"}</h3>
+              <dl className="fact-list">
+                <dt>Resultado</dt><dd><StateValue value={node.state} /></dd>
+                <dt>Proveedor</dt><dd>{node.action.spec.provider}</dd>
+                <dt>Semilla</dt><dd className="break-value">{node.action.spec.seed.value}</dd>
+                <dt>Acción referida</dt><dd><TechnicalValue label="Identificador de acción" value={node.action.id} /></dd>
+                {node.action.completedAt !== undefined && <><dt>Finalización</dt><dd>{formatDate(node.action.completedAt)}</dd></>}
+                {node.state === "failed" && <><dt>Detalle de error</dt><dd className="break-value">{node.action.failure || "La acción falló sin un detalle de error registrado."}</dd></>}
+                {node.action.unsupportedObservationCount !== undefined && <><dt>Observaciones no admitidas</dt><dd>{node.action.unsupportedObservationCount}</dd></>}
+              </dl>
+              <p className="detail-note">{node.state === "failed" ? "La ejecución falló; no se infiere un estado de registro." : "La ejecución terminó correctamente, pero no produjo observaciones admitidas. Esto no significa que el correo no esté registrado."} Este resultado deriva de la acción; no es evidencia ni admite validación humana.</p>
+            </section>
           )}
 
           {node.kind === "evidence" && node.evidence !== undefined && (

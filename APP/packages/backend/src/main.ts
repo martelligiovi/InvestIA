@@ -12,6 +12,7 @@ import {
   type InvestigationExecutor,
 } from "@investia/core";
 import { createBackendApp } from "./api.ts";
+import { AutomaticInvestigationRunner } from "./automatic-investigation-runner.ts";
 import { isAllowedBackendHost, loadBackendConfig, type BackendConfig } from "./config.ts";
 import { createInvestigationRunGraph } from "./investigation-run-graph.ts";
 import { Neo4jInvestigationProjector, type Neo4jDriverLike } from "./neo4j-investigation-projector.ts";
@@ -44,6 +45,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
 
   let app: ReturnType<typeof createBackendApp> | undefined;
   let driver: Neo4jDriverLike | undefined;
+  let automaticRunner: AutomaticInvestigationRunner | undefined;
   try {
     driver = options.neo4jDriver ?? neo4j.driver(
       config.neo4jUri,
@@ -60,17 +62,28 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
       clock: () => new Date().toISOString(),
       createId: (kind) => `${kind}-${randomUUID()}`,
     });
+    const projector = new Neo4jInvestigationProjector(driver, config.neo4jDatabase);
+    automaticRunner = new AutomaticInvestigationRunner(service, {
+      onError: () => console.error("Automatic investigation sweep failed; persisted claims are not retried."),
+      afterDispatch: async (id) => {
+        const persisted = await service.loadInvestigation(id);
+        if (persisted !== undefined) await projector.project(persisted);
+      },
+    });
     app = createBackendApp(service, {
       actionRunner: createInvestigationRunGraph(service, checkpointer),
-      projector: new Neo4jInvestigationProjector(driver, config.neo4jDatabase),
+      projector,
     }, {
       frontendDistPath: options.frontendDistPath,
       onFrontendUnavailable: () => console.info(
         "Frontend build is missing; the backend is API-only. Build it with `pnpm --dir APP --filter @investia/frontend build`.",
       ),
     });
+    app.addHook("onClose", async () => { await automaticRunner!.stop(); });
     await app.listen({ host: config.host, port: config.port });
+    automaticRunner.start();
   } catch (error) {
+    await automaticRunner?.stop();
     if (app !== undefined) await app.close().catch(() => undefined);
     await Promise.allSettled([pool.end(), driver?.close() ?? Promise.resolve()]);
     throw error;
@@ -82,6 +95,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     close(): Promise<void> {
       closing ??= (async () => {
         try {
+          await automaticRunner!.stop();
           await app!.close();
         } finally {
           const results = await Promise.allSettled([pool.end(), driver?.close() ?? Promise.resolve()]);

@@ -222,10 +222,11 @@ export function InvestigationGraph({ graph, selectedId, onSelect }: Investigatio
                 {graph.nodes.map((node) => {
                   const lines = displayLines(node.title);
                   const active = selectedId === node.id;
+                  const failure = node.kind === "result" && node.state === "failed";
                   return (
                     <g
                       key={node.id}
-                      className={`graph-node graph-node--${node.kind}${active ? " is-selected" : ""}`}
+                      className={`graph-node graph-node--${node.kind}${failure ? " graph-node--failure" : ""}${active ? " is-selected" : ""}`}
                       data-node-id={node.id}
                       role="button"
                       tabIndex={0}
@@ -235,13 +236,22 @@ export function InvestigationGraph({ graph, selectedId, onSelect }: Investigatio
                       onKeyDown={(event) => handleNodeKey(event, node, onSelect)}
                     >
                       <title>{node.accessibleLabel}</title>
-                      <rect className="graph-node-card" x={node.x} y={node.y} width={node.width} height={node.height} rx={2} />
-                      <text className="graph-node-kicker" x={node.x + 14} y={node.y + 21}>{nodeHeading(node)}</text>
-                      {lines.map((line, index) => (
-                        <text key={`${node.id}:${index}`} className="graph-node-title" x={node.x + 14} y={node.y + 43 + index * 18}>{line}</text>
-                      ))}
-                      <rect className="graph-state-badge" x={node.x + 10} y={node.y + 68} width={node.width - 20} height={18} />
-                      <text className="graph-node-state" x={node.x + 16} y={node.y + 81}>{workspaceStatusLabel(node.state)}</text>
+                      {failure ? (
+                        <>
+                          <circle className="graph-node-card" cx={node.x + node.width / 2} cy={node.y + node.height / 2} r={node.height / 2} />
+                          <text className="graph-failure-x" x={node.x + node.width / 2} y={node.y + node.height / 2} textAnchor="middle" dominantBaseline="central">X</text>
+                        </>
+                      ) : <rect className="graph-node-card" x={node.x} y={node.y} width={node.width} height={node.height} rx={2} />}
+                      {!failure && (
+                        <>
+                          <text className="graph-node-kicker" x={node.x + 14} y={node.y + 21}>{nodeHeading(node)}</text>
+                          {lines.map((line, index) => (
+                            <text key={`${node.id}:${index}`} className="graph-node-title" x={node.x + 14} y={node.y + 43 + index * 18}>{line}</text>
+                          ))}
+                          <rect className="graph-state-badge" x={node.x + 10} y={node.y + 68} width={node.width - 20} height={18} />
+                          <text className="graph-node-state" x={node.x + 16} y={node.y + 81}>{workspaceStatusLabel(node.state)}</text>
+                        </>
+                      )}
                     </g>
                   );
                 })}

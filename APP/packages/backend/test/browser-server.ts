@@ -13,6 +13,7 @@ import {
   type InvestigationTransaction,
 } from "@investia/core";
 import { createBackendApp } from "../src/api.ts";
+import { AutomaticInvestigationRunner } from "../src/automatic-investigation-runner.ts";
 import { createInvestigationRunGraph } from "../src/investigation-run-graph.ts";
 import { resolveFrontendDistPath } from "../src/serve-frontend.ts";
 
@@ -21,6 +22,7 @@ const PORT = 4327;
 const serverScope = randomUUID();
 
 class InMemoryStore implements InvestigationStore {
+  enumerationCount = 0;
   readonly #investigations = new Map<string, Investigation>();
 
   async create(investigation: Investigation): Promise<void> {
@@ -33,6 +35,7 @@ class InMemoryStore implements InvestigationStore {
   }
 
   async list(): Promise<readonly Investigation[]> {
+    this.enumerationCount++;
     return [...this.#investigations.values()].map((investigation) => structuredClone(investigation));
   }
 
@@ -50,8 +53,11 @@ class InMemoryStore implements InvestigationStore {
 
   async claimNextAction(input: ClaimActionRequest): Promise<ActionClaim | undefined> {
     const current = this.#investigations.get(input.investigationId);
-    if (current === undefined || current.paused || current.authorization?.granted !== true) return undefined;
-    const action = current.actions.find((candidate) => candidate.status === "queued" && candidate.approval !== undefined);
+    if (current === undefined || current.paused || current.authorization?.granted !== true ||
+      (input.automaticOnly === true && current.advancementMode !== "automatic")) return undefined;
+    // No await between gate, selection and persisted claim: atomic in this isolated store.
+    const action = current.actions.find((candidate) => candidate.status === "queued" &&
+      (candidate.queuedByCatalog === true || candidate.approval !== undefined));
     if (action === undefined) return undefined;
     const claimed = {
       ...action,
@@ -131,6 +137,13 @@ const app = createBackendApp(service, {
   },
 }, { frontendDistPath: resolveFrontendDistPath() });
 
+const workerErrors: string[] = [];
+const automaticRunner = new AutomaticInvestigationRunner(service, {
+  intervalMs: 50,
+  onError: () => { workerErrors.push("Automatic worker error"); },
+});
+app.addHook("onClose", async () => { await automaticRunner.stop(); });
+
 // Request counting and this state-inspection route exist only in this test process.
 app.addHook("onRequest", (request, _reply, done) => {
   if (request.url.startsWith("/investigations")) {
@@ -145,6 +158,8 @@ app.get<{ Params: { id: string } }>("/__test/state/:id", async (request, reply) 
   if (investigation === undefined) return reply.code(404).send({ error: "NOT_FOUND" });
   return {
     investigation,
+    enumerationCount: store.enumerationCount,
+    workerErrors: [...workerErrors],
     executionCount: executionCalls.length,
     executionCalls: structuredClone(executionCalls),
     requestCounts: Object.fromEntries(requestCounts),
@@ -158,6 +173,7 @@ async function close(): Promise<void> {
 
 try {
   await app.listen({ host: HOST, port: PORT });
+  automaticRunner.start();
   const address = app.server.address() as AddressInfo;
   console.info(`Test-only browser API and built frontend listening on http://${HOST}:${address.port}`);
 } catch (error) {

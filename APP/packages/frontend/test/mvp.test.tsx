@@ -121,6 +121,88 @@ describe("home e historial real", () => {
 });
 
 describe("creación nombrada y recuperación", () => {
+  it.each(["rejected", "response_lost"])("persiste consentimiento antes de semillas y reconcilia autorización %s", async (failure) => {
+    let authorized = false;
+    let attempts = 0;
+    const { calls } = installFetch(async (call) => {
+      const path = requestPath(call);
+      const current = { ...investigation(), ...(authorized ? { authorization: { granted: true, at: createdAt, reason: "Consentimiento", operator: "local-operator" } } : {}) };
+      if (path.endsWith("/authorization")) {
+        attempts += 1;
+        authorized = failure === "response_lost" || attempts > 1;
+        if (attempts === 1) return json({ error: "UNAVAILABLE" }, 503);
+        return json({ ...current, authorization: { granted: true } });
+      }
+      if (path.endsWith("/emails")) return json(investigation(["uno@example.test"]));
+      return json(current);
+    });
+    routeTo("#/nueva");
+    const user = userEvent.setup();
+    const first = render(<App />);
+    const consent = screen.getByRole("checkbox", { name: /autorizar consultas/i });
+    expect(consent).not.toBeChecked();
+    await user.click(consent);
+    await user.type(screen.getByLabelText(/nombre de la investigación/i), "Consentido");
+    await user.type(screen.getByLabelText(/intención de la investigación/i), "Revisar exposición");
+    await user.type(screen.getByLabelText(/correo electrónico 1/i), "uno@example.test");
+    await user.click(screen.getByRole("button", { name: /crear investigación/i }));
+    expect(await screen.findByText(/no se pudo confirmar la autorización/i)).toBeInTheDocument();
+    expect(calls.map(requestPath)).toEqual(["/investigations", "/investigations/case-1/authorization"]);
+    expect(bodyOf(calls[1]!)).toMatchObject({ granted: true, reason: expect.stringMatching(/semillas actuales y futuras/i) });
+    expect(JSON.parse(window.sessionStorage.getItem("investia.creation-recovery.v1")!)).toMatchObject({ consent: true });
+    first.unmount();
+    render(<App />);
+    await screen.findByRole("button", { name: /reintentar correos pendientes/i });
+    await waitFor(() => expect(screen.queryByText(/comprobando los correos/i)).not.toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: /reintentar correos pendientes/i }));
+    await screen.findByRole("heading", { name: "Cuaderno de otoño" });
+    expect(calls.filter((call) => requestPath(call) === "/investigations")).toHaveLength(1);
+    expect(calls.filter((call) => requestPath(call).endsWith("/authorization"))).toHaveLength(failure === "response_lost" ? 1 : 2);
+    expect(calls.filter((call) => requestPath(call).endsWith("/emails"))).toHaveLength(1);
+  });
+  it.each([false, true])("reconcilia semillas completas sin perder autorización pendiente ni reautorizar una revocación (recibo %s)", async (confirmed) => {
+    window.sessionStorage.setItem("investia.creation-recovery.v1", JSON.stringify({ version: 1, phase: "partial", name: "Caso",
+      intention: "Revisar", advancementMode: "automatic", emails: ["uno@example.test"], completedEmails: ["uno@example.test"],
+      investigationId: "case-1", consent: true, authorizationConfirmed: confirmed }));
+    const { calls } = installFetch(async (call) => json({ ...investigation(["uno@example.test"]),
+      ...(confirmed || requestPath(call).endsWith("/authorization") ? { authorization: { granted: !confirmed, at: createdAt, reason: "Cambio", operator: "local-operator" } } : {}) }));
+    routeTo("#/nueva");
+    const user = userEvent.setup();
+    render(<App />);
+    if (!confirmed) {
+      await screen.findByText(/autorización pendiente de confirmación/i);
+      expect(window.location.hash).toBe("#/nueva");
+      await user.click(screen.getByRole("button", { name: /reintentar correos pendientes/i }));
+    }
+    await screen.findByRole("heading", { name: "Cuaderno de otoño" });
+    expect(calls.filter((call) => requestPath(call).endsWith("/authorization"))).toHaveLength(confirmed ? 0 : 1);
+    expect(calls.filter((call) => call.init?.method === "POST" && !requestPath(call).endsWith("/authorization"))).toHaveLength(0);
+  });
+  it.each(["automatic", "manual"])("exige intención y recupera el borrador con modo %s", async (mode) => {
+    const { calls } = installFetch(async () => { throw new Error("respuesta incierta"); });
+    routeTo("#/nueva");
+    const user = userEvent.setup();
+    render(<App />);
+    await user.type(screen.getByLabelText(/nombre de la investigación/i), "Caso");
+    await user.type(screen.getByLabelText(/correo electrónico 1/i), "ana@example.test");
+    await user.click(screen.getByRole("button", { name: /crear investigación/i }));
+    expect(await screen.findByText("Ingresá la intención de la investigación.")).toBeInTheDocument();
+    expect(calls).toHaveLength(0);
+    await user.type(screen.getByLabelText(/intención de la investigación/i), "  Verificar exposición  ");
+    if (mode === "manual") await user.click(screen.getByRole("checkbox", { name: /avance manual/i }));
+    await user.click(screen.getByRole("button", { name: /crear investigación/i }));
+    await screen.findByText(/No se pudo confirmar si se creó/i);
+    expect(bodyOf(calls[0]!)).toEqual({ name: "Caso", intention: "Verificar exposición", advancementMode: mode });
+    expect(JSON.parse(window.sessionStorage.getItem("investia.creation-recovery.v1")!)).toMatchObject({
+      intention: "Verificar exposición", advancementMode: mode,
+    });
+    cleanup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /Ya revisé el historial/i }));
+    expect(screen.getByLabelText(/intención de la investigación/i)).toHaveValue("Verificar exposición");
+    expect(screen.getByRole("checkbox", { name: /avance manual/i })).toHaveProperty("checked", mode === "manual");
+    expect(calls).toHaveLength(1);
+  });
   it("valida nombres Unicode acotados y todos los correos antes de crear", async () => {
     const { calls } = installFetch(async () => json(investigation()));
     routeTo("#/nueva");
@@ -167,6 +249,7 @@ describe("creación nombrada y recuperación", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await user.type(screen.getByLabelText(/intención de la investigación/i), "Verificar registro");
     const boundedUnicodeName = "🧭".repeat(120);
     fireEvent.change(screen.getByLabelText(/nombre de la investigación/i), { target: { value: `  ${boundedUnicodeName}  ` } });
     await user.type(screen.getByLabelText(/correo electrónico 1/i), "uno@example.test");
@@ -183,7 +266,7 @@ describe("creación nombrada y recuperación", () => {
       "/investigations/case-1",
     ]);
     expect(callsData.map(({ body }) => body)).toEqual([
-      { name: boundedUnicodeName },
+      { name: boundedUnicodeName, intention: "Verificar registro", advancementMode: "automatic" },
       { email: "uno@example.test", reason: expect.any(String) },
       { email: "dos+prueba@example.test", reason: expect.any(String) },
       undefined,
@@ -201,6 +284,7 @@ describe("creación nombrada y recuperación", () => {
     routeTo("#/nueva");
     const user = userEvent.setup();
     render(<App />);
+    await user.type(screen.getByLabelText(/intención de la investigación/i), "Verificar registro");
     await user.type(screen.getByLabelText(/nombre de la investigación/i), "Caso único");
     await user.type(screen.getByLabelText(/correo electrónico 1/i), "uno@example.test");
     await user.dblClick(screen.getByRole("button", { name: /crear investigación/i }));
@@ -233,6 +317,7 @@ describe("creación nombrada y recuperación", () => {
     routeTo("#/nueva");
     const user = userEvent.setup();
     render(<App />);
+    await user.type(screen.getByLabelText(/intención de la investigación/i), "Verificar registro");
     await user.type(screen.getByLabelText(/nombre de la investigación/i), "Recuperable");
     await user.type(screen.getByLabelText(/correo electrónico 1/i), "uno@example.test");
     await user.click(screen.getByRole("button", { name: /agregar correo/i }));
@@ -274,6 +359,7 @@ describe("creación nombrada y recuperación", () => {
     routeTo("#/nueva");
     const user = userEvent.setup();
     const firstRender = render(<App />);
+    await user.type(screen.getByLabelText(/intención de la investigación/i), "Verificar registro");
     await user.type(screen.getByLabelText(/nombre de la investigación/i), "Carga parcial");
     await user.type(screen.getByLabelText(/correo electrónico 1/i), "uno@example.test");
     await user.click(screen.getByRole("button", { name: /agregar correo/i }));
@@ -298,6 +384,7 @@ describe("creación nombrada y recuperación", () => {
     routeTo("#/nueva");
     const user = userEvent.setup();
     const firstRender = render(<App />);
+    await user.type(screen.getByLabelText(/intención de la investigación/i), "Verificar registro");
     await user.type(screen.getByLabelText(/nombre de la investigación/i), "Posible alta");
     await user.type(screen.getByLabelText(/correo electrónico 1/i), "uno@example.test");
     await user.click(screen.getByRole("button", { name: /crear investigación/i }));

@@ -4,6 +4,7 @@ import type { SeedBox } from "../domain/seed-box.ts";
 import {
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
+  type AdvancementMode,
   type AuditEvent,
   type AuditKind,
   type EvidenceRecord,
@@ -123,9 +124,11 @@ export class InvestigationService {
     this.dependencies = dependencies;
   }
 
-  async createInvestigation(name?: string): Promise<Investigation> {
+  async createInvestigation(name?: string, intention?: string, advancementMode?: AdvancementMode): Promise<Investigation> {
     const at = timestamp(this.dependencies.clock);
-    const investigation = createInitialInvestigation(newId(this.dependencies.createId, "investigation"), at, name);
+    const investigation = createInitialInvestigation(
+      newId(this.dependencies.createId, "investigation"), at, name, intention, advancementMode,
+    );
     await this.dependencies.store.create(investigation);
     return investigation;
   }
@@ -150,18 +153,28 @@ export class InvestigationService {
     return this.dependencies.store.get(id);
   }
 
-  async addEmailSeed(id: string, value: string, reason: string): Promise<Investigation> {
+  async addEmailSeed(id: string, value: string, reason: string = "Email seed supplied at case level."): Promise<Investigation> {
     const seed = emailSeed(value);
     const why = reasonText(reason);
     const at = timestamp(this.dependencies.clock);
     const event = auditEvent(this.dependencies.createId, at, "operator", "email_seed_added", why);
+    const action: GitHubCatalogAction = {
+      id: newId(this.dependencies.createId, "action"),
+      spec: { catalogId: CATALOG_ID, provider: "github", seed: { ...seed } },
+      status: "queued",
+      queuedByCatalog: true,
+      proposedAt: at,
+      proposalReason: "Catalog policy queued a GitHub registration check for the recorded email seed.",
+    };
+    const queued = auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id });
     return this.dependencies.store.transact(id, (current) => {
       if (current.emailSeeds.some((existing) => existing.value === seed.value)) {
         throw new Error("Email seed already exists in this investigation");
       }
       const next = withRevision(current, at, {
         emailSeeds: [...current.emailSeeds, seed],
-        audit: [...current.audit, event],
+        actions: [...current.actions, action],
+        audit: [...current.audit, event, queued],
       });
       return { next, result: next };
     });
@@ -184,14 +197,18 @@ export class InvestigationService {
       if (!current.emailSeeds.some((existing) => existing.value === seed.value)) {
         throw new Error("GitHub actions require an email seed already recorded in this investigation");
       }
-      if (current.actions.some((existing) => existing.spec.catalogId === CATALOG_ID && existing.spec.seed.value === seed.value)) {
+      const existing = current.actions.find((candidate) => candidate.spec.catalogId === CATALOG_ID && candidate.spec.seed.value === seed.value);
+      // Compatibility: an explicit historical proposal request may replace an unclaimed
+      // catalog queue entry with the old proposed/approval workflow. Never alter claimed work.
+      if (existing !== undefined && !(existing.status === "queued" && existing.queuedByCatalog === true && existing.approval === undefined)) {
         throw new Error("A GitHub catalog action already exists for this email seed");
       }
+      const proposed = existing === undefined ? action : { ...action, id: existing.id };
       const next = withRevision(current, at, {
-        actions: [...current.actions, action],
-        audit: [...current.audit, event],
+        actions: existing === undefined ? [...current.actions, proposed] : current.actions.map((candidate) => candidate.id === existing.id ? proposed : candidate),
+        audit: [...current.audit, { ...event, actionId: proposed.id }],
       });
-      return { next, result: action };
+      return { next, result: proposed };
     });
   }
 
@@ -275,10 +292,11 @@ export class InvestigationService {
     });
   }
 
-  async executeNextAction(id: string): Promise<GitHubCatalogAction | undefined> {
+  async executeNextAction(id: string, automaticOnly = false): Promise<GitHubCatalogAction | undefined> {
     const claimedAt = timestamp(this.dependencies.clock);
     const claimRequest: ClaimActionRequest = {
       investigationId: id,
+      automaticOnly,
       claimId: newId(this.dependencies.createId, "claim"),
       claimedAt,
       auditEvent: auditEvent(
@@ -286,7 +304,7 @@ export class InvestigationService {
         claimedAt,
         "system",
         "action_claimed",
-        "Persisted authorization, action approval, and unpaused state allowed this claim.",
+        "Persisted authorization, catalog eligibility or historical approval, and unpaused state allowed this claim.",
       ),
     };
     const claim = await this.dependencies.store.claimNextAction(claimRequest);

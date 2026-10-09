@@ -1,3 +1,5 @@
+// Included here because the package test command enumerates its entry points explicitly.
+import "./automatic-investigation-runner.test.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MemorySaver } from "@langchain/langgraph";

@@ -33,7 +33,11 @@ const ReasonBody = z.object({ reason: z.string().trim().min(1).max(2_000) }).str
 const InvestigationName = z.string().trim().min(1).refine(
   (name) => [...name].length <= INVESTIGATION_NAME_MAX_LENGTH,
 );
-const CreateInvestigationBody = z.object({ name: InvestigationName.optional() }).strict().optional();
+const CreateInvestigationBody = z.object({
+  name: InvestigationName.optional(),
+  intention: z.string().trim().min(1).optional(),
+  advancementMode: z.enum(["automatic", "manual"]).optional(),
+}).strict().optional();
 const EmailBody = ReasonBody.extend({ email: z.string().email().max(320) }).strict();
 const AuthorizationBody = ReasonBody.extend({ granted: z.boolean() }).strict();
 const ValidationBody = ReasonBody.extend({ status: z.enum(["accepted", "rejected", "inconclusive"]) }).strict();
@@ -139,7 +143,7 @@ export function createBackendApp(
 
   app.post("/investigations", async (request, reply) => {
     const body = input(CreateInvestigationBody, request.body);
-    const investigation = await serviceCall(() => service.createInvestigation(body?.name));
+    const investigation = await serviceCall(() => service.createInvestigation(body?.name, body?.intention, body?.advancementMode));
     await projectPersistedState(investigation.id);
     return reply.code(201).send(investigation);
   });

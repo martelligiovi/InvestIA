@@ -14,6 +14,7 @@ export interface InvestigationTransaction<T> {
 
 export interface ExecutionPermit {
   readonly authorized: true;
+  /** Execution eligibility (catalog policy or historical approval), not an operator decision. */
   readonly approved: true;
   readonly paused: false;
 }
@@ -28,6 +29,8 @@ export interface ActionClaim {
 
 export interface ClaimActionRequest {
   readonly investigationId: InvestigationId;
+  /** Rechecked inside the atomic claim, never inferred from a worker's stale snapshot. */
+  readonly automaticOnly?: boolean;
   readonly claimId: string;
   readonly claimedAt: string;
   readonly auditEvent: AuditEvent;
@@ -65,7 +68,7 @@ export interface InvestigationStore {
     id: InvestigationId,
     operation: (current: Investigation) => InvestigationTransaction<T>,
   ): Promise<T>;
-  /** Atomically checks persisted authorization, action approval, and pause state while claiming. */
+  /** Atomically checks persisted authorization, catalog eligibility or historical approval, mode, and pause state while claiming. */
   claimNextAction(input: ClaimActionRequest): Promise<ActionClaim | undefined>;
   /** Atomically records a terminal outcome only for the matching in-flight claim. */
   completeAction(input: CompleteActionInput): Promise<Investigation>;

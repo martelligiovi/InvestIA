@@ -1,7 +1,7 @@
 import type { EvidenceRecord, GitHubCatalogAction, Investigation, ValidationDecision } from "@investia/core";
-import { workspaceStatusLabel } from "./workspace-status";
+import { actionDisplayState, workspaceStatusLabel } from "./workspace-status";
 
-export type WorkspaceNodeKind = "seed" | "action" | "evidence";
+export type WorkspaceNodeKind = "seed" | "action" | "evidence" | "result";
 
 export interface WorkspaceNode {
   readonly id: string;
@@ -42,7 +42,7 @@ function seedNodeId(value: string): string {
 }
 
 function nodeLabel(kind: WorkspaceNodeKind, title: string, state: string): string {
-  const noun = kind === "seed" ? "Semilla" : kind === "action" ? "Acción" : "Evidencia";
+  const noun = kind === "seed" ? "Semilla" : kind === "action" ? "Acción" : kind === "result" ? "Resultado" : "Evidencia";
   return `${noun}: ${title}. Estado: ${workspaceStatusLabel(state)}.`;
 }
 
@@ -70,12 +70,13 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
 
   investigation.actions.forEach((action, index) => {
     const title = "Comprobación de registro en GitHub";
+    const state = actionDisplayState(investigation, action);
     nodes.push({
       id: `action:${action.id}`,
       kind: "action",
       title,
-      state: action.status,
-      accessibleLabel: nodeLabel("action", `${action.id}. ${title}`, action.status),
+      state,
+      accessibleLabel: nodeLabel("action", `${action.id}. ${title}`, state),
       action,
       x: 434,
       y: TOP + index * ROW_GAP,
@@ -85,7 +86,7 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
   });
 
   investigation.evidence.forEach((record, index) => {
-    const title = `Observación de registro GitHub · ${workspaceStatusLabel(record.status)}`;
+    const title = `Observación de registro ${record.provider} · ${workspaceStatusLabel(record.status)}`;
     nodes.push({
       id: `evidence:${record.id}`,
       kind: "evidence",
@@ -99,6 +100,27 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
       height: NODE_HEIGHT,
     });
   });
+
+  let resultRow = investigation.evidence.length;
+  for (const action of investigation.actions) {
+    const failed = action.status === "failed";
+    const hasEvidence = investigation.evidence.some((record) => record.actionId === action.id);
+    if (!failed && (action.status !== "succeeded" || hasEvidence)) continue;
+    const state = failed ? "failed" : "no_information";
+    const title = failed ? "Error de ejecución" : "Sin información admitida";
+    nodes.push({
+      id: `result:${action.id}`,
+      kind: "result",
+      title,
+      state,
+      action,
+      accessibleLabel: nodeLabel("result", `${action.id}. ${title}`, state),
+      x: 836,
+      y: TOP + resultRow++ * ROW_GAP,
+      width: failed ? NODE_HEIGHT : NODE_WIDTH,
+      height: NODE_HEIGHT,
+    });
+  }
 
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const edges: WorkspaceEdge[] = [];
@@ -129,10 +151,23 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
     }
   }
 
+  for (const node of nodes) {
+    if (node.kind !== "result" || node.action === undefined) continue;
+    const from = nodeById.get(`action:${node.action.id}`);
+    if (from !== undefined) {
+      edges.push({
+        id: `action-result:${node.action.id}`,
+        from: from.id,
+        to: node.id,
+        path: orthogonalPath(from, node),
+      });
+    }
+  }
+
   const rowCount = Math.max(
     investigation.emailSeeds.length,
     investigation.actions.length,
-    investigation.evidence.length,
+    resultRow,
     1,
   );
   return { width: 1100, height: TOP * 2 + rowCount * ROW_GAP, nodes, edges };
