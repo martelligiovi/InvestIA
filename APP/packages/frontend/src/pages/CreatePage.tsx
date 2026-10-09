@@ -8,14 +8,19 @@ const RECOVERY_STORAGE_KEY = "investia.creation-recovery.v1";
 const EMAIL_MAX_LENGTH = 320;
 const EMAIL_PATTERN = /^(?!\.)(?!.*\.\.)([A-Z0-9_'+.\-]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9-]*\.)+[A-Z]{2,}$/i;
 const EMAIL_SEED_REASON = "Semilla inicial aportada al crear la investigación.";
+const CONSENT_REASON = "Consentimiento explícito al crear: autorizar consultas del catálogo para semillas actuales y futuras de este expediente hasta revocar la autorización.";
 
 type RecoveryPhase = "creating" | "uncertain" | "partial";
 interface RecoveryRecord {
   readonly version: 1;
   readonly phase: RecoveryPhase;
   readonly name: string;
+  readonly intention: string;
+  readonly advancementMode: "automatic" | "manual";
   readonly emails: readonly string[];
   readonly completedEmails: readonly string[];
+  readonly consent?: boolean;
+  readonly authorizationConfirmed?: boolean;
   readonly investigationId?: string;
 }
 interface EmailDraft {
@@ -34,6 +39,8 @@ function readRecovery(): RecoveryRecord | null {
     const candidate = value as Partial<RecoveryRecord>;
     if (
       candidate.version !== 1 || typeof candidate.name !== "string" ||
+      (candidate.intention !== undefined && typeof candidate.intention !== "string") ||
+      (candidate.advancementMode !== undefined && candidate.advancementMode !== "automatic" && candidate.advancementMode !== "manual") ||
       !Array.isArray(candidate.emails) || candidate.emails.length === 0 ||
       !candidate.emails.every((email) => typeof email === "string") ||
       !Array.isArray(candidate.completedEmails) ||
@@ -51,6 +58,10 @@ function readRecovery(): RecoveryRecord | null {
       version: 1,
       phase,
       name: candidate.name,
+      intention: candidate.intention ?? "",
+      advancementMode: candidate.advancementMode ?? "manual",
+      consent: candidate.consent === true,
+      authorizationConfirmed: candidate.consent === true && candidate.authorizationConfirmed === true,
       emails: candidate.emails,
       completedEmails: candidate.completedEmails.filter((email) => candidate.emails?.includes(email)),
       ...(investigationId === undefined ? {} : { investigationId }),
@@ -77,17 +88,20 @@ function clearRecovery(): void {
   }
 }
 
-function mergePersistedEmails(record: RecoveryRecord, persistedEmails: readonly string[]): RecoveryRecord {
+function mergePersistedEmails(record: RecoveryRecord, persistedEmails: readonly string[], authorizationRecorded = false): RecoveryRecord {
   const completed = new Set([...record.completedEmails, ...persistedEmails]);
   return {
     ...record,
     phase: "partial",
     completedEmails: record.emails.filter((email) => completed.has(email)),
+    // A recorded revocation also resolves an uncertain grant: never overwrite it on retry.
+    authorizationConfirmed: record.authorizationConfirmed === true || (record.consent === true && authorizationRecorded),
   };
 }
 
 function isComplete(record: RecoveryRecord): boolean {
-  return record.emails.every((email) => record.completedEmails.includes(email));
+  return (!record.consent || record.authorizationConfirmed === true) &&
+    record.emails.every((email) => record.completedEmails.includes(email));
 }
 
 function completeInvestigation(id: string): void {
@@ -100,6 +114,9 @@ export function CreatePage() {
   const [recoveryAtLoad] = useState(readRecovery);
   const [recovery, setRecovery] = useState<RecoveryRecord | null>(recoveryAtLoad);
   const [name, setName] = useState(recoveryAtLoad?.name ?? "");
+  const [intention, setIntention] = useState(recoveryAtLoad?.intention ?? "");
+  const [manualMode, setManualMode] = useState(recoveryAtLoad?.advancementMode === "manual");
+  const [consent, setConsent] = useState(recoveryAtLoad?.consent === true);
   const [emailRows, setEmailRows] = useState<readonly EmailDraft[]>(() =>
     (recoveryAtLoad?.emails ?? [""]).map((value, index) => ({ key: index + 1, value })),
   );
@@ -123,6 +140,7 @@ export function CreatePage() {
         const refreshed = mergePersistedEmails(
           recoveryAtLoad,
           investigation.emailSeeds.map((seed) => seed.value),
+          investigation.authorization !== undefined,
         );
         if (isComplete(refreshed)) {
           completeInvestigation(recoveryAtLoad.investigationId!);
@@ -155,6 +173,8 @@ export function CreatePage() {
       }
     }
 
+    if (intention.trim().length === 0) errors.intention = "Ingresá la intención de la investigación.";
+
     if (emailRows.length === 0) errors.emails = "Agregá al menos un correo electrónico.";
     const normalizedEmails = emailRows.map((row) => row.value.trim());
     const emailCounts = new Map<string, number>();
@@ -178,13 +198,35 @@ export function CreatePage() {
       setFormError("Revisá los campos marcados antes de crear la investigación.");
       const firstInvalid = Object.keys(errors)[0];
       if (firstInvalid !== undefined) {
-        const firstInvalidId = firstInvalid === "name" ? "investigation-name" : firstInvalid;
+        const firstInvalidId = firstInvalid === "name" || firstInvalid === "intention"
+          ? `investigation-${firstInvalid}` : firstInvalid;
         window.requestAnimationFrame(() => document.getElementById(firstInvalidId)?.focus());
       }
       return null;
     }
     setFormError("");
     return { name: normalizedName, emails: normalizedEmails };
+  }
+
+  async function confirmAuthorization(record: RecoveryRecord): Promise<RecoveryRecord | null> {
+    if (!record.consent || record.authorizationConfirmed === true) return record;
+    if (record.investigationId === undefined) return null;
+    try {
+      const saved = await api.setAuthorization(record.investigationId, true, CONSENT_REASON);
+      if (saved.authorization?.granted !== true) throw new Error("Authorization not confirmed");
+      const confirmed = { ...record, authorizationConfirmed: true };
+      setRecovery(confirmed);
+      if (!persistRecovery(confirmed)) {
+        setStorageProblem(true);
+        setRecoveryNotice("La autorización se guardó, pero no su recibo de recuperación. Abrí el expediente antes de continuar.");
+        return null;
+      }
+      return confirmed;
+    } catch {
+      setRecoveryNotice("No se pudo confirmar la autorización. No se enviaron correos nuevos. Al reintentar se consultará el expediente antes de volver a autorizar.");
+      setRecoveryCheck("ready");
+      return null;
+    }
   }
 
   async function addUnresolvedEmails(record: RecoveryRecord): Promise<RecoveryRecord | null> {
@@ -232,6 +274,10 @@ export function CreatePage() {
       version: 1,
       phase: "creating",
       name: validated.name,
+      intention: intention.trim(),
+      advancementMode: manualMode ? "manual" : "automatic",
+      consent,
+      authorizationConfirmed: false,
       emails: validated.emails,
       completedEmails: [],
     };
@@ -246,7 +292,7 @@ export function CreatePage() {
     try {
       let createdId: string;
       try {
-        const created = await api.createInvestigation(validated.name);
+        const created = await api.createInvestigation(initialRecord.name, initialRecord.intention, initialRecord.advancementMode);
         if (typeof created.id !== "string" || created.id.trim() === "") {
           throw new Error("Creation response did not include an investigation id");
         }
@@ -272,7 +318,9 @@ export function CreatePage() {
         return;
       }
       setRecovery(withId);
-      const completed = await addUnresolvedEmails(withId);
+      const authorized = await confirmAuthorization(withId);
+      if (authorized === null) return;
+      const completed = await addUnresolvedEmails(authorized);
       if (completed !== null && isComplete(completed)) completeInvestigation(createdId);
       else if (completed !== null) setRecovery(completed);
     } finally {
@@ -291,7 +339,7 @@ export function CreatePage() {
     setRecoveryNotice("");
     try {
       const investigation = await api.getInvestigation(investigationId);
-      let refreshed = mergePersistedEmails(current, investigation.emailSeeds.map((seed) => seed.value));
+      let refreshed = mergePersistedEmails(current, investigation.emailSeeds.map((seed) => seed.value), investigation.authorization !== undefined);
       if (!persistRecovery(refreshed)) {
         setStorageProblem(true);
         setRecoveryNotice("No se pudo guardar el estado de recuperación; no se enviaron correos pendientes.");
@@ -303,7 +351,9 @@ export function CreatePage() {
         completeInvestigation(investigationId);
         return;
       }
-      const completed = await addUnresolvedEmails(refreshed);
+      const authorized = await confirmAuthorization(refreshed);
+      if (authorized === null) return;
+      const completed = await addUnresolvedEmails(authorized);
       if (completed !== null) {
         refreshed = completed;
         setRecovery(refreshed);
@@ -388,9 +438,12 @@ export function CreatePage() {
             Se guardó {completedCount} de {recovery.emails.length} correos iniciales.
           </p>
         )}
+        {recovery.consent && !recovery.authorizationConfirmed && (
+          <p className="document-note">Consentimiento conservado; autorización pendiente de confirmación. No se incorporarán semillas nuevas hasta confirmarla.</p>
+        )}
         {!allComplete && (
           <p className="document-note">
-            Si abrís el expediente ahora, los correos pendientes todavía no estarán incorporados. No se propone ni ejecuta ninguna acción.
+            Si abrís el expediente ahora, los correos pendientes todavía no estarán incorporados. Las semillas ya guardadas pueden avanzar si el expediente está autorizado y sin pausa.
           </p>
         )}
         <div className="recovery-actions">
@@ -438,6 +491,43 @@ export function CreatePage() {
             />
             <span id="name-hint" className="visually-hidden">Hasta {INVESTIGATION_NAME_MAX_LENGTH} caracteres Unicode.</span>
             {fieldErrors.name !== undefined && <span id="name-error" className="field-error">{fieldErrors.name}</span>}
+          </div>
+          <div className="form-field">
+            <label htmlFor="investigation-intention">Intención de la investigación</label>
+            <textarea
+              id="investigation-intention"
+              name="intention"
+              required
+              value={intention}
+              placeholder="¿Qué querés investigar y para qué?"
+              aria-invalid={fieldErrors.intention !== undefined}
+              aria-describedby={`intention-hint${fieldErrors.intention === undefined ? "" : " intention-error"}`}
+              onChange={(event) => {
+                setIntention(event.currentTarget.value);
+                setFieldErrors((errors) => {
+                  const next = { ...errors };
+                  delete next.intention;
+                  return next;
+                });
+                setFormError("");
+              }}
+            />
+            <span id="intention-hint">La intención se registra una sola vez al abrir el expediente.</span>
+            {fieldErrors.intention !== undefined && <span id="intention-error" className="field-error">{fieldErrors.intention}</span>}
+          </div>
+          <div className="form-field create-advancement-field">
+            <label>
+              <input type="checkbox" checked={manualMode} onChange={(event) => setManualMode(event.currentTarget.checked)} />
+              Elegir avance manual
+            </label>
+            <span>El avance automático es la opción predeterminada.</span>
+          </div>
+          <div className="form-field create-advancement-field">
+            <label>
+              <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.currentTarget.checked)} aria-describedby="creation-consent-hint" />
+              Autorizar consultas del catálogo
+            </label>
+            <span id="creation-consent-hint">Consentimiento explícito para las semillas actuales y futuras de este expediente hasta revocar la autorización. En modo automático, las consultas avanzan sin aprobación por nodo; sin marcar, quedan esperando autorización.</span>
           </div>
           <div className="email-fields">
             <div className="email-fields-heading">

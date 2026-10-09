@@ -1,6 +1,6 @@
 # Investigation backend
 
-The local Fastify API uses PostgreSQL as the source of truth. Neo4j is a revision-fenced projection of persisted facts; it never authorizes an action. LangGraph coordinates each run with `PostgresSaver`, while the PostgreSQL claim transaction remains the execution gate. A claim left in flight after a crash is retained as unknown and is not automatically retried; application-level fencing does not guarantee exactly-once remote effects.
+The local Fastify API uses PostgreSQL as the source of truth. Neo4j is a revision-fenced projection of persisted facts; it never authorizes an action. LangGraph coordinates requested manual runs with `PostgresSaver`. Automatic progression is a backend-owned worker that calls the same core execution service; PostgreSQL snapshots and atomic claim transactions remain the execution authority, not graph checkpoints. A claim left in flight after a crash is retained as unknown and is not automatically retried; application-level fencing does not guarantee exactly-once remote effects.
 
 ## Full stack with Compose
 
@@ -38,7 +38,7 @@ APP/.venv/bin/python -m pip install -r APP/packages/adapter-holehe/python/requir
 export PYTHON="$PWD/APP/.venv/bin/python"
 ```
 
-Keep that `PYTHON` value in the backend process environment. The bridge is reached only for an explicitly authorized action; startup itself never calls Holehe. See the [adapter guide](../adapter-holehe/README.md).
+Keep that `PYTHON` value in the backend process environment. The bridge is reached only for an authorized, unpaused case with eligible queued work. Starting the backend resumes automatic cases from persisted queues and can therefore call Holehe without a browser or run-next click. Do not authorize real cases merely to verify startup. See the [adapter guide](../adapter-holehe/README.md).
 
 ## Start local services (Windows PowerShell)
 
@@ -92,7 +92,7 @@ Keep that `PYTHON` value in the backend process environment. The bridge is reach
 
    The process listens on `127.0.0.1:4317` by default. Without the explicit container opt-in, `HOST` accepts only loopback IPs; `PORT` defaults to `4317`. Press Ctrl+C for graceful shutdown. The backend reads process environment variables directly: `.env.example` is read by Compose, not automatically loaded by Node or the backend.
 
-Startup applies the PostgreSQL investigation migration and initializes `PostgresSaver` tables before opening Fastify. `SIGINT` and `SIGTERM` close Fastify, the Neo4j driver, and the shared PostgreSQL pool. Neo4j outages do not roll back committed PostgreSQL mutations; `/investigations/projections/reconcile` rebuilds projections from PostgreSQL.
+Startup applies the PostgreSQL investigation migration and initializes `PostgresSaver` tables before opening Fastify. `SIGINT` and `SIGTERM` stop new worker claims, wait for its in-flight execution to finish, then close Fastify, the Neo4j driver, and the shared PostgreSQL pool. Shutdown does not cancel a provider call already in flight. Neo4j outages do not roll back committed PostgreSQL mutations; `/investigations/projections/reconcile` rebuilds projections from PostgreSQL.
 
 After `pnpm --dir APP build`, the backend serves the built frontend at `/` and its assets from the module-relative `packages/frontend/dist` directory. Index HTML is not cached; static assets have MIME, entity-tag, and cache headers. The frontend build is optional: if absent, startup prints an API-only notice and the API continues to work. There is no SPA fallback, so unknown assets and unknown API paths or methods stay JSON 404 responses. The static root is only the frontend build; source and `node_modules` are not mounted. For Vite development at `127.0.0.1:5173` with its API proxy, see the [frontend guide](../frontend/README.md).
 
@@ -110,7 +110,11 @@ After `pnpm --dir APP build`, the backend serves the built frontend at `/` and i
 - `GET /investigations/:id/report` (factual Markdown from persisted state)
 - `POST /investigations/projections/reconcile`
 
-An action run is dispatched only after PostgreSQL confirms explicit investigation authorization, that action's approval, and an unpaused investigation. The Holehe adapter is not called at startup. API and integration workflow tests inject a fake executor; they never query live accounts. The API has no authentication system, so its loopback-only bind is the local security boundary.
+New investigations default to `advancementMode: "automatic"`; choose `"manual"` at creation to require case-level run-next. Intention is persisted once at creation, never reused as an action reason. Recording an email seed atomically adds its GitHub catalog action to the queue with `queuedByCatalog: true` and a system `action_queued` event, not a human approval. PostgreSQL checks case authorization, pause state, and catalog eligibility (or a genuine historical approval) inside the claim transaction. Automatic claims additionally recheck persisted automatic mode; missing legacy mode is manual.
+
+The worker enumerates persisted investigations immediately at startup and then waits one second after each completed sweep. Sweeps are single-flight and capped at 16 claim attempts, with a rotating case cursor. Errors end that case's sweep and are reported without immediate retries. Queued actions resume after restart; claimed actions remain fenced because their external outcome is uncertain. Terminal failures are retained, never automatically retried. Multiple workers and manual requests rely on the same atomic PostgreSQL claim gate to avoid claiming an action twice. Neo4j projection is downstream and cannot trigger a repeat execution.
+
+Historical snapshots, events, and proposal/approval endpoints remain available. An explicit historical proposal request replaces only an unclaimed, unapproved catalog queue entry with the historical proposed workflow; claimed/terminal entries cannot be rewritten. This compatibility path is not exposed by the current product UI. Existing historical proposals remain inert until a genuine approval through that old API; the worker never fabricates one. API and integration workflow tests inject a fake executor; they never query live accounts. The API has no authentication system, so its loopback-only bind is the local security boundary.
 
 ## Tests and honest verification status
 
@@ -128,7 +132,7 @@ pnpm --dir APP test
 pnpm --dir APP typecheck
 ```
 
-Tests run without a database service. The PostgreSQL integrations require `INVESTIA_TEST_DATABASE_URL` to point to a local dedicated database whose name ends in `_test`. Neo4j tests additionally require the test Neo4j variables below. These are separate from `DATABASE_URL`, which is only for backend startup.
+Offline tests run without a database service. Worker coverage is included through `workflow.test.ts` because the package script explicitly enumerates test entry points; it covers mode/gate filtering, bounded draining, restart enumeration, overlapping sweeps, shutdown waiting, and error handling. Store tests cover catalog queue decoding and automatic-mode checks at claim time. The SQL fake is not evidence of real database concurrency. The PostgreSQL integrations require `INVESTIA_TEST_DATABASE_URL` to point to a local dedicated database whose name ends in `_test`. Neo4j tests additionally require the test Neo4j variables below. These are separate from `DATABASE_URL`, which is only for backend startup.
 
 Set integration variables in the PowerShell session that runs tests:
 
@@ -143,7 +147,11 @@ pnpm --dir APP test
 
 `INVESTIA_TEST_NEO4J_DATABASE` is optional and defaults to `neo4j`. When required database-test variables are absent, the five database-gated tests skip; a skip is not evidence of database behavior.
 
-### Latest recorded independent acceptance
+### Automatic progression writer verification
+
+T2 writer checks passed: core **21**, backend **29**, frontend **59** tests; workspace typecheck and production build passed; **2 Chromium scenarios** passed against the built UI with a fake observer and real automatic worker. The backend's **5 database-gated tests skipped** because connection prerequisites were absent; these checks do not establish real PostgreSQL/Neo4j behavior. Independent T3 verification remains separate.
+
+### Historical independent MVP acceptance
 
 Latest recorded independent MVP checks: **110 TypeScript tests passed (0 failed, 0 skipped), 1 Chromium scenario passed, and all 4 workspace package typechecks passed.** The same acceptance record says all 5 database-gated checks ran and the named runtime reload was verified. This setup task separately ran **5 offline Python adapter tests** and an import-only check of the pinned Holehe GitHub module and `httpx`; no account function was invoked. Test connection values came from `.env.example`, and local PostgreSQL and Neo4j services were left running. Workflow tests use a fake executor and do not query live accounts.
 

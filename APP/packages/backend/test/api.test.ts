@@ -131,6 +131,26 @@ function makeHarness(executorFailure?: string) {
   };
 }
 
+test("HTTP creation accepts intention and mode without executing work", async (t) => {
+  const harness = makeHarness();
+  t.after(() => harness.app.close());
+  for (const advancementMode of [undefined, "manual"]) {
+    const response = await harness.app.inject({
+      method: "POST", url: "/investigations",
+      payload: { name: "Caso", intention: "  Verificar registro  ", ...(advancementMode ? { advancementMode } : {}) },
+    });
+    assert.equal(response.statusCode, 201);
+    const created = response.json<Investigation>();
+    assert.equal(created.intention, "Verificar registro");
+    assert.equal(created.advancementMode, advancementMode ?? "automatic");
+    assert.deepEqual((await harness.app.inject({ method: "GET", url: `/investigations/${created.id}` })).json(), created);
+  }
+  for (const payload of [{ intention: " " }, { intention: null }, { advancementMode: "other" }]) {
+    assert.equal((await harness.app.inject({ method: "POST", url: "/investigations", payload })).statusCode, 400);
+  }
+  assert.equal(harness.executions, 0);
+});
+
 test("HTTP workflow persists operator decisions and only runs the approved action on request", async (t) => {
   const harness = makeHarness();
   t.after(() => harness.app.close());

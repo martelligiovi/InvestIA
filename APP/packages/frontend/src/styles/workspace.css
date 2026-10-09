@@ -22,7 +22,7 @@
 .workspace-title-block { display: flex; flex: 1; align-items: center; gap: 18px; min-width: 0; }
 .workspace-title-block .eyebrow { display: none; }
 .workspace-title-block h1 { margin: 0; font-family: var(--font-display); font-size: clamp(26px, 2.5vw, 40px); line-height: 1.1; letter-spacing: -0.035em; overflow-wrap: anywhere; }
-.workspace-state-tag { padding: 6px 12px; background: rgb(184 29 36 / 8%); white-space: nowrap; font-size: 16px; }
+.workspace-state-tag { padding: 6px 12px; background: rgb(184 29 36 / 8%); max-width: 100%; overflow-wrap: anywhere; font-size: 16px; }
 .workspace-state-tag::before { content: "●"; margin-right: 8px; color: var(--color-heritage-red); }
 .workspace-header-actions { display: flex; align-items: center; gap: 10px; }
 .workspace-button { display: inline-flex; min-height: 40px; align-items: center; justify-content: center; padding: 8px 12px; border: 1px solid var(--color-carbon-black); border-radius: 0; background: transparent; color: var(--color-carbon-black); cursor: pointer; font: inherit; font-size: 16px; line-height: 1.2; text-align: center; text-decoration: none; overflow-wrap: anywhere; }
@@ -65,6 +65,9 @@
 .graph-node { cursor: pointer; outline: none; }
 .graph-node-card { fill: var(--color-linen-base); stroke: var(--color-halftone-gray); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .graph-node.is-selected .graph-node-card, .graph-node:focus-visible .graph-node-card { stroke: var(--color-heritage-red); stroke-width: 2; filter: drop-shadow(0 1px 4px rgb(184 29 36 / 18%)); }
+.graph-node--failure .graph-node-card { fill: var(--color-heritage-red); stroke: var(--color-heritage-red); }
+.graph-node--failure.is-selected .graph-node-card, .graph-node--failure:focus-visible .graph-node-card { stroke: var(--color-carbon-black); stroke-width: 3; }
+.graph-failure-x { fill: var(--color-linen-base); font-family: var(--font-utility); font-size: 40px; pointer-events: none; }
 .graph-node-kicker { fill: var(--color-carbon-black); font-family: var(--font-body); font-size: 14px; }
 .graph-node-title { fill: var(--color-carbon-black); font-family: var(--font-body); font-size: 17px; }
 .graph-state-badge { fill: rgb(217 208 193 / 50%); stroke: none; }

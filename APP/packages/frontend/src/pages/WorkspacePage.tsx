@@ -5,6 +5,7 @@ import { InvestigationGraph } from "../components/InvestigationGraph";
 import { WorkspaceDetails } from "../components/WorkspaceDetails";
 import { buildWorkspaceGraph, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
+import { workspaceHeadline } from "./workspace-status";
 
 export interface WorkspacePageProps {
   readonly id: string;
@@ -65,9 +66,10 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const selectedNode: WorkspaceNode | null = graph.nodes.find((node) => node.id === selectedId) ?? graph.nodes[0] ?? null;
   const selectedNodeId = selectedNode?.id ?? null;
   const authorizationGranted = investigation.authorization?.granted === true;
-  const queuedActions = investigation.actions.filter((action) => action.status === "queued" && action.approval !== undefined);
+  const automatic = investigation.advancementMode === "automatic";
+  const queuedActions = investigation.actions.filter((action) => action.status === "queued" && (action.queuedByCatalog === true || action.approval !== undefined));
   const claimedActions = investigation.actions.filter((action) => action.status === "claimed");
-  const dispatchEligible = !investigation.paused && authorizationGranted && queuedActions.length > 0 && !controller.stale && !controller.busy;
+  const dispatchEligible = !automatic && !investigation.paused && authorizationGranted && queuedActions.length > 0 && !controller.stale && !controller.busy;
   const controlsDisabled = controller.busy || controller.stale;
   const investigationPaused = investigation.paused;
   const reportIsFresh = controller.report !== null && controller.reportRevision === investigation.revision && !controller.stale;
@@ -112,14 +114,6 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     }
   }
 
-  async function propose(email: string, reason: string): Promise<boolean> {
-    return controller.mutate((api, investigationId) => api.proposeGitHubAction(investigationId, email, reason));
-  }
-
-  async function approve(actionId: string, reason: string): Promise<boolean> {
-    return controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason));
-  }
-
   async function validate(evidenceId: string, status: ValidationStatus, reason: string): Promise<boolean> {
     return controller.mutate((api, investigationId) => api.validateEvidence(investigationId, evidenceId, status, reason));
   }
@@ -140,7 +134,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
           <p className="eyebrow">INVESTIGACIÓN · {investigation.revision.toString().padStart(2, "0")}</p>
           <h1 id="workspace-title">{investigation.name ?? "Investigación"}</h1>
           <span className={`workspace-state-tag${investigation.paused ? " is-paused" : ""}`}>
-            {investigation.paused ? "Pausada" : "Activa"}
+            {controller.stale ? "Estado desactualizado" : workspaceHeadline(investigation)}
           </span>
         </div>
         <div className="workspace-header-actions">
@@ -168,6 +162,9 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
       </header>
 
 
+      {!authorizationGranted && queuedActions.length > 0 && (
+        <p className="workspace-claimed-warning" role="status">Esperando autorización: {queuedActions.length} acción{queuedActions.length === 1 ? "" : "es"} en cola bloqueada. No se ejecutan consultas hasta otorgar autorización explícita al expediente.</p>
+      )}
       {claimedActions.length > 0 && (
         <p className="workspace-claimed-warning" role="status">
           Efecto externo incierto: {claimedActions.map((action) => action.id).join(", ")} está reclamada. No la vuelvas a ejecutar; se consultará su estado sin reenviar la acción.
@@ -213,8 +210,6 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             investigation={investigation}
             node={selectedNode}
             disabled={controlsDisabled}
-            onPropose={propose}
-            onApprove={approve}
             onValidate={validate}
           />
           <details className="workspace-case-controls">
@@ -232,13 +227,19 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
               <button className="workspace-button" type="button" disabled={controlsDisabled || authorizationReason.trim() === "" || authorizationGranted} onClick={() => void updateAuthorization(true)}>Otorgar autorización</button>
               <button className="workspace-button" type="button" disabled={controlsDisabled || authorizationReason.trim() === "" || !authorizationGranted} onClick={() => void updateAuthorization(false)}>Revocar autorización</button>
             </div>
-            <p>{queuedActions.length} acción{queuedActions.length === 1 ? "" : "es"} aprobada{queuedActions.length === 1 ? "" : "s"} en cola.</p>
-            <button className="workspace-button" type="button" disabled={!dispatchEligible} onClick={() => void runNextAction()}>Ejecutar siguiente acción aprobada en cola</button>
-            <p className="dispatch-note">Cola del expediente, no del nodo seleccionado. Solo se ejecuta al presionar este control.</p>
+            <p>{queuedActions.length} acción{queuedActions.length === 1 ? "" : "es"} {authorizationGranted && !investigation.paused ? "en cola habilitada" : "en cola bloqueada"}.</p>
+            {automatic ? (
+              <p className="dispatch-note">Avance automático: el servidor procesa la cola cuando el expediente está autorizado y sin pausa.</p>
+            ) : (
+              <>
+                <button className="workspace-button" type="button" disabled={!dispatchEligible} onClick={() => void runNextAction()}>Ejecutar siguiente acción en cola</button>
+                <p className="dispatch-note">Avance manual: cola del expediente, no del nodo seleccionado. Solo se ejecuta al presionar este control, sin aprobación por nodo.</p>
+              </>
+            )}
             <ul className="dispatch-gates" aria-label="Condiciones para ejecutar">
               <li>Pausa: {investigation.paused ? "bloquea nuevas acciones" : "sin pausa"}</li>
               <li>Autorización: {authorizationGranted ? "otorgada" : "no otorgada"}</li>
-              <li>Aprobación: {queuedActions.length > 0 ? "acción aprobada disponible" : "sin acción aprobada"}</li>
+              <li>Catálogo: {queuedActions.length > 0 ? "acción disponible" : "sin acción en cola"}</li>
               <li>Vista: {controller.stale ? "desactualizada" : "snapshot leído"}</li>
             </ul>
           </details>

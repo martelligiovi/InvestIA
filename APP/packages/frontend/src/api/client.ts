@@ -42,10 +42,15 @@ function pathPart(value: string): string {
 export class InvestigationApiClient {
   constructor(private readonly fetcher: typeof fetch = fetch.bind(globalThis)) {}
 
-  async createInvestigation(name?: string): Promise<Investigation> {
+  async createInvestigation(
+    name?: string,
+    intention?: string,
+    advancementMode?: Investigation["advancementMode"],
+  ): Promise<Investigation> {
     return this.post<Investigation>(
       "/investigations",
-      name === undefined ? undefined : { name },
+      name === undefined && intention === undefined && advancementMode === undefined
+        ? undefined : { name, intention, advancementMode },
     );
   }
 

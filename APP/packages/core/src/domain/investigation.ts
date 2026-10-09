@@ -16,6 +16,20 @@ export function normalizeInvestigationName(value: unknown): string {
   }
   return name;
 }
+export type AdvancementMode = "automatic" | "manual";
+
+export function normalizeInvestigationIntention(value: unknown): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Investigation intention must be a non-empty string");
+  }
+  return value.trim();
+}
+
+export function normalizeAdvancementMode(value: unknown): AdvancementMode {
+  if (value !== "automatic" && value !== "manual") throw new Error("Unsupported advancement mode");
+  return value;
+}
+
 export type EvidenceId = string;
 export type ValidationStatus = "accepted" | "rejected" | "inconclusive";
 export type InvestigationActionStatus = "proposed" | "queued" | "claimed" | "succeeded" | "failed";
@@ -23,6 +37,7 @@ export type AuditActor = "operator" | "system";
 export type AuditKind =
   | "email_seed_added"
   | "action_proposed"
+  | "action_queued"
   | "authorization_changed"
   | "action_approved"
   | "paused"
@@ -57,6 +72,8 @@ export interface GitHubCatalogAction {
   readonly status: InvestigationActionStatus;
   readonly proposedAt: string;
   readonly proposalReason: string;
+  /** System catalog eligibility, not a human approval. Absent on historical actions. */
+  readonly queuedByCatalog?: true;
   readonly approval?: ActionApproval;
   readonly claim?: { readonly id: string; readonly claimedAt: string };
   readonly completedAt?: string;
@@ -100,6 +117,10 @@ export interface Investigation {
   readonly id: InvestigationId;
   /** Optional only for schema-v1 snapshots created before names were persisted. */
   readonly name?: string;
+  /** Missing on legacy snapshots; empty when no historical intention was supplied. */
+  readonly intention?: string;
+  /** Missing on legacy snapshots means manual, never automatic. */
+  readonly advancementMode?: AdvancementMode;
   readonly revision: number;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -123,11 +144,19 @@ export interface InvestigationSummary {
   readonly actionCount: number;
 }
 
-export function createInitialInvestigation(id: InvestigationId, at: string, name?: string): Investigation {
+export function createInitialInvestigation(
+  id: InvestigationId,
+  at: string,
+  name?: string,
+  intention?: string,
+  advancementMode: AdvancementMode = "automatic",
+): Investigation {
   if (id.trim().length === 0) throw new Error("Investigation id must not be empty");
   return {
     id,
     name: name === undefined ? DEFAULT_INVESTIGATION_NAME : normalizeInvestigationName(name),
+    intention: intention === undefined ? "" : normalizeInvestigationIntention(intention),
+    advancementMode: normalizeAdvancementMode(advancementMode),
     revision: 0,
     createdAt: at,
     updatedAt: at,

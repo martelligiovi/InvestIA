@@ -255,14 +255,16 @@ export function useWorkspaceController(id: string): WorkspaceController {
 
   useEffect(() => {
     if (investigationId !== id || investigation === null || stale || phase !== "ready" ||
-      !investigation.actions.some((action) => action.status === "claimed")) return;
+      !investigation.actions.some((action) => action.status === "claimed" ||
+        (action.status === "queued" && investigation.advancementMode === "automatic" &&
+          investigation.authorization?.granted === true && !investigation.paused))) return;
     const activeGeneration = generation.current;
     const timer = window.setInterval(() => {
       if (!takeLock(activeGeneration)) return;
       void readLatest(activeGeneration).catch((error: unknown) => {
         if (isCurrent(id, activeGeneration)) {
           setStale(true);
-          setOperationError(`No se pudo actualizar la acción reclamada: ${messageFor(error)}`);
+          setOperationError(`No se pudo actualizar el avance del expediente: ${messageFor(error)}`);
         }
       }).finally(() => releaseLock(activeGeneration));
     }, 5_000);

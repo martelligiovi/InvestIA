@@ -13,6 +13,8 @@ interface TestState {
   readonly executionCount: number;
   readonly executionCalls: readonly { readonly actionId: string; readonly email: string }[];
   readonly requestCounts: Readonly<Record<string, number>>;
+  readonly enumerationCount: number;
+  readonly workerErrors: readonly string[];
 }
 
 async function readState(request: APIRequestContext, id: string): Promise<TestState> {
@@ -158,6 +160,83 @@ async function openNodeList(page: Page): Promise<void> {
   }
 }
 
+for (const outcome of ["information", "failure", "blocked", "empty"] as const) {
+  test(`mocked creation consent and connected result: ${outcome}`, async ({ page }) => {
+    const at = "2025-03-16T12:00:00.000Z";
+    let current: Investigation = { id: "mock-result", name: "Resultado simulado", intention: "Comprobar exposición",
+      advancementMode: "automatic", revision: 0, createdAt: at, updatedAt: at, paused: false,
+      emailSeeds: [], actions: [], evidence: [], validations: [], audit: [] };
+    const writes: string[] = [];
+    await page.route("**/*", async (route) => {
+      const req = route.request();
+      const url = new URL(req.url());
+      if (url.origin !== BASE_URL) return route.abort("blockedbyclient");
+      if (!url.pathname.startsWith("/investigations")) return route.continue();
+      if (req.method() === "POST") {
+        writes.push(url.pathname);
+        if (url.pathname.endsWith("/authorization")) {
+          expect(req.postDataJSON()).toMatchObject({ granted: true, reason: expect.stringContaining("semillas actuales y futuras") });
+          current = { ...current, authorization: { granted: true, at, reason: req.postDataJSON().reason, operator: "local-operator" } };
+        } else if (url.pathname.endsWith("/emails")) {
+          expect(current.authorization?.granted === true).toBe(outcome !== "blocked");
+          const seed = { kind: "email" as const, value: req.postDataJSON().email };
+          const status = outcome === "blocked" ? "queued" : outcome === "failure" ? "failed" : "succeeded";
+          current = { ...current, revision: 3, emailSeeds: [seed], actions: [{ id: "mock-action", status, queuedByCatalog: true,
+            spec: { catalogId: "github.email-registration.v1", provider: "github", seed }, proposedAt: at, proposalReason: "Catálogo",
+            ...(outcome === "failure" ? { failure: `Error simulado: ${"detalle".repeat(80)}` } : {}),
+            ...(outcome === "blocked" ? {} : { completedAt: at }) }],
+            evidence: outcome === "information" ? [{ id: "mock-evidence", actionId: "mock-action", seed, provider: "github",
+              status: "registered", sourceId: "mock-observer", recordedAt: at }] : [] };
+        } else expect(url.pathname).toBe("/investigations");
+      }
+      return route.fulfill({ json: current });
+    });
+    await page.setViewportSize(DESKTOP);
+    await page.goto("/#/nueva");
+    await page.getByLabel("Nombre de la investigación").fill(current.name!);
+    await page.getByLabel("Intención de la investigación").fill(current.intention!);
+    await page.getByLabel("Correo electrónico 1").fill("mock@example.test");
+    const consent = page.getByRole("checkbox", { name: "Autorizar consultas del catálogo" });
+    await expect(consent).not.toBeChecked();
+    if (outcome !== "blocked") await consent.check();
+    await page.getByRole("button", { name: "Crear investigación" }).click();
+    await expect(page.getByRole("heading", { name: current.name! })).toBeVisible();
+    expect(writes).toEqual(["/investigations", ...(outcome === "blocked" ? [] : ["/investigations/mock-result/authorization"]), "/investigations/mock-result/emails"]);
+    const graph = page.locator("svg.investigation-graph");
+    if (outcome === "blocked") {
+      await expect(page.locator(".workspace-state-tag")).toHaveText("Esperando autorización");
+      await expect(graph.locator(".graph-node--action")).toContainText("Esperando autorización");
+      await expect(graph.locator(".graph-node--result, .graph-node--evidence")).toHaveCount(0);
+      return;
+    }
+    const result = graph.locator(outcome === "information" ? ".graph-node--evidence" : ".graph-node--result");
+    await expect(result).toHaveCount(1);
+    await expect(graph.locator(`[data-edge="action-${outcome === "information" ? "evidence:mock-evidence" : "result:mock-action"}"]`)).toHaveCount(1);
+    await result.focus();
+    await page.keyboard.press("Enter");
+    const detail = page.locator(".workspace-detail-panel");
+    if (outcome === "failure") {
+      await expect(result.locator("circle")).toHaveCount(1);
+      await expect(result).toContainText("X");
+      expect(await result.locator("circle").evaluate((element) => getComputedStyle(element).fill)).toBe("rgb(184, 29, 36)");
+      await expect(detail).toContainText("Error simulado:");
+    } else if (outcome === "empty") {
+      await expect(result.locator("rect.graph-node-card")).toHaveCount(1);
+      await expect(detail).toContainText("no produjo observaciones admitidas");
+      await expect(detail.getByLabel("Motivo de validación")).toHaveCount(0);
+    } else {
+      await expect(result.locator("rect.graph-node-card")).toHaveCount(1);
+      await expect(detail).toContainText("github");
+      await expect(detail).toContainText("Registrado");
+      await expect(detail.getByLabel("Motivo de validación")).toBeVisible();
+    }
+    await page.setViewportSize(MOBILE);
+    await page.getByRole("tab", { name: "Detalle" }).click();
+    await expectNoHorizontalOverflow(page, `mocked ${outcome} result`);
+    await expectNoClippedLabelsOrControls(page, `mocked ${outcome} result`);
+  });
+}
+
 function parseTransform(value: string | null): { readonly x: number; readonly y: number; readonly scale: number } {
   expect(value).not.toBeNull();
   const match = value!.match(/^translate\(([-+\d.e]+) ([-+\d.e]+)\) scale\(([-+\d.e]+)\)$/u);
@@ -165,7 +244,7 @@ function parseTransform(value: string | null): { readonly x: number; readonly y:
   return { x: Number(match![1]), y: Number(match![2]), scale: Number(match![3]) };
 }
 
-test("real same-origin browser workflow, responsive acceptance, and explicit execution gates", async ({ page, request }) => {
+test("real same-origin manual workflow, responsive acceptance, and independent case gates", async ({ page, request }) => {
   test.setTimeout(90_000);
   const suffix = randomUUID().slice(0, 10);
   const investigationName = `Cuaderno T6 ${suffix}`;
@@ -276,6 +355,8 @@ test("real same-origin browser workflow, responsive acceptance, and explicit exe
   await expect(page.getByRole("combobox")).toHaveCount(0);
   await expect(page.locator(".site-header")).toBeVisible();
   await page.getByLabel("Nombre de la investigación").fill(investigationName);
+  await page.getByLabel("Intención de la investigación").fill("Comprobar exposición pública sin atribuir identidad.");
+  await page.getByLabel("Elegir avance manual").check();
   await page.getByLabel("Correo electrónico 1").fill(firstEmail);
   await page.getByRole("button", { name: /Agregar correo/ }).click();
   await page.getByLabel("Correo electrónico 2").fill(secondEmail);
@@ -345,8 +426,11 @@ test("real same-origin browser workflow, responsive acceptance, and explicit exe
   expect(state.investigation.name).toBe(investigationName);
   expect(state.investigation.emailSeeds.map((seed) => seed.value)).toEqual([firstEmail, secondEmail]);
   expect(state.investigation.authorization).toBeUndefined();
-  expect(state.investigation.actions).toEqual([]);
-  expect(state.investigation.audit.map((event) => event.kind)).toEqual(["email_seed_added", "email_seed_added"]);
+  expect(state.investigation.intention).toBe("Comprobar exposición pública sin atribuir identidad.");
+  expect(state.investigation.advancementMode).toBe("manual");
+  expect(state.investigation.actions).toHaveLength(2);
+  expect(state.investigation.actions.every((action) => action.status === "queued" && action.queuedByCatalog === true && action.approval === undefined)).toBe(true);
+  expect(state.investigation.audit.map((event) => event.kind)).toEqual(["email_seed_added", "action_queued", "email_seed_added", "action_queued"]);
   expect(state.executionCount).toBe(0);
   expect(count(state, "POST /investigations")).toBe(1);
   expect(count(state, "POST /investigations/:id/emails")).toBe(2);
@@ -355,37 +439,17 @@ test("real same-origin browser workflow, responsive acceptance, and explicit exe
   expect(count(state, "POST /investigations/:id/actions/:actionId/approval")).toBe(0);
   expect(count(state, "POST /investigations/:id/actions/run")).toBe(0);
 
-  const proposeButton = page.getByRole("button", { name: "Proponer comprobación de registro en GitHub" });
-  await page.getByLabel("Motivo para proponer").fill("Registrar una propuesta manual sin ejecución implícita.");
-  await proposeButton.click();
-  await expect.poll(async () => (await readState(request, id!)).investigation.actions.length).toBe(1);
-  state = await readState(request, id!);
   const action = state.investigation.actions[0]!;
-  expect(action.status).toBe("proposed");
-  expect(state.investigation.authorization).toBeUndefined();
-  expect(state.executionCount).toBe(0);
-  expect(count(state, "POST /investigations/:id/actions/proposals")).toBe(1);
-  expect(count(state, "POST /investigations/:id/authorization")).toBe(0);
-  expect(count(state, "POST /investigations/:id/actions/:actionId/approval")).toBe(0);
-  expect(count(state, "POST /investigations/:id/actions/run")).toBe(0);
+  await expect(page.getByRole("button", { name: /Proponer comprobación|Aprobar acción/ })).toHaveCount(0);
+  await expect(page.getByLabel("Motivo para proponer")).toHaveCount(0);
   await caseControls.locator("summary").click();
-  const dispatch = page.getByRole("button", { name: "Ejecutar siguiente acción aprobada en cola" });
+  const dispatch = page.getByRole("button", { name: "Ejecutar siguiente acción en cola" });
   await expect(dispatch).toBeDisabled();
-
   await openNodeList(page);
   await page.locator(".graph-node-list").getByRole("button", { name: new RegExp(`^Acción: ${action.id}\\.`) }).click();
-  await page.getByLabel("Motivo de aprobación").fill("Aprobar esta propuesta en una decisión separada.");
-  await page.getByRole("button", { name: "Aprobar acción" }).click();
-  await expect.poll(async () => (await readState(request, id!)).investigation.actions[0]?.status).toBe("queued");
-  state = await readState(request, id!);
-  expect(state.investigation.authorization).toBeUndefined();
-  expect(state.executionCount).toBe(0);
-  expect(count(state, "POST /investigations/:id/actions/:actionId/approval")).toBe(1);
-  expect(count(state, "POST /investigations/:id/authorization")).toBe(0);
-  expect(count(state, "POST /investigations/:id/actions/run")).toBe(0);
-  await expect(dispatch).toBeDisabled();
-
-  await page.getByLabel("Motivo de autorización").fill("Autorizar por separado después de revisar la propuesta.");
+  await expect(page.getByLabel("Motivo de aprobación")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Aprobar acción" })).toHaveCount(0);
+  await page.getByLabel("Motivo de autorización").fill("Autorizar el alcance del expediente, sin aprobación por nodo.");
   await page.getByRole("button", { name: "Otorgar autorización" }).click();
   await expect.poll(async () => (await readState(request, id!)).investigation.authorization?.granted).toBe(true);
   state = await readState(request, id!);
@@ -393,6 +457,8 @@ test("real same-origin browser workflow, responsive acceptance, and explicit exe
   expect(state.executionCount).toBe(0);
   expect(count(state, "POST /investigations/:id/authorization")).toBe(1);
   expect(count(state, "POST /investigations/:id/actions/run")).toBe(0);
+  await expect.poll(async () => (await readState(request, id!)).enumerationCount).toBeGreaterThan(state.enumerationCount + 1);
+  expect((await readState(request, id!)).executionCount, "automatic worker leaves authorized manual cases untouched").toBe(0);
   await expect(dispatch).toBeEnabled();
 
   await page.locator(".workspace-pause-disclosure summary").click();
@@ -432,15 +498,26 @@ test("real same-origin browser workflow, responsive acceptance, and explicit exe
   expect(count(state, "POST /investigations/:id/actions/run")).toBe(2);
   expect(state.investigation.audit.map((event) => event.kind)).toEqual([
     "email_seed_added",
+    "action_queued",
     "email_seed_added",
-    "action_proposed",
-    "action_approved",
+    "action_queued",
     "authorization_changed",
     "paused",
     "resumed",
     "action_claimed",
     "action_succeeded",
   ]);
+
+  // Keep the remaining manual action queued and independently revoke case authorization.
+  await page.getByLabel("Motivo de autorización").fill("Retirar autorización antes de la siguiente acción.");
+  await page.getByRole("button", { name: "Revocar autorización" }).click();
+  await expect.poll(async () => (await readState(request, id!)).investigation.authorization?.granted).toBe(false);
+  await expect(dispatch).toBeDisabled();
+  state = await readState(request, id!);
+  expect(state.investigation.actions[1]?.status).toBe("queued");
+  expect(state.executionCount).toBe(1);
+  expect(count(state, "POST /investigations/:id/actions/:actionId/approval")).toBe(0);
+  expect(count(state, "POST /investigations/:id/actions/proposals")).toBe(0);
 
   const graph = page.locator("svg.investigation-graph");
   await expect(graph).toBeVisible();
@@ -462,8 +539,8 @@ test("real same-origin browser workflow, responsive acceptance, and explicit exe
   await evidenceTechnicalValue.locator("summary").click();
   await expect(evidenceTechnicalValue.locator("code")).toHaveText(evidence.id);
   await evidenceTechnicalValue.locator("summary").click();
-  expect(await graph.locator("[data-edge]").count()).toBe(2);
-  expect(await graph.locator(".graph-node").count()).toBe(4);
+  expect(await graph.locator("[data-edge]").count()).toBe(3);
+  expect(await graph.locator(".graph-node").count()).toBe(5);
 
   const graphBox = await graph.boundingBox();
   expect(graphBox).not.toBeNull();
@@ -762,4 +839,70 @@ test("real same-origin browser workflow, responsive acceptance, and explicit exe
   expect(browserResourceErrors, "unexpected static-resource errors").toEqual([]);
   expect(browserPageErrors, "uncaught browser page errors").toEqual([]);
   console.info(`T6 browser screenshots: ${screenshotPaths.join(", ")}`);
+});
+
+test("automatic default drains on the backend without node approval or browser execution requests", async ({ page, request }) => {
+  const suffix = randomUUID().slice(0, 10);
+  const intention = `Comprobar exposición pública ${suffix}`;
+  const browserDispatches: string[] = [];
+  page.on("request", (req) => {
+    if (/\/actions\/(run|proposals)|\/approval$/.test(new URL(req.url()).pathname)) browserDispatches.push(req.url());
+  });
+  await page.goto("/");
+  await page.getByRole("link", { name: /Nueva investigación/ }).last().click();
+  await page.getByLabel("Nombre de la investigación").fill(`Automático ${suffix}`);
+  await page.getByLabel("Intención de la investigación").fill(intention);
+  await expect(page.getByLabel("Elegir avance manual")).not.toBeChecked();
+  await page.getByLabel("Correo electrónico 1").fill(`automatic-${suffix}@example.test`);
+  await page.getByRole("button", { name: /Agregar correo/ }).click();
+  await page.getByLabel("Correo electrónico 2").fill(`automatic-second-${suffix}@example.test`);
+  await page.getByRole("button", { name: "Crear investigación" }).click();
+  await expect(page.getByRole("heading", { name: `Automático ${suffix}` })).toBeVisible();
+  const controls = page.locator(".workspace-case-controls");
+  await controls.locator("summary").click();
+  const id = (await page.getByLabel(/^Referencia completa:/).textContent())!.trim();
+  const initial = await readState(request, id);
+  const before = initial.executionCount;
+  expect(initial.investigation.advancementMode).toBe("automatic");
+  expect(initial.investigation.intention).toBe(intention);
+  expect(initial.investigation.actions).toHaveLength(2);
+  expect(initial.investigation.actions.every((action) => action.status === "queued" && action.approval === undefined)).toBe(true);
+  await expect(page.getByRole("button", { name: /Ejecutar siguiente/ })).toHaveCount(0);
+  await expect(page.getByText(/Avance automático:/)).toBeVisible();
+  await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(initial.enumerationCount + 1);
+  expect((await readState(request, id)).executionCount, "no authorization means no background execution").toBe(before);
+
+  await page.locator(".workspace-pause-disclosure summary").click();
+  await page.getByLabel("Motivo para pausar el expediente").fill("Revisar alcance antes de ejecutar.");
+  await page.getByRole("button", { name: "Pausar expediente" }).click();
+  await page.getByLabel("Motivo de autorización").fill("Autorizar el caso mientras permanece pausado.");
+  await page.getByRole("button", { name: "Otorgar autorización" }).click();
+  let paused = await readState(request, id);
+  await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(paused.enumerationCount + 1);
+  expect((await readState(request, id)).executionCount, "pause blocks an authorized automatic queue").toBe(before);
+  await page.getByLabel("Motivo de autorización").fill("Retirar autorización durante la revisión.");
+  await page.getByRole("button", { name: "Revocar autorización" }).click();
+  await page.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin volver a otorgar autorización.");
+  await page.getByRole("button", { name: "Reanudar expediente" }).click();
+  paused = await readState(request, id);
+  await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(paused.enumerationCount + 1);
+  expect((await readState(request, id)).executionCount, "revocation blocks the resumed queue").toBe(before);
+
+  await page.getByLabel("Motivo de autorización").fill("Autorizar el alcance revisado del expediente.");
+  await page.getByRole("button", { name: "Otorgar autorización" }).click();
+  await expect.poll(async () => (await readState(request, id)).investigation.actions.map((action) => action.status)).toEqual(["succeeded", "succeeded"]);
+  const completed = await readState(request, id);
+  expect(completed.executionCount).toBe(before + 2);
+  expect(completed.investigation.evidence).toHaveLength(2);
+  expect(completed.investigation.actions.every((action) => action.approval === undefined && !action.proposalReason.includes(intention))).toBe(true);
+  expect(completed.investigation.audit.some((event) => event.kind === "action_approved" || event.kind === "action_proposed")).toBe(false);
+  expect(completed.investigation.audit.filter((event) => event.kind === "action_claimed")).toHaveLength(2);
+  expect(completed.investigation.audit.filter((event) => event.kind === "action_succeeded")).toHaveLength(2);
+  expect(new Set(completed.executionCalls.map((call) => call.actionId)).size).toBe(completed.executionCalls.length);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: `Automático ${suffix}` })).toBeVisible();
+  await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(completed.enumerationCount + 1);
+  expect((await readState(request, id)).executionCount, "reload and later sweeps never repeat terminal actions").toBe(before + 2);
+  expect(browserDispatches).toEqual([]);
+  expect(completed.workerErrors).toEqual([]);
 });

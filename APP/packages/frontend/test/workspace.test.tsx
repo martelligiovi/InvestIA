@@ -104,6 +104,21 @@ async function openCaseControls(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("espacio de investigación factual", () => {
+  it("muestra avance automático sin controles de propuesta, aprobación ni despacho", async () => {
+    const queued = { ...action("queued"), approval: undefined, queuedByCatalog: true as const };
+    const { calls } = installFetch(async () => json(snapshot({ advancementMode: "automatic", actions: [queued] })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    await screen.findByRole("heading", { name: "Caso de prueba" });
+    expect(document.querySelector(".workspace-state-tag")).toHaveTextContent("Esperando autorización");
+    expect(screen.getByRole("status")).toHaveTextContent(/cola bloqueada/i);
+    await openCaseControls(user);
+    expect(screen.getByText(/avance automático/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /ejecutar siguiente/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/motivo para proponer/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /proponer comprobación/i })).not.toBeInTheDocument();
+    expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
+  });
   it("prioriza grafo y detalle sin barras operativas, con controles secundarios cerrados", async () => {
     const { calls } = installFetch(async () => json(snapshot()));
     const user = userEvent.setup();
@@ -111,12 +126,12 @@ describe("espacio de investigación factual", () => {
     await screen.findByRole("heading", { name: "Caso de prueba" });
     expect(document.querySelector(".workspace-meta-bar, .workspace-commandbar, .workspace-command-bar")).toBeNull();
     const detail = screen.getByRole("tabpanel", { name: "Detalle" });
-    expect(within(detail).getByRole("button", { name: /proponer comprobación/i })).toBeInTheDocument();
+    expect(within(detail).queryByRole("button", { name: /proponer comprobación/i })).not.toBeInTheDocument();
     const controls = within(detail).getByText("Controles del expediente").closest("details")!;
     expect(controls).not.toHaveAttribute("open");
     expect(within(controls).getByRole("button", { name: /ejecutar siguiente/i })).not.toBeVisible();
     await openCaseControls(user);
-    expect(within(controls).getByRole("button", { name: /ejecutar siguiente acción aprobada en cola/i })).toBeDisabled();
+    expect(within(controls).getByRole("button", { name: /ejecutar siguiente acción en cola/i })).toBeDisabled();
     expect(within(controls).getByRole("button", { name: /actualizar expediente/i })).toBeEnabled();
     expect(calls).toHaveLength(1);
   });
@@ -153,7 +168,9 @@ describe("espacio de investigación factual", () => {
     render(<WorkspacePage id="case-1" />);
 
     const graph = await screen.findByRole("group", { name: /grafo factual/i });
-    expect(graph.querySelectorAll("[data-edge]")).toHaveLength(3);
+    expect(graph.querySelectorAll("[data-edge]")).toHaveLength(4);
+    expect(graph.querySelector('[data-edge="action-result:action-2"]')).not.toBeNull();
+    expect(graph.querySelector('[data-edge="action-evidence:evidence-2"]')).toBeNull();
     expect(screen.getAllByRole("button", { name: /Semilla: ana@example\.test/i }).length).toBeGreaterThan(0);
     const nodeList = screen.getByText(/Lista accesible de nodos/i).closest("details")!;
     await user.click(nodeList.querySelector("summary")!);
@@ -201,8 +218,12 @@ describe("espacio de investigación factual", () => {
     await user.click(within(nodeList).getByRole("button", { name: /Acción: action-1/i }));
     expect(screen.getAllByText("Fallida").length).toBeGreaterThan(0);
     expect(screen.getByText("Execution failed.")).toBeInTheDocument();
+    await user.click(within(nodeList).getByRole("button", { name: /^Resultado:/i }));
+    expect(screen.getByRole("heading", { name: "Error de ejecución" })).toBeInTheDocument();
+    expect(screen.getByText("Execution failed.")).toBeInTheDocument();
+    expect(screen.queryByLabelText(/motivo de validación/i)).not.toBeInTheDocument();
     await openCaseControls(user);
-    expect(screen.getByRole("button", { name: /ejecutar siguiente acción aprobada/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i })).toBeDisabled();
     expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
   });
 
@@ -224,7 +245,7 @@ describe("espacio de investigación factual", () => {
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
     await openCaseControls(user);
-    const run = await screen.findByRole("button", { name: /ejecutar siguiente acción aprobada/i });
+    const run = await screen.findByRole("button", { name: /ejecutar siguiente acción en cola/i });
     expect(run).toBeDisabled();
     expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
 
@@ -240,38 +261,34 @@ describe("espacio de investigación factual", () => {
     expect(calls.filter((call) => pathOf(call) === "/investigations/case-1")).toHaveLength(3);
   });
 
-  it("propone el catálogo GitHub con motivo y refetch, pero no aprueba ni despacha automáticamente", async () => {
-    let current = snapshot();
+  it.each(["manual", undefined] as const)("avance %s permite run-next del caso sin aprobación por nodo", async (mode) => {
+    const queued = { ...action("queued"), approval: undefined, queuedByCatalog: true as const };
+    let current = snapshot({ advancementMode: mode, authorization: { granted: true, at: createdAt, reason: "Permiso del caso", operator: "local-operator" }, actions: [queued] });
     const { calls } = installFetch(async (call) => {
-      const path = pathOf(call);
-      if (path === "/investigations/case-1") return json(current);
-      if (path.endsWith("/actions/proposals")) {
-        current = { ...current, revision: current.revision + 1, actions: [action()] };
-        return json(action(), 201);
+      if (pathOf(call) === "/investigations/case-1") return json(current);
+      if (pathOf(call).endsWith("/actions/run")) {
+        current = { ...current, revision: current.revision + 1, actions: [{ ...queued, status: "succeeded" }] };
+        return json({ action: current.actions[0] });
       }
-      throw new Error(`Ruta inesperada: ${path}`);
+      throw new Error(`Ruta inesperada: ${pathOf(call)}`);
     });
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
-
-    await user.type(await screen.findByLabelText(/motivo para proponer/i), "Verificar registro público");
-    await user.click(screen.getByRole("button", { name: /proponer comprobación de registro en github/i }));
-    await waitFor(() => expect(calls.filter((call) => pathOf(call) === "/investigations/case-1")).toHaveLength(2));
-    const proposal = calls.find((call) => pathOf(call).endsWith("/actions/proposals"));
-    expect(bodyOf(proposal!)).toEqual({ email, reason: "Verificar registro público" });
-    expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
-    expect(screen.getByText("Propuesta")).toBeInTheDocument();
+    await openCaseControls(user);
+    const run = screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i });
+    expect(run).toBeEnabled();
+    expect(calls.some((call) => call.init?.method === "POST")).toBe(false);
+    await user.click(run);
+    await waitFor(() => expect(run).toBeDisabled());
+    expect(calls.filter((call) => pathOf(call).endsWith("/actions/run"))).toHaveLength(1);
+    expect(calls.some((call) => /approval|proposals/.test(pathOf(call)))).toBe(false);
   });
 
-  it("aprueba solo una propuesta, otorga/revoca autorización aparte y refresca cada cambio", async () => {
+  it("conserva propuestas históricas sin controles de aprobación y otorga/revoca autorización aparte", async () => {
     let current = snapshot({ actions: [action()] });
     const { calls } = installFetch(async (call) => {
       const path = pathOf(call);
       if (path === "/investigations/case-1") return json(current);
-      if (path.endsWith("/approval")) {
-        current = { ...current, revision: current.revision + 1, actions: [action("queued")] };
-        return json(action("queued"));
-      }
       if (path.endsWith("/authorization")) {
         const granted = (bodyOf(call) as { granted: boolean }).granted;
         current = { ...current, revision: current.revision + 1, authorization: { granted, at: createdAt, reason: "Permiso de prueba", operator: "local-operator" } };
@@ -284,9 +301,9 @@ describe("espacio de investigación factual", () => {
     const nodeList = await screen.findByText(/Lista accesible de nodos/i).then((summary) => summary.closest("details")!);
     await user.click(nodeList.querySelector("summary")!);
     await user.click(within(nodeList).getByRole("button", { name: /Acción: action-1/i }));
-    await user.type(screen.getByLabelText(/motivo de aprobación/i), "Revisé el alcance");
-    await user.click(screen.getByRole("button", { name: /aprobar acción/i }));
-    await waitFor(() => expect(screen.getAllByText("En cola").length).toBeGreaterThan(0));
+    expect(screen.queryByLabelText(/motivo de aprobación/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /aprobar acción/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/Propuesta histórica conservada/i)).toBeInTheDocument();
     expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
 
     await openCaseControls(user);
@@ -357,14 +374,14 @@ describe("espacio de investigación factual", () => {
     window.history.replaceState(null, "", "/#/investigaciones/case-a");
     render(<App />);
 
-    await user.type(await screen.findByLabelText(/motivo para proponer/i), "Motivo del expediente A");
+    await screen.findByRole("heading", { name: "Expediente A" });
     await user.click(screen.getByRole("button", { name: /obtener informe/i }));
     await waitFor(() => expect(calls.some((call) => pathOf(call) === "/investigations/case-a/report")).toBe(true));
 
     window.history.replaceState(null, "", "/#/investigaciones/case-b");
     fireEvent(window, new HashChangeEvent("hashchange"));
     expect(await screen.findByRole("heading", { name: "Expediente B" })).toBeInTheDocument();
-    expect(screen.getByLabelText(/motivo para proponer/i)).toHaveValue("");
+    expect(screen.queryByLabelText(/motivo para proponer/i)).not.toBeInTheDocument();
 
     delayedReport.resolve(reportResponse("# Informe del expediente A"));
     await waitFor(() => expect(screen.queryByLabelText(/vista previa del informe/i)).not.toBeInTheDocument());
@@ -425,7 +442,7 @@ describe("espacio de investigación factual", () => {
     expect(screen.queryByRole("link", { name: /descargar markdown/i })).not.toBeInTheDocument();
   });
 
-  it("reinicia motivos al cambiar entre observaciones y entre acciones", async () => {
+  it("reinicia motivos de validación entre observaciones y no solicita motivos entre acciones", async () => {
     const current = snapshot({
       emailSeeds: [seed, { kind: "email", value: "otra@example.test" }],
       actions: [action(), { ...action(), id: "action-2" }],
@@ -443,9 +460,9 @@ describe("espacio de investigación factual", () => {
     expect(screen.getByLabelText(/motivo de validación/i)).toHaveValue("");
 
     await user.click(within(list).getByRole("button", { name: /Acción: action-1/i }));
-    await user.type(screen.getByLabelText(/motivo de aprobación/i), "Motivo de acción A");
+    expect(screen.queryByLabelText(/motivo de aprobación/i)).not.toBeInTheDocument();
     await user.click(within(list).getByRole("button", { name: /Acción: action-2/i }));
-    expect(screen.getByLabelText(/motivo de aprobación/i)).toHaveValue("");
+    expect(screen.queryByLabelText(/motivo de aprobación/i)).not.toBeInTheDocument();
   });
 
   it("implementa navegación de pestañas accesible con flechas, inicio y fin", async () => {
@@ -501,7 +518,7 @@ describe("espacio de investigación factual", () => {
     expect(alert).toHaveTextContent(/lectura no disponible/i);
     expect(alert).toHaveTextContent(/estado.*desconocido|no se pudo.*refrescar/i);
     expect(alert).not.toHaveTextContent(/se volvió a consultar/i);
-    expect(screen.getByRole("button", { name: /ejecutar siguiente acción aprobada/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /otorgar autorización/i })).toBeDisabled();
     expect(calls.filter((call) => pathOf(call) === "/investigations/case-1")).toHaveLength(2);
   });
@@ -526,6 +543,6 @@ describe("espacio de investigación factual", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/respuesta perdida/i);
     await waitFor(() => expect(loads).toBe(2));
     expect(calls.filter((call) => pathOf(call) === "/investigations/case-1")).toHaveLength(2);
-    expect(screen.getByRole("button", { name: /ejecutar siguiente acción aprobada/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i })).toBeDisabled();
   });
 });

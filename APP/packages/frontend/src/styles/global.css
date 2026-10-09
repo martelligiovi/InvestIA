@@ -735,6 +735,56 @@ input:focus-visible {
   background: rgb(244 239 230 / 55%);
 }
 
+/* Keep creation metadata compact without compressing mobile controls or email rows. */
+.create-advancement-field {
+  margin-top: 16px;
+}
+
+.create-advancement-field label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.create-advancement-field input[type="checkbox"] {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+}
+
+@media (min-width: 1100px) {
+  .creation-page .create-form {
+    margin-top: 12px;
+  }
+
+  .create-form .create-submit {
+    margin-top: 12px;
+  }
+
+  .creation-page .create-fields {
+    padding-block: 16px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+    column-gap: 24px;
+  }
+
+  .create-fields > .create-advancement-field span {
+    font-size: 15px;
+    line-height: 1.25;
+  }
+
+  .creation-page .email-fields {
+    margin-top: 16px;
+    padding-top: 14px;
+  }
+
+  .create-fields > .email-fields,
+  .create-fields > .form-error {
+    grid-column: 1 / -1;
+  }
+}
+
 .form-field {
   display: grid;
   min-width: 0;

@@ -10,7 +10,7 @@ For an occupied app port, local placeholder credentials, and preservation of dat
 
 ## Backend Python runtime (native alternative)
 
-The same-origin frontend is served by the real backend, whose explicitly dispatched Holehe adapter uses the pinned Python dependencies in the ignored checkout-local `APP/.venv`. Provision the environment from the repository root; do not install globally or change manifest versions silently.
+The same-origin frontend is served by the real backend, whose authorized Holehe adapter uses the pinned Python dependencies in the ignored checkout-local `APP/.venv`. Provision the environment from the repository root; do not install globally or change manifest versions silently.
 
 **Windows PowerShell:**
 
@@ -36,7 +36,7 @@ APP/.venv/bin/python -m pip install -r APP/packages/adapter-holehe/python/requir
 export PYTHON="$PWD/APP/.venv/bin/python"
 ```
 
-Keep `PYTHON` set in the same shell as the backend. Vite and the offline UI tests do not call Holehe; backend startup also makes no account queries.
+Keep `PYTHON` set in the same shell as the backend. Vite and offline UI tests do not call Holehe. Backend startup resumes authorized, unpaused automatic queues and can query providers without a browser; use test-only executors for acceptance rather than authorizing real accounts.
 
 ## Development
 
@@ -59,7 +59,23 @@ pnpm --dir APP start
 
 `build` creates `packages/frontend/dist`; `start` runs the backend, which serves `/`, `/index.html`, and built assets on `127.0.0.1:4317`. The frontend build is optional for API-only startup: when it is missing, the backend prints a notice and API routes still work. Unknown assets and unknown API paths or methods return JSON 404s; unknown browser routes are handled by the frontend's hash router after `/` loads.
 
-The same commands work in Bash. For the required PostgreSQL and Neo4j variables in PowerShell and Bash, see [backend local setup](../backend/README.md). Backend startup itself does not query accounts; do not execute an investigation action or use live accounts to verify the UI.
+The same commands work in Bash. For the required PostgreSQL and Neo4j variables in PowerShell and Bash, see [backend local setup](../backend/README.md). Backend startup resumes eligible automatic work; do not authorize real investigations or use live accounts to verify the UI.
+
+## Research progression
+
+Creation collects the research intention once and defaults to automatic advancement. Select **Elegir avance manual** at instantiation to require the case-level **Ejecutar siguiente acción en cola** control. Missing legacy mode remains manual; mode is not changed later in the workspace.
+
+New email seeds receive catalog queue entries on the backend without per-node proposal, research-motive, approval, or advance controls. Automatic progression belongs entirely to the server: the workspace only refreshes snapshots while work is eligible or claimed, never polls an execution endpoint. Closing the browser does not stop the worker. Manual mode uses run-next for the case queue, not the selected graph node, without a separate node approval.
+
+Creation offers **Autorizar consultas del catálogo**, unchecked by default. Checking it explicitly authorizes present and future catalog seeds in that case until revocation; the generated audit reason records this scope. The existing authorization API must confirm the grant before any initial email seeds are queued. Unchecked creation and existing cases stay unapproved. A failed/uncertain grant stops seed submission and keeps consent in the session recovery record. Retry reads the existing case first, reconciles any saved grant (or revocation), then submits only absent seeds; it never resends case creation automatically or overwrites a recorded revocation. The recovery receipt is session-local, not a cross-browser creation idempotency key.
+
+Case authorization, pause/resume, and evidence validation remain independent controls with their own audit reasons. Pause or revocation blocks new claims but does not cancel an in-flight provider call. Historical proposal/approval provenance remains readable; old proposed actions are not silently approved. Claimed actions with unknown outcomes and terminal failures are never offered as retries.
+
+## Action results
+
+Every terminal action has a connected result: persisted supported observations remain evidence rectangles with actual provider, registration status, source and validation history. Execution failures gain a derived red circle with an X and selectable, wrapped error details. Successful actions without admitted evidence gain a derived **Sin información admitida** rectangle, including the unsupported-observation count when recorded. These derived results are not persisted evidence and cannot be validated; no information does not imply `not_registered`. Queued/claimed actions never synthesize outcomes. Queue labels distinguish waiting authorization, pause and non-executable historical entries; the workspace headline describes gates or claimed uncertainty rather than claiming the case is active or concluded.
+
+Mocked browser fixtures in `e2e/acceptance.spec.ts` cover checked creation through information, failure and empty results, plus unchecked blocked queues. They intercept investigation API traffic, deny external origins and never call a real provider. Independent browser/build verification remains separate from writer unit/typecheck evidence.
 
 ## Verification
 
@@ -91,8 +107,12 @@ pnpm --dir APP --filter @investia/frontend build
 pnpm --dir APP --filter @investia/frontend test:e2e
 ```
 
-The Playwright server uses the actual Vite build and `createBackendApp` on `127.0.0.1:4327`, with a test-only fake GitHub observer and isolated in-memory store. It never calls external accounts and does not enable a production fake-executor flag or add production routes. Browser screenshots and the HTML report are written under the ignored `packages/frontend/test-results/` directory. The test server uses this port exclusively and will fail rather than attach to an unrelated process.
+The Playwright server uses the actual Vite build and `createBackendApp` on `127.0.0.1:4327`, the real `AutomaticInvestigationRunner`, a test-only fake GitHub observer, and an isolated in-memory store implementing catalog eligibility and automatic-mode claim checks. Acceptance covers creation intention, manual run-next without node approvals, automatic draining without browser execution requests, independent authorization/pause/revocation gates, evidence validation, and the existing responsive/graph/report behaviors. The in-memory store is not evidence of real PostgreSQL concurrency. It never calls external accounts and does not enable a production fake-executor flag or add production routes. Browser screenshots and the HTML report are written under the ignored `packages/frontend/test-results/` directory. The test server uses this port exclusively and will fail rather than attach to an unrelated process.
 
-## Latest observed acceptance status
+## Automatic progression writer verification
+
+T2 writer checks passed: **59 frontend unit tests**, **2 Chromium scenarios**, workspace typecheck, and production build. Core/backend checks passed **21/29** tests with the backend's **5 database-gated tests skipped**. Browser acceptance retained the existing viewport, clipping, ornament, touch, graph, and report assertions. Creation metadata now uses a compact desktop layout with a correctly sized manual-mode checkbox; the desktop CTA bottom measured **929.05px** within the unchanged **941px** viewport bound. These are writer results, not independent T3 closure or real-database evidence.
+
+## Historical independent MVP acceptance
 
 The independent acceptance record reports **110 TypeScript tests passed (0 failed, 0 skipped), 1 Chromium scenario passed, and all 4 workspace package typechecks passed**; all 5 database-gated checks ran and the named runtime reload was verified. The separate offline Python adapter suite has now passed all **5 tests**. The Chromium scenario demonstrates behavior, not identical visuals: corrected desktop/mobile screenshots were independently inspected, and title wrapping, CTA visibility, ornament spacing and linen texture passed MVP acceptance. This is a usable interpretation of the references; no pixel-identical claim is made.

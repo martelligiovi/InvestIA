@@ -163,6 +163,58 @@ test("offline SQL fake verifies versioned JSON migration and parameterized adapt
   assert.match(migration, /jsonb_typeof\(document -> 'revision'\) IS NOT NULL/);
 });
 
+test("catalog queues round-trip without approvals and automatic claims recheck mode and gates", async () => {
+  const { database, store, service } = makeStoreHarness();
+  const created = await service.createInvestigation("Automático", "Intención única");
+  await service.addEmailSeed(created.id, "catalog@example.test");
+  const request: ClaimActionRequest = { investigationId: created.id, automaticOnly: true, claimId: "worker-claim", claimedAt: "2025-03-01T00:01:00.000Z", auditEvent: auditEvent("claim", "action_claimed") };
+  assert.equal(await store.claimNextAction(request), undefined);
+  await service.authorize(created.id, true, "Autorización del caso");
+  await service.pause(created.id, "Pausa del caso");
+  assert.equal(await store.claimNextAction(request), undefined);
+  await service.resume(created.id, "Reanudar caso");
+  const row = database.records.get(created.id)!;
+  row.document = { ...row.document, advancementMode: "manual" };
+  assert.equal(await store.claimNextAction(request), undefined);
+  const { advancementMode: _mode, ...legacy } = row.document;
+  row.document = legacy;
+  assert.equal(await store.claimNextAction(request), undefined, "legacy mode fails closed inside the claim");
+  row.document = { ...row.document, advancementMode: "automatic" };
+  const claim = await store.claimNextAction(request);
+  assert.equal(claim?.action.approval, undefined);
+  assert.equal(claim?.action.queuedByCatalog, true);
+  assert.equal(await store.claimNextAction({ ...request, claimId: "second-worker" }), undefined);
+  const restarted = new PostgresInvestigationStore(database);
+  assert.equal(await restarted.claimNextAction({ ...request, claimId: "restart" }), undefined, "restart must retain claimed fencing");
+  const persisted = await restarted.get(created.id);
+  assert.ok(!persisted?.audit.some((event) => event.kind === "action_approved"));
+  assert.equal(persisted?.intention, created.intention);
+});
+
+test("creation metadata round-trips while legacy snapshots stay manual", async () => {
+  const { database, store, service } = makeStoreHarness();
+  const created = await service.createInvestigation("Caso", "Verificar registro", "manual");
+  assert.deepEqual(await store.get(created.id), created);
+  const row = database.records.get(created.id)!;
+  const legacy: Record<string, unknown> = { ...row.document };
+  delete legacy.intention;
+  delete legacy.advancementMode;
+  row.document = legacy as unknown as Investigation;
+  const loaded = await store.get(created.id);
+  assert.equal(loaded?.intention, "");
+  assert.equal(loaded?.advancementMode, "manual");
+  const changed = await service.addEmailSeed(created.id, "ana@example.test", "Semilla");
+  assert.equal(changed.advancementMode, "manual");
+  assert.equal(changed.intention, "");
+  const persisted = database.records.get(created.id)!;
+  for (const invalid of [null, "unknown", 1]) {
+    persisted.document = { ...changed, advancementMode: invalid } as unknown as Investigation;
+    await assert.rejects(store.get(created.id), InvestigationSchemaError);
+  }
+  persisted.document = { ...changed, intention: null } as unknown as Investigation;
+  await assert.rejects(store.get(created.id), InvestigationSchemaError);
+});
+
 test("schema-v1 legacy snapshots get a deterministic name that survives mutations", async () => {
   const { database, store, service } = makeStoreHarness();
   const created = await service.createInvestigation();
