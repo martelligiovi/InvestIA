@@ -70,6 +70,8 @@ function publicError(error: unknown): unknown {
       "Email seed already exists in this investigation",
       "GitHub actions require an email seed already recorded in this investigation",
       "A GitHub catalog action already exists for this email seed",
+      "Scanner actions require an email seed already recorded in this investigation",
+      "A scanner catalog action already exists for this email seed",
       "Only a proposed action can be approved",
     ].includes(error.message)) return new HttpError(409, "CONFLICT", "Operation conflicts with the current investigation state");
   }
@@ -187,7 +189,7 @@ export function createBackendApp(
   app.post<{ Params: { id: string } }>("/investigations/:id/actions/proposals", async (request, reply) => {
     const { id } = input(InvestigationParams, request.params);
     const body = input(EmailBody, request.body);
-    const action = await serviceCall(() => service.proposeGitHubAction(id, body.email, body.reason));
+    const action = await serviceCall(() => service.proposeUserScannerAction(id, body.email, body.reason));
     await projectPersistedState(id);
     return reply.code(201).send(action);
   });

@@ -4,39 +4,39 @@ Use Vite at `127.0.0.1:5173` for development, or build once and let the loopback
 
 ## Full stack without a dev server
 
-From `APP/`, run `docker compose up -d --build` and open http://127.0.0.1:4317. The app image builds and bundles this frontend beside the backend's TS sources; there is no separate Vite container. Relative API calls are same-origin, with no CORS or proxy setup required. The image also provisions the Linux Python bridge, so the host venv instructions below apply only to native development.
+From `APP/`, run `docker compose up -d --build` and open http://127.0.0.1:4317. The app image builds and bundles this frontend beside the backend's TS sources; there is no separate Vite container. Relative API calls are same-origin, with no CORS or proxy setup required. The image also provisions the Linux Python CLI, so the host venv instructions below apply only to native development.
 
 For an occupied app port, local placeholder credentials, and preservation of database volumes, use the [root Compose quick path](../../README.md#one-command-full-stack-docker-desktop--linux-containers). Verify by loading the UI and history only; do not dispatch real investigation/provider actions.
 
 ## Backend Python runtime (native alternative)
 
-The same-origin frontend is served by the real backend, whose authorized Holehe adapter uses the pinned Python dependencies in the ignored checkout-local `APP/.venv`. Provision the environment from the repository root; do not install globally or change manifest versions silently.
+The same-origin frontend is served by the real backend, whose authorized User Scanner adapter uses the pinned Python dependencies in the ignored checkout-local `APP/.venv-user-scanner`. Provision the environment from the repository root; do not install globally or change manifest versions silently.
 
 **Windows PowerShell:**
 
 ```powershell
-python -m venv APP/.venv
-APP\.venv\Scripts\python.exe -m pip install -r APP\packages\adapter-holehe\python\requirements.txt
-$env:PYTHON = (Resolve-Path APP\.venv\Scripts\python.exe).Path
+python -m venv APP/.venv-user-scanner
+APP\.venv-user-scanner\Scripts\python.exe -m pip install -r APP\packages\adapter-user-scanner\python\requirements.txt
+$env:PYTHON = (Resolve-Path APP\.venv-user-scanner\Scripts\python.exe).Path
 ```
 
 **Bash on Windows:**
 
 ```bash
-python -m venv APP/.venv
-APP/.venv/Scripts/python.exe -m pip install -r APP/packages/adapter-holehe/python/requirements.txt
-export PYTHON="$PWD/APP/.venv/Scripts/python.exe"
+python -m venv APP/.venv-user-scanner
+APP/.venv-user-scanner/Scripts/python.exe -m pip install -r APP/packages/adapter-user-scanner/python/requirements.txt
+export PYTHON="$PWD/APP/.venv-user-scanner/Scripts/python.exe"
 ```
 
 **POSIX:**
 
 ```bash
-python3 -m venv APP/.venv
-APP/.venv/bin/python -m pip install -r APP/packages/adapter-holehe/python/requirements.txt
-export PYTHON="$PWD/APP/.venv/bin/python"
+python3 -m venv APP/.venv-user-scanner
+APP/.venv-user-scanner/bin/python -m pip install -r APP/packages/adapter-user-scanner/python/requirements.txt
+export PYTHON="$PWD/APP/.venv-user-scanner/bin/python"
 ```
 
-Keep `PYTHON` set in the same shell as the backend. Vite and offline UI tests do not call Holehe. Backend startup resumes authorized, unpaused automatic queues and can query providers without a browser; use test-only executors for acceptance rather than authorizing real accounts.
+Keep `PYTHON` set in the same shell as the backend. Vite and offline UI tests do not call User Scanner. Backend startup resumes authorized, unpaused automatic queues and can query providers without a browser; use test-only executors for acceptance rather than authorizing real accounts.
 
 ## Development
 
@@ -69,11 +69,13 @@ New email seeds receive catalog queue entries on the backend without per-node pr
 
 Creation offers **Autorizar consultas del catálogo**, unchecked by default. Checking it explicitly authorizes present and future catalog seeds in that case until revocation; the generated audit reason records this scope. The existing authorization API must confirm the grant before any initial email seeds are queued. Unchecked creation and existing cases stay unapproved. A failed/uncertain grant stops seed submission and keeps consent in the session recovery record. Retry reads the existing case first, reconciles any saved grant (or revocation), then submits only absent seeds; it never resends case creation automatically or overwrites a recorded revocation. The recovery receipt is session-local, not a cross-browser creation idempotency key.
 
-Case authorization, pause/resume, and evidence validation remain independent controls with their own audit reasons. Pause or revocation blocks new claims but does not cancel an in-flight provider call. Historical proposal/approval provenance remains readable; old proposed actions are not silently approved. Claimed actions with unknown outcomes and terminal failures are never offered as retries.
+Case authorization, pause/resume, and evidence validation remain independent controls with their own audit reasons. Creation and case controls explain that scanner authorization includes loud modules (which may send emails/notifications) and discovered cross-scan targets. Historical authorization without the new scanner catalog scope must be granted again before scanner execution. Pause or revocation blocks new claims but does not cancel an in-flight provider call. Historical proposal/approval provenance remains readable; old proposed actions are not silently approved. Claimed actions with unknown outcomes and terminal failures are never offered as retries.
 
 ## Action results
 
-Every terminal action has a connected result: persisted supported observations remain evidence rectangles with actual provider, registration status, source and validation history. Execution failures gain a derived red circle with an X and selectable, wrapped error details. Successful actions without admitted evidence gain a derived **Sin información admitida** rectangle, including the unsupported-observation count when recorded. These derived results are not persisted evidence and cannot be validated; no information does not imply `not_registered`. Queued/claimed actions never synthesize outcomes. Queue labels distinguish waiting authorization, pause and non-executable historical entries; the workspace headline describes gates or claimed uncertainty rather than claiming the case is active or concluded.
+The graph renders at most 50 evidence nodes per page, with first/previous/next/last controls and the displayed result range. Seeds, actions and derived terminal results remain connected; pagination does not change or discard stored findings. The SVG canvas uses a fixed 1:1 pixel scale rather than shrinking the page to fit the viewport, including on mobile. Navigate with scrollbars or drag the background; zoom can enlarge nodes but never shrink them below their original size. **Centrar** centers the selected node at its original size instead of fitting all nodes into the viewport. Zoom stays anchored at the viewport center, and selecting a node from the accessible list recenters it at readable scale. The accessible list contains the current page; all results remain reachable through pagination. These controls only affect local presentation and never dispatch actions or alter the investigation.
+
+Every terminal action has a connected result: persisted supported observations remain evidence rectangles with actual provider, status, source and validation history. User Scanner evidence also shows the discovered email/username, original tool status, URL, category, reason, metadata, media references and pivot source/confidence. Unsafe URLs stay text; media URLs are not automatically fetched. These findings are not verified identities or newly queued seeds. Scanner actions have tool-aware labels, while historical GitHub actions retain their original descriptions. Execution failures gain a derived red circle with an X and selectable, wrapped error details. Successful actions without admitted evidence gain a derived **Sin información admitida** rectangle, including the unsupported-observation count when recorded. These derived results are not persisted evidence and cannot be validated; no information does not imply `not_registered`. Queued/claimed actions never synthesize outcomes. Queue labels distinguish waiting authorization, pause and non-executable historical entries; the workspace headline describes gates or claimed uncertainty rather than claiming the case is active or concluded.
 
 Mocked browser fixtures in `e2e/acceptance.spec.ts` cover checked creation through information, failure and empty results, plus unchecked blocked queues. They intercept investigation API traffic, deny external origins and never call a real provider. Independent browser/build verification remains separate from writer unit/typecheck evidence.
 
@@ -116,3 +118,7 @@ T2 writer checks passed: **59 frontend unit tests**, **2 Chromium scenarios**, w
 ## Historical independent MVP acceptance
 
 The independent acceptance record reports **110 TypeScript tests passed (0 failed, 0 skipped), 1 Chromium scenario passed, and all 4 workspace package typechecks passed**; all 5 database-gated checks ran and the named runtime reload was verified. The separate offline Python adapter suite has now passed all **5 tests**. The Chromium scenario demonstrates behavior, not identical visuals: corrected desktop/mobile screenshots were independently inspected, and title wrapping, CTA visibility, ornament spacing and linen texture passed MVP acceptance. This is a usable interpretation of the references; no pixel-identical claim is made.
+
+## Positive finding retention
+
+Only tool-reported positive results (`Registered` / `Found`, normalized as `registered`) are admitted to persisted evidence and therefore to the graph and report. Negative, unknown, skipped and provider-error rows are not retained as findings; valid omitted results are not counted as unsupported inputs. A successful scan may produce no admitted evidence. Execution failures remain terminal action failures and are not silently discarded or retried. Findings describe the observed target, including cross-discovered targets, not necessarily the original email seed. A tool report is not independent proof of identity, ownership or infallible account existence.

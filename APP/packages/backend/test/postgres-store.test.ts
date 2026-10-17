@@ -163,6 +163,28 @@ test("offline SQL fake verifies versioned JSON migration and parameterized adapt
   assert.match(migration, /jsonb_typeof\(document -> 'revision'\) IS NOT NULL/);
 });
 
+test("scanner actions and cross-target findings round-trip, malformed new findings never write", async () => {
+  const { database, store, service } = makeStoreHarness();
+  const created = await service.createInvestigation();
+  const seeded = await service.addEmailSeed(created.id, "seed@example.org");
+  assert.equal((await store.get(created.id))?.actions[0]?.spec.catalogId, "user-scanner.email.v1");
+  const finding = {
+    target: { kind: "username" as const, value: "derived" }, upstreamStatus: "Found" as const,
+    url: "https://example.org/derived", category: "Social", reason: "",
+    extra: { confidence: "candidate", pivot_source: "profile link" }, media: {},
+  };
+  const withFinding: Investigation = { ...seeded, revision: seeded.revision + 1, evidence: [{
+    id: "evidence", actionId: seeded.actions[0]!.id, seed: seeded.emailSeeds[0]!, provider: "Example", status: "registered",
+    sourceId: "user-scanner:email", recordedAt: seeded.updatedAt, finding,
+  }] };
+  await store.transact(created.id, () => ({ next: withFinding, result: undefined }));
+  assert.deepEqual((await store.get(created.id))?.evidence[0]?.finding, finding);
+  const before = structuredClone(database.records.get(created.id));
+  const corrupt = { ...withFinding, revision: withFinding.revision + 1, evidence: [{ ...withFinding.evidence[0]!, finding: { ...finding, media: { avatar: 42 } } }] } as unknown as Investigation;
+  await assert.rejects(store.transact(created.id, () => ({ next: corrupt, result: undefined })), InvestigationSchemaError);
+  assert.deepEqual(database.records.get(created.id), before);
+});
+
 test("catalog queues round-trip without approvals and automatic claims recheck mode and gates", async () => {
   const { database, store, service } = makeStoreHarness();
   const created = await service.createInvestigation("Automático", "Intención única");
@@ -189,6 +211,22 @@ test("catalog queues round-trip without approvals and automatic claims recheck m
   const persisted = await restarted.get(created.id);
   assert.ok(!persisted?.audit.some((event) => event.kind === "action_approved"));
   assert.equal(persisted?.intention, created.intention);
+});
+
+test("legacy authorization cannot silently broaden into a loud cross-scan", async () => {
+  const { database, store, service } = makeStoreHarness();
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "seed@example.org");
+  await service.authorize(created.id, true, "Authorized scanner");
+  const row = database.records.get(created.id)!;
+  const authorization = { granted: true, at: row.document.updatedAt, reason: "Old GitHub authorization", operator: "local-operator" as const };
+  row.document = { ...row.document, authorization };
+  const before = structuredClone(row);
+  const input: ClaimActionRequest = { investigationId: created.id, claimId: "claim", claimedAt: "2025-03-01T00:01:00Z", auditEvent: auditEvent("claim", "action_claimed") };
+  assert.equal(await store.claimNextAction(input), undefined);
+  assert.deepEqual(database.records.get(created.id), before);
+  await service.authorize(created.id, true, "Explicitly authorize scanner, loud modules and cross-targets");
+  assert.ok(await store.claimNextAction(input));
 });
 
 test("creation metadata round-trips while legacy snapshots stay manual", async () => {

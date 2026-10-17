@@ -1,5 +1,5 @@
 import type { EmailSeed } from "./seed.ts";
-import type { RegistrationStatus } from "./observation.ts";
+import type { RegistrationStatus, ScannerFinding } from "./observation.ts";
 export type { RegistrationStatus } from "./observation.ts";
 
 export type InvestigationId = string;
@@ -54,6 +54,8 @@ export interface ActionApproval {
 }
 
 export interface AuthorizationRecord {
+  /** Missing on legacy grants; those never authorize the broader scanner command. */
+  readonly catalogScope?: "user-scanner.email.v1";
   readonly granted: boolean;
   readonly at: string;
   readonly reason: string;
@@ -66,9 +68,16 @@ export interface GitHubActionSpec {
   readonly seed: EmailSeed;
 }
 
+export interface UserScannerActionSpec {
+  readonly catalogId: "user-scanner.email.v1";
+  readonly provider: "user-scanner";
+  readonly seed: EmailSeed;
+}
+
+/** Historical export name retained for consumers; new actions use UserScannerActionSpec. */
 export interface GitHubCatalogAction {
   readonly id: InvestigationActionId;
-  readonly spec: GitHubActionSpec;
+  readonly spec: GitHubActionSpec | UserScannerActionSpec;
   readonly status: InvestigationActionStatus;
   readonly proposedAt: string;
   readonly proposalReason: string;
@@ -85,8 +94,10 @@ export interface EvidenceRecord {
   readonly id: EvidenceId;
   readonly actionId: InvestigationActionId;
   readonly seed: EmailSeed;
-  readonly provider: "github";
+  readonly provider: string;
   readonly status: RegistrationStatus;
+  /** Absent on historical registration observations. */
+  readonly finding?: ScannerFinding;
   readonly sourceId: string;
   readonly recordedAt: string;
 }

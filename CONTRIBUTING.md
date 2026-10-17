@@ -38,7 +38,9 @@ Python **3.11**. From the repository root, with dependencies already installed:
 pnpm --dir APP build
 pnpm --dir APP test
 pnpm --dir APP typecheck
-python -B -m unittest discover -s APP/packages/adapter-holehe/python/tests -p test_holehe_bridge.py -v
+# Run in an isolated Python 3.11 environment; never install globally.
+python -m pip install -r APP/packages/adapter-user-scanner/python/requirements.txt
+python -B -m unittest discover -s APP/packages/adapter-user-scanner/python/tests -p test_cli_installation.py -v
 git diff --check
 ```
 

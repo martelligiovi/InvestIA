@@ -1,4 +1,4 @@
-import type { Observation, RegistrationObservation, RegistrationStatus } from "../domain/observation.ts";
+import { isScannerFinding, type Observation, type RegistrationObservation, type RegistrationStatus, type ScannerObservation } from "../domain/observation.ts";
 import type { EmailSeed } from "../domain/seed.ts";
 import type { SeedBox } from "../domain/seed-box.ts";
 import {
@@ -36,7 +36,8 @@ export interface InvestigationServiceDependencies {
   readonly createId: (kind: InvestigationIdKind) => string;
 }
 
-const CATALOG_ID = "github.email-registration.v1" as const;
+const CATALOG_ID = "user-scanner.email.v1" as const;
+const LEGACY_CATALOG_ID = "github.email-registration.v1" as const;
 const REGISTRATION_STATUSES: readonly RegistrationStatus[] = [
   "registered", "not_registered", "rate_limited", "error", "unknown",
 ];
@@ -102,6 +103,15 @@ function isRegistrationObservation(
     REGISTRATION_STATUSES.includes(candidate.status as RegistrationStatus);
 }
 
+function isScannerObservation(value: unknown): value is ScannerObservation {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<ScannerObservation>;
+  return candidate.kind === "scanner_finding" && candidate.seed?.kind === "email" &&
+    typeof candidate.seed.value === "string" && typeof candidate.provider === "string" &&
+    candidate.provider.trim().length > 0 && REGISTRATION_STATUSES.includes(candidate.status as RegistrationStatus) &&
+    isScannerFinding(candidate.finding);
+}
+
 function failureMessage(error: unknown): string {
   try {
     return error instanceof Error ? error.message : String(error);
@@ -160,11 +170,11 @@ export class InvestigationService {
     const event = auditEvent(this.dependencies.createId, at, "operator", "email_seed_added", why);
     const action: GitHubCatalogAction = {
       id: newId(this.dependencies.createId, "action"),
-      spec: { catalogId: CATALOG_ID, provider: "github", seed: { ...seed } },
+      spec: { catalogId: CATALOG_ID, provider: "user-scanner", seed: { ...seed } },
       status: "queued",
       queuedByCatalog: true,
       proposedAt: at,
-      proposalReason: "Catalog policy queued a GitHub registration check for the recorded email seed.",
+      proposalReason: "Catalog policy queued a user-scanner email and cross-scan check, including loud modules, for the recorded email seed.",
     };
     const queued = auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id });
     return this.dependencies.store.transact(id, (current) => {
@@ -187,7 +197,7 @@ export class InvestigationService {
     const actionId = newId(this.dependencies.createId, "action");
     const action: GitHubCatalogAction = {
       id: actionId,
-      spec: Object.freeze({ catalogId: CATALOG_ID, provider: "github", seed: Object.freeze({ ...seed }) }),
+      spec: Object.freeze({ catalogId: LEGACY_CATALOG_ID, provider: "github", seed: Object.freeze({ ...seed }) }),
       status: "proposed",
       proposedAt: at,
       proposalReason: why,
@@ -197,7 +207,7 @@ export class InvestigationService {
       if (!current.emailSeeds.some((existing) => existing.value === seed.value)) {
         throw new Error("GitHub actions require an email seed already recorded in this investigation");
       }
-      const existing = current.actions.find((candidate) => candidate.spec.catalogId === CATALOG_ID && candidate.spec.seed.value === seed.value);
+      const existing = current.actions.find((candidate) => candidate.spec.seed.value === seed.value);
       // Compatibility: an explicit historical proposal request may replace an unclaimed
       // catalog queue entry with the old proposed/approval workflow. Never alter claimed work.
       if (existing !== undefined && !(existing.status === "queued" && existing.queuedByCatalog === true && existing.approval === undefined)) {
@@ -212,11 +222,37 @@ export class InvestigationService {
     });
   }
 
+  async proposeUserScannerAction(id: string, email: string, reason: string): Promise<GitHubCatalogAction> {
+    const seed = emailSeed(email);
+    const why = reasonText(reason);
+    const at = timestamp(this.dependencies.clock);
+    const action: GitHubCatalogAction = {
+      id: newId(this.dependencies.createId, "action"),
+      spec: { catalogId: CATALOG_ID, provider: "user-scanner", seed },
+      status: "proposed", proposedAt: at, proposalReason: why,
+    };
+    return this.dependencies.store.transact(id, (current) => {
+      if (!current.emailSeeds.some((existing) => existing.value === seed.value)) {
+        throw new Error("Scanner actions require an email seed already recorded in this investigation");
+      }
+      const existing = current.actions.find((candidate) => candidate.spec.catalogId === CATALOG_ID && candidate.spec.seed.value === seed.value);
+      if (existing && !(existing.status === "queued" && existing.queuedByCatalog && !existing.approval)) {
+        throw new Error("A scanner catalog action already exists for this email seed");
+      }
+      const proposed = existing ? { ...action, id: existing.id } : action;
+      const next = withRevision(current, at, {
+        actions: existing ? current.actions.map((candidate) => candidate.id === existing.id ? proposed : candidate) : [...current.actions, proposed],
+        audit: [...current.audit, auditEvent(this.dependencies.createId, at, "operator", "action_proposed", why, { actionId: proposed.id })],
+      });
+      return { next, result: proposed };
+    });
+  }
+
   async authorize(id: string, granted: boolean, reason: string): Promise<Investigation> {
     if (typeof granted !== "boolean") throw new Error("Authorization must be explicitly granted or denied");
     const why = reasonText(reason);
     const at = timestamp(this.dependencies.clock);
-    const authorization = { granted, at, reason: why, operator: "local-operator" as const };
+    const authorization = { granted, at, reason: why, operator: "local-operator" as const, catalogScope: CATALOG_ID };
     const event = auditEvent(this.dependencies.createId, at, "operator", "authorization_changed", why, { granted });
     return this.dependencies.store.transact(id, (current) => {
       const next = withRevision(current, at, { authorization, audit: [...current.audit, event] });
@@ -328,10 +364,20 @@ export class InvestigationService {
     const evidence: EvidenceRecord[] = [];
     let unsupportedObservationCount = 0;
     for (const observation of observations as readonly unknown[]) {
+      const scanner = isScannerObservation(observation);
+      const registration = isRegistrationObservation(observation) && observation.provider === "github";
       if (
-        !isRegistrationObservation(observation) || observation.provider !== "github" ||
-        observation.seed.value !== claim.action.spec.seed.value
+        (!scanner && !registration) ||
+        (observation as { seed: EmailSeed }).seed.value !== claim.action.spec.seed.value ||
+        (scanner && claim.action.spec.catalogId !== CATALOG_ID)
       ) {
+        unsupportedObservationCount++;
+        continue;
+      }
+      const accepted = observation as RegistrationObservation | ScannerObservation;
+      // Valid negative/uncertain results are not findings and do not consume evidence IDs.
+      if (accepted.status !== "registered") continue;
+      if (scanner && !["Registered", "Found"].includes((accepted as ScannerObservation).finding.upstreamStatus)) {
         unsupportedObservationCount++;
         continue;
       }
@@ -339,10 +385,11 @@ export class InvestigationService {
         id: newId(this.dependencies.createId, "evidence"),
         actionId: claim.action.id,
         seed: { ...claim.action.spec.seed },
-        provider: "github",
-        status: observation.status,
+        provider: accepted.provider,
+        status: accepted.status,
         sourceId: this.dependencies.executor.id,
         recordedAt: completedAt,
+        ...(scanner ? { finding: structuredClone((accepted as ScannerObservation).finding) } : {}),
       });
     }
     const completed = await this.dependencies.store.completeAction(this.completion(
@@ -350,7 +397,7 @@ export class InvestigationService {
       id,
       completedAt,
       { kind: "success", evidence, unsupportedObservationCount },
-      "Execution completed; supported GitHub registration observations were retained without identity attribution.",
+      "Execution completed; only positive tool-reported findings were retained without identity attribution.",
     ));
     return getAction(completed, claim.action.id);
   }
@@ -398,6 +445,9 @@ export function createSeedBoxExecutor(box: SeedBox<EmailSeed, Observation>): Inv
         typeof action.claim.id !== "string" || action.claim.id.trim().length === 0 ||
         typeof action.claim.claimedAt !== "string" || action.claim.claimedAt.length === 0
       ) throw new Error("SeedBox executor requires a claimed action");
+      if (box.id === "user-scanner:email" && action.spec.catalogId !== CATALOG_ID) {
+        throw new Error("Historical GitHub-only action is retired; create an explicit scanner proposal instead.");
+      }
       return executeSeedBox(box, action.spec.seed, permit as ExecutionState);
     },
   };

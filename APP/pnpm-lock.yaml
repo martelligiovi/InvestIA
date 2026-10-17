@@ -18,7 +18,7 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
-  packages/adapter-holehe:
+  packages/adapter-user-scanner:
     dependencies:
       '@investia/core':
         specifier: workspace:*
@@ -32,9 +32,9 @@ importers:
       '@fastify/static':
         specifier: ^8.2.0
         version: 8.3.0
-      '@investia/adapter-holehe':
+      '@investia/adapter-user-scanner':
         specifier: workspace:*
-        version: link:../adapter-holehe
+        version: link:../adapter-user-scanner
       '@investia/core':
         specifier: workspace:*
         version: link:../core

@@ -1,5 +1,8 @@
 export type { EmailSeed, Seed } from "./domain/seed.ts";
+export { isScannerFinding } from "./domain/observation.ts";
 export type {
+  ScannerFinding,
+  ScannerObservation,
   IdentityObservation,
   Observation,
   RegistrationObservation,
@@ -25,6 +28,7 @@ export {
   type EvidenceId,
   type EvidenceRecord,
   type GitHubActionSpec,
+  type UserScannerActionSpec,
   type GitHubCatalogAction,
   type Investigation,
   type InvestigationActionId,

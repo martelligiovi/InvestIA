@@ -69,7 +69,7 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
   });
 
   investigation.actions.forEach((action, index) => {
-    const title = "Comprobación de registro en GitHub";
+    const title = action.spec.provider === "user-scanner" ? "Búsqueda de email y enlaces con user-scanner" : "Comprobación de registro en GitHub";
     const state = actionDisplayState(investigation, action);
     nodes.push({
       id: `action:${action.id}`,
@@ -86,7 +86,9 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
   });
 
   investigation.evidence.forEach((record, index) => {
-    const title = `Observación de registro ${record.provider} · ${workspaceStatusLabel(record.status)}`;
+    const title = record.finding
+      ? `${record.provider} · ${record.finding.target.value} · ${record.finding.upstreamStatus}`
+      : `Observación de registro ${record.provider} · ${workspaceStatusLabel(record.status)}`;
     nodes.push({
       id: `evidence:${record.id}`,
       kind: "evidence",
@@ -171,6 +173,28 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
     1,
   );
   return { width: 1100, height: TOP * 2 + rowCount * ROW_GAP, nodes, edges };
+}
+
+export const GRAPH_PAGE_SIZE = 50;
+
+/** Project a bounded view without changing the persisted investigation or evidence. */
+export function workspaceGraphPage(graph: WorkspaceGraph, page: number): WorkspaceGraph {
+  const evidence = graph.nodes.filter((node) => node.kind === "evidence");
+  if (evidence.length <= GRAPH_PAGE_SIZE) return graph;
+  const lastPage = Math.ceil(evidence.length / GRAPH_PAGE_SIZE) - 1;
+  const offset = Math.max(0, Math.min(lastPage, page)) * GRAPH_PAGE_SIZE;
+  const visible = evidence.slice(offset, offset + GRAPH_PAGE_SIZE);
+  const nodes = [
+    ...graph.nodes.filter((node) => node.kind === "seed" || node.kind === "action"),
+    ...visible.map((node, index) => ({ ...node, y: TOP + index * ROW_GAP })),
+    ...graph.nodes.filter((node) => node.kind === "result").map((node, index) => ({ ...node, y: TOP + (visible.length + index) * ROW_GAP })),
+  ];
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const edges = graph.edges.flatMap((edge) => {
+    const from = byId.get(edge.from), to = byId.get(edge.to);
+    return from && to ? [{ ...edge, path: orthogonalPath(from, to) }] : [];
+  });
+  return { width: graph.width, height: Math.max(TOP * 2, ...nodes.map((node) => node.y + node.height + TOP)), nodes, edges };
 }
 
 function orthogonalPath(from: WorkspaceNode, to: WorkspaceNode): string {

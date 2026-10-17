@@ -8,7 +8,7 @@ const RECOVERY_STORAGE_KEY = "investia.creation-recovery.v1";
 const EMAIL_MAX_LENGTH = 320;
 const EMAIL_PATTERN = /^(?!\.)(?!.*\.\.)([A-Z0-9_'+.\-]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9-]*\.)+[A-Z]{2,}$/i;
 const EMAIL_SEED_REASON = "Semilla inicial aportada al crear la investigación.";
-const CONSENT_REASON = "Consentimiento explícito al crear: autorizar consultas del catálogo para semillas actuales y futuras de este expediente hasta revocar la autorización.";
+const CONSENT_REASON = "Consentimiento explícito al crear: autorizar user-scanner, módulos loud que pueden enviar correos/notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, para semillas actuales y futuras de este expediente hasta revocar la autorización.";
 
 type RecoveryPhase = "creating" | "uncertain" | "partial";
 interface RecoveryRecord {
@@ -527,7 +527,7 @@ export function CreatePage() {
               <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.currentTarget.checked)} aria-describedby="creation-consent-hint" />
               Autorizar consultas del catálogo
             </label>
-            <span id="creation-consent-hint">Consentimiento explícito para las semillas actuales y futuras de este expediente hasta revocar la autorización. En modo automático, las consultas avanzan sin aprobación por nodo; sin marcar, quedan esperando autorización.</span>
+            <span id="creation-consent-hint">Autorizás semillas actuales y futuras hasta revocar. user-scanner puede enviar correos/notificaciones (loud) y explorar usuarios, enlaces y emails descubiertos (cross-scan). Automático avanza sin aprobación por nodo; sin marcar, espera autorización.</span>
           </div>
           <div className="email-fields">
             <div className="email-fields-heading">

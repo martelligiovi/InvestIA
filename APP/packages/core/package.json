@@ -10,7 +10,7 @@
     }
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test test/core.test.ts test/investigation.test.ts",
+    "test": "node --experimental-strip-types --test test/core.test.ts test/investigation.test.ts test/scanner.test.ts",
     "typecheck": "tsc --noEmit"
   }
 }

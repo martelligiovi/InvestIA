@@ -105,7 +105,7 @@ function makeHarness(executorFailure?: string) {
     async execute(action) {
       executions++;
       if (executorFailure !== undefined) throw new Error(executorFailure);
-      return [{ kind: "registration", seed: action.spec.seed, provider: "github", status: "unknown" }];
+      return [{ kind: "registration", seed: action.spec.seed, provider: "github", status: "registered" }];
     },
   };
   const service = createInvestigationService({

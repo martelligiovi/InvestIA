@@ -104,7 +104,7 @@ test("offline API and graph complete a gated two-action workflow", async (t) => 
       executions++;
       assert.equal(action.status, "claimed");
       assert.deepEqual(permit, { authorized: true, approved: true, paused: false });
-      return [{ kind: "registration", seed: action.spec.seed, provider: "github", status: "unknown" }];
+      return [{ kind: "registration", seed: action.spec.seed, provider: "github", status: "registered" }];
     },
   };
   const service = createInvestigationService({
@@ -160,7 +160,7 @@ test("offline API and graph complete a gated two-action workflow", async (t) => 
   const afterFirstRun = (await app.inject({ method: "GET", url: `/investigations/${id}` })).json<Investigation>();
   const evidenceId = afterFirstRun.evidence[0]!.id;
   assert.equal((await app.inject({ method: "POST", url: `/investigations/${id}/evidence/${evidenceId}/validation`, payload: {
-    status: "accepted", reason: "Accept the fake unknown registration observation as recorded evidence.",
+    status: "accepted", reason: "Accept the fake positive registration observation as recorded evidence.",
   } })).statusCode, 201);
   assert.equal((await app.inject({ method: "POST", url: `/investigations/${id}/pause`, payload: {
     reason: "Pause before dispatching the second queued action.",
@@ -178,5 +178,5 @@ test("offline API and graph complete a gated two-action workflow", async (t) => 
   assert.match(report.headers["content-type"] ?? "", /text\/markdown/);
   assert.match(report.body, /Identity attribution is unsupported/);
   assert.match(report.body, /accepted/);
-  assert.match(report.body, /unknown/);
+  assert.match(report.body, /registered/);
 });

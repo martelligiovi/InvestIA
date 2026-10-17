@@ -1,0 +1,22 @@
+# User Scanner 1.5.2.1 and its complete Python 3.11 dependency closure.
+# Install only into a project/container venv; no runtime self-updates.
+anyio==4.15.1
+certifi==2026.7.22
+cffi==2.1.1
+colorama==0.4.6
+curl_cffi==0.16.3
+h11==0.16.0
+h2==4.4.1
+hpack==4.2.0
+httpcore==1.0.9
+httpx==0.28.1
+hyperframe==6.1.0
+idna==3.20
+markdown-it-py==4.2.0
+mdurl==0.1.2
+pycparser==3.11
+Pygments==2.21.0
+rich==15.0.0
+socksio==1.0.0
+typing_extensions==4.16.0
+user-scanner==1.5.2.1

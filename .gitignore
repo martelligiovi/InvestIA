@@ -1,4 +1,6 @@
 # Root-local agent state and personal reference/research material.
+/AGENTS.md
+/.codegraph/
 /.pi/
 /.atl/
 /Frontend referencia/
@@ -13,6 +15,9 @@
 node_modules/
 .pnpm-store/
 .venv/
+.venv-user-scanner/
+.scanner-runs/
+.scanner-test-*/
 venv/
 __pycache__/
 *.py[cod]
@@ -38,3 +43,4 @@ reports/
 /odd/tasks/*
 !/odd/tasks/git-baseline.md
 !/odd/tasks/git-workflow.md
+!/odd/tasks/user-scanner.md

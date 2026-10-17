@@ -115,7 +115,7 @@ function makeHarness(executor?: InvestigationExecutor) {
         kind: "registration",
         seed: action.spec.seed,
         provider: "github",
-        status: "unknown",
+        status: "registered",
       }];
     },
   };
@@ -143,6 +143,60 @@ async function approvedAction(
   await service.authorize(investigation.id, true, "Operator authorized this action.");
   return { investigationId: investigation.id, actionId: action.id };
 }
+
+test("scanner catalog retains cross-target findings and metadata without adding queued seeds", async () => {
+  const observations: readonly Observation[] = [{
+    kind: "scanner_finding", seed: { kind: "email", value: "person@example.org" },
+    provider: "Spotify", status: "registered", finding: {
+      target: { kind: "email", value: "secondary@example.org" }, upstreamStatus: "Registered",
+      url: "https://example.org/profile", category: "Music", reason: "",
+      extra: { pivot_source: "address from Github", confidence: "candidate", links: "https://example.org/other" },
+      media: { avatar: "https://example.org/avatar.png" },
+    },
+  }];
+  const { service } = makeHarness({ id: "user-scanner:email", async execute() { return observations; } });
+  const created = await service.createInvestigation();
+  const seeded = await service.addEmailSeed(created.id, "person@example.org");
+  assert.equal(seeded.actions[0]?.spec.catalogId, "user-scanner.email.v1");
+  await service.authorize(created.id, true, "Authorized cross-scan and loud checks.");
+  assert.equal((await service.executeNextAction(created.id))?.status, "succeeded");
+  const loaded = (await service.loadInvestigation(created.id))!;
+  assert.equal(loaded.evidence.length, 1);
+  assert.equal(loaded.evidence[0]?.provider, "Spotify");
+  assert.ok(observations[0]?.kind === "scanner_finding");
+  assert.deepEqual(loaded.evidence[0]?.finding, observations[0].finding);
+  assert.equal(loaded.emailSeeds.length, 1);
+  assert.equal(loaded.actions.length, 1);
+  assert.equal(loaded.actions[0]?.unsupportedObservationCount, 0);
+  const report = compileInvestigationReport(loaded);
+  assert.ok(report.includes("secondary@example\\.org"));
+  assert.ok(report.includes("candidate"));
+  assert.ok(report.includes("address from Github"));
+  assert.ok(report.includes("avatar"));
+});
+
+test("scanner persists and reports only positive findings from a mixed batch", async () => {
+  const states = ["Registered", "Found", "Not Registered", "Not Found", "Error", "Skipped"] as const;
+  const observations: Observation[] = states.map((upstreamStatus, index) => ({
+    kind: "scanner_finding", seed: { kind: "email", value: "person@example.org" }, provider: `Provider${index}`,
+    status: index < 2 ? "registered" : index < 4 ? "not_registered" : index === 4 ? "error" : "unknown",
+    finding: { target: { kind: "email", value: "person@example.org" }, upstreamStatus, url: "", category: "", reason: "", extra: {}, media: {} },
+  }));
+  const { service } = makeHarness({ id: "user-scanner:email", async execute() { return observations; } });
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "person@example.org");
+  await service.authorize(created.id, true, "Authorized scanner.");
+  const completed = await service.executeNextAction(created.id);
+  const stored = (await service.loadInvestigation(created.id))!;
+  assert.equal(completed?.status, "succeeded");
+  assert.equal(completed?.unsupportedObservationCount, 0, "valid nonpositive results are not unsupported inputs");
+  assert.deepEqual(stored.evidence.map((row) => row.provider), ["Provider0", "Provider1"]);
+  const report = compileInvestigationReport(stored);
+  assert.ok(report.includes("Provider0") && report.includes("Provider1"));
+  for (const provider of ["Provider2", "Provider3", "Provider4", "Provider5"]) assert.ok(!report.includes(provider));
+  assert.equal(await service.executeNextAction(created.id), undefined);
+  assert.deepEqual(await service.loadInvestigation(created.id), stored, "no automatic replay or counter changes");
+});
 
 test("seeds queue catalog work without human approvals or repeated intention", async () => {
   const { service } = makeHarness();
@@ -289,6 +343,7 @@ test("records GitHub evidence provenance and ignores unsupported identities/prov
     id: "mixed-box",
     async execute(action) {
       return [
+        { kind: "registration", seed: action.spec.seed, provider: "github", status: "registered" },
         { kind: "registration", seed: action.spec.seed, provider: "github", status: "unknown" },
         { kind: "registration", seed: action.spec.seed, provider: "github", status: "error" },
         { kind: "registration", seed: action.spec.seed, provider: "other", status: "registered" },
@@ -301,15 +356,15 @@ test("records GitHub evidence provenance and ignores unsupported identities/prov
   const action = await service.executeNextAction(investigationId);
   const investigation = await service.loadInvestigation(investigationId);
   assert.equal(action?.id, actionId);
-  assert.equal(investigation?.evidence.length, 2);
-  assert.deepEqual(investigation?.evidence.map((evidence) => evidence.status), ["unknown", "error"]);
+  assert.equal(investigation?.evidence.length, 1);
+  assert.deepEqual(investigation?.evidence.map((evidence) => evidence.status), ["registered"]);
   assert.ok(investigation?.evidence.every((evidence) => evidence.provider === "github"));
   assert.ok(investigation?.evidence.every((evidence) => evidence.sourceId === "mixed-box"));
   assert.equal(action?.unsupportedObservationCount, 2);
   assert.equal(investigation?.audit.some((event) => event.kind === "action_succeeded"), true);
   const report = compileInvestigationReport(investigation!);
-  assert.ok(report.includes("unknown"));
-  assert.ok(report.includes("error"));
+  assert.ok(report.includes("registered"));
+  assert.ok(!report.includes("| unknown |") && !report.includes("| error |"));
   assert.ok(report.includes("| 2 |"), "unsupported observation count is visible in the action row");
   assert.ok(!report.includes("unverified match"), "identity observation content is never asserted or published");
 });
@@ -538,5 +593,6 @@ test("SeedBox executor delegates through the existing explicit execution gate", 
   const { investigationId } = await approvedAction(service);
   await service.executeNextAction(investigationId);
   assert.equal(calls, 1);
-  assert.equal((await service.loadInvestigation(investigationId))?.evidence[0]?.status, "not_registered");
+  assert.equal((await service.loadInvestigation(investigationId))?.evidence.length, 0);
+  assert.equal((await service.loadInvestigation(investigationId))?.actions[0]?.status, "succeeded");
 });
