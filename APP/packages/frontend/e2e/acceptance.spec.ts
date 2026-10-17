@@ -105,6 +105,17 @@ async function findRightOrnamentIntersections(page: Page): Promise<string[]> {
   });
 }
 
+/** Header controls are light-dismiss popovers: open them right before use. */
+async function openDisclosure(page: Page, selector: string): Promise<void> {
+  const disclosure = page.locator(selector);
+  if (!await disclosure.evaluate((element) => (element as HTMLDetailsElement).open)) await disclosure.locator("summary").click();
+}
+
+async function closeDisclosure(page: Page, selector: string): Promise<void> {
+  const disclosure = page.locator(selector);
+  if (await disclosure.evaluate((element) => (element as HTMLDetailsElement).open)) await disclosure.locator("summary").click();
+}
+
 async function closeNodeList(page: Page): Promise<void> {
   const list = page.locator(".graph-node-list");
   const summary = list.locator("summary");
@@ -417,7 +428,7 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await expect(page.locator(".workspace-meta-bar, .workspace-commandbar, .workspace-command-bar")).toHaveCount(0);
   const caseControls = page.locator(".workspace-case-controls");
   expect(await caseControls.evaluate((element) => (element as HTMLDetailsElement).open)).toBe(false);
-  await caseControls.locator("summary").click();
+  await openDisclosure(page, ".workspace-case-controls");
   const reference = page.getByLabel(/^Referencia completa:/);
   await expect(reference).toBeVisible();
   const id = (await reference.textContent())?.trim();
@@ -445,13 +456,14 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   const action = state.investigation.actions[0]!;
   await expect(page.getByRole("button", { name: /Proponer comprobación|Aprobar acción/ })).toHaveCount(0);
   await expect(page.getByLabel("Motivo para proponer")).toHaveCount(0);
-  await caseControls.locator("summary").click();
+  await openDisclosure(page, ".workspace-case-controls");
   const dispatch = page.getByRole("button", { name: "Ejecutar siguiente acción en cola" });
   await expect(dispatch).toBeDisabled();
   await openNodeList(page);
   await page.locator(".graph-node-list").getByRole("button", { name: new RegExp(`^Acción: ${action.id}\\.`) }).click();
   await expect(page.getByLabel("Motivo de aprobación")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Aprobar acción" })).toHaveCount(0);
+  await openDisclosure(page, ".workspace-case-controls");
   await page.getByLabel("Motivo de autorización").fill("Autorizar el alcance del expediente, sin aprobación por nodo.");
   await page.getByRole("button", { name: "Otorgar autorización" }).click();
   await expect.poll(async () => (await readState(request, id!)).investigation.authorization?.granted).toBe(true);
@@ -464,10 +476,11 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect((await readState(request, id!)).executionCount, "automatic worker leaves authorized manual cases untouched").toBe(0);
   await expect(dispatch).toBeEnabled();
 
-  await page.locator(".workspace-pause-disclosure summary").click();
+  await openDisclosure(page, ".workspace-pause-disclosure");
   await page.getByLabel("Motivo para pausar el expediente").fill("Pausar antes del despacho explícito.");
   await page.getByRole("button", { name: "Pausar expediente" }).click();
   await expect.poll(async () => (await readState(request, id!)).investigation.paused).toBe(true);
+  await openDisclosure(page, ".workspace-case-controls");
   await expect(dispatch).toBeDisabled();
   const blockedDispatch = await request.post(`${BASE_URL}/investigations/${encodeURIComponent(id!)}/actions/run`);
   expect(blockedDispatch.status()).toBe(200);
@@ -477,15 +490,17 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect(state.executionCount).toBe(0);
   expect(count(state, "POST /investigations/:id/actions/run")).toBe(1);
 
+  await openDisclosure(page, ".workspace-pause-disclosure");
   await page.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin despachar automáticamente.");
   await page.getByRole("button", { name: "Reanudar expediente" }).click();
   await expect.poll(async () => (await readState(request, id!)).investigation.paused).toBe(false);
+  await openDisclosure(page, ".workspace-case-controls");
   await expect(dispatch).toBeEnabled();
   state = await readState(request, id!);
   expect(state.executionCount).toBe(0);
   expect(count(state, "POST /investigations/:id/actions/run")).toBe(1);
 
-  await page.locator(".workspace-pause-disclosure summary").click();
+  await openDisclosure(page, ".workspace-case-controls");
   await dispatch.click();
   await expect.poll(async () => (await readState(request, id!)).investigation.actions[0]?.status).toBe("succeeded");
   state = await readState(request, id!);
@@ -512,6 +527,7 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   ]);
 
   // Keep the remaining manual action queued and independently revoke case authorization.
+  await openDisclosure(page, ".workspace-case-controls");
   await page.getByLabel("Motivo de autorización").fill("Retirar autorización antes de la siguiente acción.");
   await page.getByRole("button", { name: "Revocar autorización" }).click();
   await expect.poll(async () => (await readState(request, id!)).investigation.authorization?.granted).toBe(false);
@@ -529,7 +545,9 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   const evidenceListButton = page.locator(".graph-node-list").getByRole("button", { name: new RegExp(`^Evidencia: ${evidence.id}\\.`) });
   await graph.locator(".graph-node--seed").first().click();
   await expect(page.getByRole("heading", { name: "Semilla" })).toBeVisible();
-  await graph.locator(".graph-node--evidence").first().click();
+  // The open drawer narrows the canvas, so a panned node can sit half past its edge:
+  // click its visible corner, as a user would.
+  await graph.locator(".graph-node--evidence").first().click({ position: { x: 24, y: 24 } });
   await expect(page.getByRole("heading", { name: "Observación de registro" })).toBeVisible();
   await openNodeList(page);
   await evidenceListButton.click();
@@ -609,7 +627,7 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
     expect(node.bottom).toBeLessThanOrEqual(fitGeometry.viewport.bottom + 1);
   }
 
-  await caseControls.locator("summary").click();
+  await closeDisclosure(page, ".workspace-case-controls");
   const mobileGraphTab = page.getByRole("tab", { name: "Grafo" });
   const mobileDetailTab = page.getByRole("tab", { name: "Detalle" });
   await page.setViewportSize(MOBILE);
@@ -736,10 +754,10 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   console.log("Outside-graph touch scroll", await page.evaluate(() => window.scrollY));
   await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: false });
   await touchSession.detach();
-  await caseControls.locator("summary").click();
+  await openDisclosure(page, ".workspace-case-controls");
   await expect(page.getByRole("button", { name: "Actualizar expediente" })).toBeVisible();
   await expect(dispatch).toBeDisabled();
-  await caseControls.locator("summary").click();
+  await closeDisclosure(page, ".workspace-case-controls");
   for (const width of [320, 768, 1024]) {
     await page.setViewportSize({ width, height: 941 });
     await expectNoHorizontalOverflow(page, `${width}px workspace detail`);
@@ -866,8 +884,7 @@ test("automatic default drains on the backend without node approval or browser e
   await page.getByLabel("Correo electrónico 2").fill(`automatic-second-${suffix}@example.test`);
   await page.getByRole("button", { name: "Crear investigación" }).click();
   await expect(page.getByRole("heading", { name: `Automático ${suffix}` })).toBeVisible();
-  const controls = page.locator(".workspace-case-controls");
-  await controls.locator("summary").click();
+  await openDisclosure(page, ".workspace-case-controls");
   const id = (await page.getByLabel(/^Referencia completa:/).textContent())!.trim();
   const initial = await readState(request, id);
   const before = initial.executionCount;
@@ -880,22 +897,26 @@ test("automatic default drains on the backend without node approval or browser e
   await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(initial.enumerationCount + 1);
   expect((await readState(request, id)).executionCount, "no authorization means no background execution").toBe(before);
 
-  await page.locator(".workspace-pause-disclosure summary").click();
+  await openDisclosure(page, ".workspace-pause-disclosure");
   await page.getByLabel("Motivo para pausar el expediente").fill("Revisar alcance antes de ejecutar.");
   await page.getByRole("button", { name: "Pausar expediente" }).click();
+  await openDisclosure(page, ".workspace-case-controls");
   await page.getByLabel("Motivo de autorización").fill("Autorizar el caso mientras permanece pausado.");
   await page.getByRole("button", { name: "Otorgar autorización" }).click();
   let paused = await readState(request, id);
   await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(paused.enumerationCount + 1);
   expect((await readState(request, id)).executionCount, "pause blocks an authorized automatic queue").toBe(before);
+  await openDisclosure(page, ".workspace-case-controls");
   await page.getByLabel("Motivo de autorización").fill("Retirar autorización durante la revisión.");
   await page.getByRole("button", { name: "Revocar autorización" }).click();
+  await openDisclosure(page, ".workspace-pause-disclosure");
   await page.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin volver a otorgar autorización.");
   await page.getByRole("button", { name: "Reanudar expediente" }).click();
   paused = await readState(request, id);
   await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(paused.enumerationCount + 1);
   expect((await readState(request, id)).executionCount, "revocation blocks the resumed queue").toBe(before);
 
+  await openDisclosure(page, ".workspace-case-controls");
   await page.getByLabel("Motivo de autorización").fill("Autorizar el alcance revisado del expediente.");
   await page.getByRole("button", { name: "Otorgar autorización" }).click();
   await expect.poll(async () => (await readState(request, id)).investigation.actions.map((action) => action.status)).toEqual(["succeeded", "succeeded"]);

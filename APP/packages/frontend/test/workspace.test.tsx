@@ -127,7 +127,10 @@ describe("espacio de investigación factual", () => {
     expect(document.querySelector(".workspace-meta-bar, .workspace-commandbar, .workspace-command-bar")).toBeNull();
     const detail = screen.getByRole("tabpanel", { name: "Detalle" });
     expect(within(detail).queryByRole("button", { name: /proponer comprobación/i })).not.toBeInTheDocument();
-    const controls = within(detail).getByText("Controles del expediente").closest("details")!;
+    // Case-level controls live in the page header, not in the node detail drawer.
+    expect(within(detail).queryByText("Controles del expediente")).not.toBeInTheDocument();
+    const header = document.querySelector<HTMLElement>(".workspace-header")!;
+    const controls = within(header).getByText("Controles del expediente").closest("details")!;
     expect(controls).not.toHaveAttribute("open");
     expect(within(controls).getByRole("button", { name: /ejecutar siguiente/i })).not.toBeVisible();
     await openCaseControls(user);
@@ -546,5 +549,59 @@ describe("espacio de investigación factual", () => {
     await waitFor(() => expect(loads).toBe(2));
     expect(calls.filter((call) => pathOf(call) === "/investigations/case-1")).toHaveLength(2);
     expect(screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i })).toBeDisabled();
+  });
+});
+
+describe("detalle del nodo como panel desplegable", () => {
+  const layout = () => document.querySelector<HTMLElement>(".workspace-layout")!;
+
+  it("permanece cerrado hasta seleccionar un nodo y se abre con la selección", async () => {
+    installFetch(async () => json(snapshot()));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    await screen.findByRole("heading", { name: "Caso de prueba" });
+    expect(layout()).toHaveAttribute("data-detail-open", "false");
+    const seedNode = screen.getAllByRole("button", { name: /^Semilla:/u }).find((element) => element.tagName.toLowerCase() === "g")!;
+    await user.click(seedNode);
+    expect(layout()).toHaveAttribute("data-detail-open", "true");
+    expect(within(screen.getByRole("tabpanel", { name: "Detalle" })).getByRole("heading", { name: "Semilla" })).toBeInTheDocument();
+  });
+
+  it("se cierra con su botón o con Escape y devuelve el foco al nodo seleccionado", async () => {
+    installFetch(async () => json(snapshot()));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    await screen.findByRole("heading", { name: "Caso de prueba" });
+    const seedNode = screen.getAllByRole("button", { name: /^Semilla:/u }).find((element) => element.tagName.toLowerCase() === "g")!;
+    await user.click(seedNode);
+    await user.click(screen.getByRole("button", { name: "Cerrar detalle" }));
+    expect(layout()).toHaveAttribute("data-detail-open", "false");
+    expect(seedNode).toHaveFocus();
+
+    fireEvent.keyDown(seedNode, { key: "Enter" });
+    expect(layout()).toHaveAttribute("data-detail-open", "true");
+    fireEvent.keyDown(screen.getByRole("button", { name: "Cerrar detalle" }), { key: "Escape" });
+    expect(layout()).toHaveAttribute("data-detail-open", "false");
+    expect(seedNode).toHaveFocus();
+  });
+});
+
+describe("desplegables del encabezado", () => {
+  it("se cierran al interactuar fuera de ellos o con Escape, sin cerrarse al usarlos", async () => {
+    installFetch(async () => json(snapshot()));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    await screen.findByRole("heading", { name: "Caso de prueba" });
+    const controls = screen.getByText("Controles del expediente").closest("details")!;
+    await openCaseControls(user);
+    expect(controls).toHaveAttribute("open");
+    await user.click(within(controls).getByLabelText("Motivo de autorización"));
+    expect(controls).toHaveAttribute("open");
+    await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
+    expect(controls).not.toHaveAttribute("open");
+
+    await openCaseControls(user);
+    await user.keyboard("{Escape}");
+    expect(controls).not.toHaveAttribute("open");
   });
 });
