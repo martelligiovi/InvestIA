@@ -8,6 +8,12 @@ Use Vite at `127.0.0.1:5173` for development, or build once and let the loopback
 
 `e2e/visual-design.spec.ts` checks desktop/mobile navigation, history visibility, compact headings, email controls and graph/detail controls. Screenshots are written to the ignored `test-results/redesign/` directory. The acceptance suite covers complete workflows.
 
+## Seeds, actions and grouped leaves
+
+The starting email is an operator seed and remains the only accepted input type. Every recorded finding is also a seed (for example, a reported Canva registration), with provenance from its producing action. `investigationSeedGraph` in core derives these identities from existing records without migrating stored investigations or queuing new actions. An action may explicitly name a `sourceSeedId`; otherwise its embedded operator email is its input. Matching discovered values never establishes a causal edge.
+
+Two or more seeds without actions produced by the same action appear as one paper stack. The two rotated sheets are decorative, not a count of records. Seeds with actions remain separate branches; a single leaf keeps its own card. Select a stack to browse its results, 50 per detail page, then open any result for full provenance and human validation. **Volver al grupo** returns to the stack without expanding the graph or issuing requests. Errors and empty results retain their existing presentation. Keyboard selection, centering and zoom remain available.
+
 ## Full stack without a dev server
 
 From `APP/`, run `docker compose up -d --build` and open http://127.0.0.1:4317. The app image builds and bundles this frontend beside the backend's TS sources; there is no separate Vite container. Relative API calls are same-origin, with no CORS or proxy setup required. The image also provisions the Linux Python CLI, so the host venv instructions below apply only to native development.
