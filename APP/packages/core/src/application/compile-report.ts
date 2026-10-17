@@ -36,7 +36,7 @@ export function compileInvestigationReport(investigation: Investigation): string
     ]),
   ];
   const evidenceRows: string[][] = [
-    ["Evidence", "Action", "Email seed", "Provider", "Registration status", "Source", "Recorded at"],
+    ["Evidence", "Action", "Email seed", "Provider", "Registration status", "Source", "Recorded at", "Target kind", "Observed target", "Upstream status", "URL", "Category", "Reason", "Metadata", "Media"],
     ...investigation.evidence.map((evidence) => [
       markdownText(evidence.id),
       markdownText(evidence.actionId),
@@ -45,6 +45,14 @@ export function compileInvestigationReport(investigation: Investigation): string
       markdownText(evidence.status),
       markdownText(evidence.sourceId),
       markdownText(evidence.recordedAt),
+      markdownText(evidence.finding?.target.kind ?? "email"),
+      markdownText(evidence.finding?.target.value ?? evidence.seed.value),
+      markdownText(evidence.finding?.upstreamStatus ?? evidence.status),
+      markdownText(evidence.finding?.url ?? ""),
+      markdownText(evidence.finding?.category ?? ""),
+      markdownText(evidence.finding?.reason ?? ""),
+      markdownText(JSON.stringify(evidence.finding?.extra ?? {})),
+      markdownText(JSON.stringify(evidence.finding?.media ?? {})),
     ]),
   ];
   const validationRows: string[][] = [
@@ -87,7 +95,7 @@ export function compileInvestigationReport(investigation: Investigation): string
       ? "- None recorded."
       : investigation.emailSeeds.map((seed) => `- ${markdownText(seed.value)}`).join("\n"),
     "",
-    "## GitHub action queue",
+    "## Tool action queue",
     table(actionRows),
     "",
     "## Evidence",
@@ -97,12 +105,12 @@ export function compileInvestigationReport(investigation: Investigation): string
     table(validationRows),
     "",
     "## Identity attribution",
-    "Identity attribution is unsupported and is not asserted. Only GitHub registration observations are retained as evidence.",
+    "Identity attribution is unsupported and is not asserted. Scanner findings retain observed targets, links, metadata, media and upstream provenance/confidence alongside historical registration observations. Confidence is the tool's assessment, not a human identity verdict.",
     "",
     "## Audit decisions",
     table(auditRows),
     "",
-    "Registration statuses are recorded as returned; `unknown` and `error` are not converted into positive or negative findings.",
+    "Only positive tool-reported results (`Registered` / `Found`, normalized as `registered`) are retained as findings. Negative, uncertain and provider-error results are not stored as evidence. A finding records what the tool reported about its observed target; it does not independently confirm account ownership or identity and may contain tool errors.",
     "A claimed action may remain in flight after a process crash; its external outcome is unknown and it is not automatically retried.",
     "Application claims prevent duplicate dispatch, but cannot guarantee exactly-once remote effects.",
     "",

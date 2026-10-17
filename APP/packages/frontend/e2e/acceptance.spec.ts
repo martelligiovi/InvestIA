@@ -493,7 +493,7 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
     actionId: action.id,
     provider: "github",
     sourceId: "test-only-fake-github-observer",
-    status: "unknown",
+    status: "registered",
   });
   expect(count(state, "POST /investigations/:id/actions/run")).toBe(2);
   expect(state.investigation.audit.map((event) => event.kind)).toEqual([
@@ -542,7 +542,7 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect(await graph.locator("[data-edge]").count()).toBe(3);
   expect(await graph.locator(".graph-node").count()).toBe(5);
 
-  const graphBox = await graph.boundingBox();
+  const graphBox = await page.locator(".graph-viewport").boundingBox();
   expect(graphBox).not.toBeNull();
   const dragStart = { x: graphBox!.x + graphBox!.width - 12, y: graphBox!.y + graphBox!.height - 12 };
   const dragTargetTag = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName.toLowerCase(), dragStart);
@@ -580,13 +580,12 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await zoomButton.click();
   const afterZoom = parseTransform(await graph.locator(":scope > g").getAttribute("transform"));
   expect(afterZoom.scale).toBeCloseTo(beforeZoom.scale * 1.25, 6);
-  await page.getByRole("button", { name: "Ajustar grafo" }).click();
+  await page.getByRole("button", { name: "Centrar nodo seleccionado" }).click();
   const fittedTransform = parseTransform(await graph.locator(":scope > g").getAttribute("transform"));
-  expect(fittedTransform.scale).toBeGreaterThan(0);
-  expect(fittedTransform.scale).toBeLessThanOrEqual(2.4);
+  expect(fittedTransform.scale).toBe(1);
   const fitGeometry = await page.evaluate(() => {
     const viewport = document.querySelector<HTMLElement>(".graph-viewport")!.getBoundingClientRect();
-    const nodes = [...document.querySelectorAll<SVGGraphicsElement>(".investigation-graph .graph-node")]
+    const nodes = [...document.querySelectorAll<SVGGraphicsElement>(".investigation-graph .graph-node.is-selected")]
       .map((node) => {
         const box = node.getBoundingClientRect();
         return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
@@ -594,8 +593,9 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
     const matrix = (document.querySelector(".investigation-graph") as SVGSVGElement).getScreenCTM()!;
     return { viewport: { left: viewport.left, right: viewport.right, top: viewport.top, bottom: viewport.bottom }, nodes, matrix: { a: matrix.a, d: matrix.d } };
   });
-  expect(fitGeometry.matrix.a).toBeGreaterThan(0);
-  expect(fitGeometry.matrix.d).toBeGreaterThan(0);
+  expect(fitGeometry.matrix.a).toBe(1);
+  expect(fitGeometry.matrix.d).toBe(1);
+  expect(fitGeometry.nodes).toHaveLength(1);
   for (const node of fitGeometry.nodes) {
     expect(node.left).toBeGreaterThanOrEqual(fitGeometry.viewport.left - 1);
     expect(node.right).toBeLessThanOrEqual(fitGeometry.viewport.right + 1);
@@ -610,8 +610,8 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await expectNoHorizontalOverflow(page, "mobile workspace overview");
   await expectNoClippedLabelsOrControls(page, "mobile workspace overview");
   await mobileGraphTab.scrollIntoViewIfNeeded();
-  await graph.scrollIntoViewIfNeeded();
-  const mobileGraphBox = await graph.boundingBox();
+  await page.locator(".graph-viewport").scrollIntoViewIfNeeded();
+  const mobileGraphBox = await page.locator(".graph-viewport").boundingBox();
   expect(mobileGraphBox).not.toBeNull();
   const mobileDragStart = { x: mobileGraphBox!.x + mobileGraphBox!.width - 5, y: mobileGraphBox!.y + mobileGraphBox!.height - 5 };
   expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName.toLowerCase(), mobileDragStart)).toBe("svg");
@@ -674,7 +674,8 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect(touchTransforms[2]!.x - touchBefore.x).toBeCloseTo((-mobileMatrix.d * 72 + mobileMatrix.c * 72) / mobileDeterminant, 0);
   expect(touchTransforms[2]!.y - touchBefore.y).toBeCloseTo((mobileMatrix.b * 72 - mobileMatrix.a * 72) / mobileDeterminant, 0);
   expect(await page.evaluate(() => window.scrollY), "graph drag must not scroll the page").toBe(scrollBeforeTouch);
-  await page.getByRole("button", { name: "Ajustar grafo" }).click();
+  await page.locator(".graph-node-list button").first().click();
+  await page.getByRole("button", { name: "Centrar nodo seleccionado" }).click();
   const touchNode = graph.locator(".graph-node--seed").first();
   const touchNodeBox = await touchNode.boundingBox();
   expect(touchNodeBox).not.toBeNull();
@@ -688,9 +689,10 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await page.keyboard.press("Enter");
   await expect(keyboardNode).toHaveAttribute("aria-pressed", "true");
   await mobileGraphTab.click();
+  await page.getByRole("button", { name: "Centrar nodo seleccionado" }).click();
   const mobileFitGeometry = await page.evaluate(() => {
     const viewport = document.querySelector<HTMLElement>(".graph-viewport")!.getBoundingClientRect();
-    const nodes = [...document.querySelectorAll<SVGGraphicsElement>(".investigation-graph .graph-node")].map((node) => node.getBoundingClientRect());
+    const nodes = [...document.querySelectorAll<SVGGraphicsElement>(".investigation-graph .graph-node.is-selected")].map((node) => node.getBoundingClientRect());
     const matrix = (document.querySelector(".investigation-graph") as SVGSVGElement).getScreenCTM()!;
     return { viewport: { left: viewport.left, right: viewport.right, top: viewport.top, bottom: viewport.bottom }, nodes: nodes.map((node) => ({ left: node.left, right: node.right, top: node.top, bottom: node.bottom })), scale: { x: matrix.a, y: matrix.d } };
   });
@@ -744,7 +746,7 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   }
 
   await page.setViewportSize(DESKTOP);
-  await page.getByRole("button", { name: "Ajustar grafo" }).click();
+  await page.getByRole("button", { name: "Centrar nodo seleccionado" }).click();
   await expectNoHorizontalOverflow(page, "desktop factual workspace");
   await expectNoClippedLabelsOrControls(page, "desktop factual workspace");
   await closeNodeList(page);
@@ -757,7 +759,7 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await expect.poll(async () => (await readState(request, id!)).investigation.validations.length).toBe(1);
   state = await readState(request, id!);
   expect(state.investigation.validations[0]).toMatchObject({ evidenceId: evidence.id, status: "accepted" });
-  expect(state.investigation.evidence[0]?.status).toBe("unknown");
+  expect(state.investigation.evidence[0]?.status).toBe("registered");
   expect(state.executionCount).toBe(1);
   expect(count(state, "POST /investigations/:id/evidence/:evidenceId/validation")).toBe(1);
 

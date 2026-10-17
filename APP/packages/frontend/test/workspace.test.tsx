@@ -192,9 +192,11 @@ describe("espacio de investigación factual", () => {
     render(<WorkspacePage id="case-1" />);
     const graph = await screen.findByRole("group", { name: /grafo factual/i });
     await user.click(screen.getByRole("button", { name: /acercar grafo/i }));
-    expect(graph.querySelector("g[transform]")).toHaveAttribute("transform", "translate(0 0) scale(1.25)");
-    await user.click(screen.getByRole("button", { name: /ajustar grafo/i }));
-    expect(graph.querySelector("g[transform]")).toHaveAttribute("transform", "translate(0 0) scale(1)");
+    // Zoom remains available, but now anchors at the viewport center rather than the origin.
+    expect(graph.querySelector("g[transform]")?.getAttribute("transform")).toMatch(/^translate\([\d.-]+ [\d.-]+\) scale\(1\.25\)$/u);
+    await user.click(screen.getByRole("button", { name: "Centrar nodo seleccionado" }));
+    expect(graph.querySelector("g[transform]")?.getAttribute("transform")).toMatch(/^translate\([\d.-]+ [\d.-]+\) scale\(1\)$/u);
+    expect(screen.getByRole("button", { name: /alejar grafo/i })).toBeDisabled();
     await user.click(screen.getByRole("tab", { name: "Detalle" }));
     expect(document.querySelector(".workspace-layout")).toHaveAttribute("data-mobile-panel", "detail");
 

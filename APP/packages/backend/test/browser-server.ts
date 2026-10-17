@@ -118,7 +118,7 @@ const executor: InvestigationExecutor = {
       kind: "registration",
       seed: action.spec.seed,
       provider: "github",
-      status: "unknown",
+      status: "registered",
     }];
   },
 };

@@ -10,7 +10,7 @@
     }
   },
   "dependencies": {
-    "@investia/adapter-holehe": "workspace:*",
+    "@investia/adapter-user-scanner": "workspace:*",
     "@investia/core": "workspace:*",
     "@langchain/langgraph": "^1.4.19",
     "@langchain/langgraph-checkpoint-postgres": "^1.0.5",

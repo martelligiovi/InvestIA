@@ -5,7 +5,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import neo4j from "neo4j-driver";
 import { Pool } from "pg";
-import { createHoleheBox } from "../../adapter-holehe/src/index.ts";
+import { createUserScannerBox } from "../../adapter-user-scanner/src/index.ts";
 import {
   createInvestigationService,
   createSeedBoxExecutor,
@@ -58,7 +58,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     if (options.checkpointer === undefined) await (checkpointer as PostgresSaver).setup();
     const service = createInvestigationService({
       store,
-      executor: options.executor ?? createSeedBoxExecutor(createHoleheBox()),
+      executor: options.executor ?? createSeedBoxExecutor(createUserScannerBox()),
       clock: () => new Date().toISOString(),
       createId: (kind) => `${kind}-${randomUUID()}`,
     });

@@ -71,7 +71,7 @@ function openRuntime(config: TestConfig, namespace: string, executions: Executio
             kind: "registration",
             seed: action.spec.seed,
             provider: "github",
-            status: "unknown",
+            status: "registered",
           }];
         },
       };
@@ -283,7 +283,7 @@ test("real API workflow persists PostgreSQL state and PostgresSaver checkpoints 
     const evidenceId = afterFirstRun.evidence[0]!.id;
     const validation = await runtime.app.inject({
       method: "POST", url: `/investigations/${investigationId}/evidence/${evidenceId}/validation`,
-      payload: { status: "accepted", reason: "Accept the fake unknown registration observation as recorded evidence." },
+      payload: { status: "accepted", reason: "Accept the fake positive registration observation as recorded evidence." },
     });
     assert.equal(validation.statusCode, 201);
 
@@ -322,7 +322,7 @@ test("real API workflow persists PostgreSQL state and PostgresSaver checkpoints 
     assert.match(report.body, /# Local workflow T1/);
     assert.match(report.body, /Identity attribution is unsupported/);
     assert.match(report.body, /accepted/);
-    assert.match(report.body, /unknown/);
+    assert.match(report.body, /registered/);
 
     const persistedBeforeReconnect = (await runtime.store.get(investigationId))!;
     assert.equal(persistedBeforeReconnect.name, "Local workflow T1");

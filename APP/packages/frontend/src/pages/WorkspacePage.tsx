@@ -5,7 +5,7 @@ import { InvestigationGraph } from "../components/InvestigationGraph";
 import { WorkspaceDetails } from "../components/WorkspaceDetails";
 import { buildWorkspaceGraph, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
-import { workspaceHeadline } from "./workspace-status";
+import { hasCatalogAuthorization, workspaceHeadline } from "./workspace-status";
 
 export interface WorkspacePageProps {
   readonly id: string;
@@ -65,7 +65,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   if (investigation === null || graph === null) return <LoadingWorkspace />;
   const selectedNode: WorkspaceNode | null = graph.nodes.find((node) => node.id === selectedId) ?? graph.nodes[0] ?? null;
   const selectedNodeId = selectedNode?.id ?? null;
-  const authorizationGranted = investigation.authorization?.granted === true;
+  const authorizationGranted = hasCatalogAuthorization(investigation);
   const automatic = investigation.advancementMode === "automatic";
   const queuedActions = investigation.actions.filter((action) => action.status === "queued" && (action.queuedByCatalog === true || action.approval !== undefined));
   const claimedActions = investigation.actions.filter((action) => action.status === "claimed");
@@ -218,14 +218,15 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             <button className="workspace-button workspace-button--quiet" type="button" disabled={controller.busy} onClick={() => void controller.refresh()}>
               {controller.busy ? "Actualizando…" : "Actualizar expediente"}
             </button>
-            <p>{investigation.authorization === undefined ? "Sin autorización registrada" : authorizationGranted ? "Autorización otorgada" : "Autorización revocada"}</p>
+            <p>{investigation.authorization === undefined ? "Sin autorización registrada" : authorizationGranted ? "Autorización otorgada" : investigation.authorization.granted ? "Autorización histórica: requiere consentimiento para user-scanner" : "Autorización revocada"}</p>
+             <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos. Revocar o pausar no cancela una ejecución en curso.</p>
             <label className="form-field">
               <span>Motivo de autorización</span>
               <textarea value={authorizationReason} maxLength={2_000} onChange={(event) => { setAuthorizationReason(event.currentTarget.value); setFormError(""); }} disabled={controlsDisabled} rows={2} />
             </label>
             <div className="authorization-actions">
               <button className="workspace-button" type="button" disabled={controlsDisabled || authorizationReason.trim() === "" || authorizationGranted} onClick={() => void updateAuthorization(true)}>Otorgar autorización</button>
-              <button className="workspace-button" type="button" disabled={controlsDisabled || authorizationReason.trim() === "" || !authorizationGranted} onClick={() => void updateAuthorization(false)}>Revocar autorización</button>
+              <button className="workspace-button" type="button" disabled={controlsDisabled || authorizationReason.trim() === "" || investigation.authorization?.granted !== true} onClick={() => void updateAuthorization(false)}>Revocar autorización</button>
             </div>
             <p>{queuedActions.length} acción{queuedActions.length === 1 ? "" : "es"} {authorizationGranted && !investigation.paused ? "en cola habilitada" : "en cola bloqueada"}.</p>
             {automatic ? (

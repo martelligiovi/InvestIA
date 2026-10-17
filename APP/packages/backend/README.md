@@ -10,35 +10,35 @@ Compose sets `INVESTIA_CONTAINER_NETWORKING=true`: only this exact opt-in allows
 
 The sections below describe the **native development alternative**, with databases in Docker and the backend on the host.
 
-## Provision the local Holehe interpreter
+## Provision the local User Scanner interpreter
 
-Before starting the real backend, provision its Python bridge dependencies in the ignored checkout-local `APP/.venv`. The manifest pins adapter dependencies; do not install them globally or silently change versions. These commands are from the repository root.
+Before starting the real backend, provision its Python CLI dependencies in the ignored checkout-local `APP/.venv-user-scanner`. The manifest pins adapter dependencies; do not install them globally or silently change versions. These commands are from the repository root.
 
 **Windows PowerShell:**
 
 ```powershell
-python -m venv APP/.venv
-APP\.venv\Scripts\python.exe -m pip install -r APP\packages\adapter-holehe\python\requirements.txt
-$env:PYTHON = (Resolve-Path APP\.venv\Scripts\python.exe).Path
+python -m venv APP/.venv-user-scanner
+APP\.venv-user-scanner\Scripts\python.exe -m pip install -r APP\packages\adapter-user-scanner\python\requirements.txt
+$env:PYTHON = (Resolve-Path APP\.venv-user-scanner\Scripts\python.exe).Path
 ```
 
 **Bash on Windows:**
 
 ```bash
-python -m venv APP/.venv
-APP/.venv/Scripts/python.exe -m pip install -r APP/packages/adapter-holehe/python/requirements.txt
-export PYTHON="$PWD/APP/.venv/Scripts/python.exe"
+python -m venv APP/.venv-user-scanner
+APP/.venv-user-scanner/Scripts/python.exe -m pip install -r APP/packages/adapter-user-scanner/python/requirements.txt
+export PYTHON="$PWD/APP/.venv-user-scanner/Scripts/python.exe"
 ```
 
 **POSIX:**
 
 ```bash
-python3 -m venv APP/.venv
-APP/.venv/bin/python -m pip install -r APP/packages/adapter-holehe/python/requirements.txt
-export PYTHON="$PWD/APP/.venv/bin/python"
+python3 -m venv APP/.venv-user-scanner
+APP/.venv-user-scanner/bin/python -m pip install -r APP/packages/adapter-user-scanner/python/requirements.txt
+export PYTHON="$PWD/APP/.venv-user-scanner/bin/python"
 ```
 
-Keep that `PYTHON` value in the backend process environment. The bridge is reached only for an authorized, unpaused case with eligible queued work. Starting the backend resumes automatic cases from persisted queues and can therefore call Holehe without a browser or run-next click. Do not authorize real cases merely to verify startup. See the [adapter guide](../adapter-holehe/README.md).
+Keep that `PYTHON` value in the backend process environment. The scanner is reached only for an authorized, unpaused case with eligible queued work. Starting the backend resumes automatic cases from persisted queues and can therefore call User Scanner without a browser or run-next click. Do not authorize real cases merely to verify startup. See the [adapter guide](../adapter-user-scanner/README.md).
 
 ## Start local services (Windows PowerShell)
 
@@ -68,7 +68,7 @@ Keep that `PYTHON` value in the backend process environment. The bridge is reach
 3. Set development connection values in the same shell that runs the API. From the repository root, use either PowerShell:
 
    ```powershell
-   $env:PYTHON = (Resolve-Path APP\.venv\Scripts\python.exe).Path
+   $env:PYTHON = (Resolve-Path APP\.venv-user-scanner\Scripts\python.exe).Path
    $env:DATABASE_URL = 'postgresql://investia:investia_dev_password@127.0.0.1:5432/investia'
    $env:NEO4J_URI = 'neo4j://127.0.0.1:7687'
    $env:NEO4J_USERNAME = 'neo4j'
@@ -80,8 +80,8 @@ Keep that `PYTHON` value in the backend process environment. The bridge is reach
    Or Bash:
 
    ```bash
-   export PYTHON="$PWD/APP/.venv/Scripts/python.exe" # Bash on Windows
-   # On POSIX, use instead: export PYTHON="$PWD/APP/.venv/bin/python"
+   export PYTHON="$PWD/APP/.venv-user-scanner/Scripts/python.exe" # Bash on Windows
+   # On POSIX, use instead: export PYTHON="$PWD/APP/.venv-user-scanner/bin/python"
    export DATABASE_URL='postgresql://investia:investia_dev_password@127.0.0.1:5432/investia'
    export NEO4J_URI='neo4j://127.0.0.1:7687'
    export NEO4J_USERNAME='neo4j'
@@ -110,11 +110,19 @@ After `pnpm --dir APP build`, the backend serves the built frontend at `/` and i
 - `GET /investigations/:id/report` (factual Markdown from persisted state)
 - `POST /investigations/projections/reconcile`
 
-New investigations default to `advancementMode: "automatic"`; choose `"manual"` at creation to require case-level run-next. Intention is persisted once at creation, never reused as an action reason. Recording an email seed atomically adds its GitHub catalog action to the queue with `queuedByCatalog: true` and a system `action_queued` event, not a human approval. PostgreSQL checks case authorization, pause state, and catalog eligibility (or a genuine historical approval) inside the claim transaction. Automatic claims additionally recheck persisted automatic mode; missing legacy mode is manual.
+New investigations default to `advancementMode: "automatic"`; choose `"manual"` at creation to require case-level run-next. Intention is persisted once at creation, never reused as an action reason. Recording an email seed atomically adds its User Scanner catalog action to the queue with `queuedByCatalog: true` and a system `action_queued` event, not a human approval. PostgreSQL checks case authorization, pause state, and catalog eligibility (or a genuine historical approval) inside the claim transaction. Automatic claims additionally recheck persisted automatic mode; missing legacy mode is manual.
 
 The worker enumerates persisted investigations immediately at startup and then waits one second after each completed sweep. Sweeps are single-flight and capped at 16 claim attempts, with a rotating case cursor. Errors end that case's sweep and are reported without immediate retries. Queued actions resume after restart; claimed actions remain fenced because their external outcome is uncertain. Terminal failures are retained, never automatically retried. Multiple workers and manual requests rely on the same atomic PostgreSQL claim gate to avoid claiming an action twice. Neo4j projection is downstream and cannot trigger a repeat execution.
 
-Historical snapshots, events, and proposal/approval endpoints remain available. An explicit historical proposal request replaces only an unclaimed, unapproved catalog queue entry with the historical proposed workflow; claimed/terminal entries cannot be rewritten. This compatibility path is not exposed by the current product UI. Existing historical proposals remain inert until a genuine approval through that old API; the worker never fabricates one. API and integration workflow tests inject a fake executor; they never query live accounts. The API has no authentication system, so its loopback-only bind is the local security boundary.
+Historical snapshots, events and approvals remain readable. The proposals endpoint now creates explicit User Scanner proposals, requiring approval. Stored GitHub-only actions are not reinterpreted: the production scanner executor rejects them before provider dispatch, retaining a terminal failure. An explicit new scanner proposal for that seed is required. Claimed and terminal entries are never rewritten or retried. API and integration workflow tests inject a fake executor; they never query live accounts. The API has no authentication system, so its loopback-only bind is the local security boundary.
+
+## Scanner findings and compatibility
+
+The active catalog is `user-scanner.email.v1`. Its email SeedBox runs the requested loud/cross-scan command and retains every valid JSON result with observed email/username, platform, URL, upstream status, category, reason, metadata, media and provenance/confidence. Original email seeds stay separate; discoveries do not enqueue new actions. PostgreSQL stores the additive `finding` payload, Neo4j projects both its full JSON and key target/provenance properties, and reports include those fields. Confidence is not identity attribution.
+
+Fresh grants carry `catalogScope: "user-scanner.email.v1"`. Legacy authorization without that scope never permits a broader scanner claim; grant authorization again after reviewing the UI warning. Old GitHub-only records remain readable, but the scanner refuses their execution before contacting providers. Missing legacy advancement mode remains manual. No data/volume reset or automatic replay is needed.
+
+See [the adapter guide](../adapter-user-scanner/README.md) for pinned installation and target-free CLI checks.
 
 ## Tests and honest verification status
 
@@ -158,3 +166,6 @@ Latest recorded independent MVP checks: **110 TypeScript tests passed (0 failed,
 The Chromium scenario is functional evidence, not visual identity with the references. Corrected desktop/mobile screenshots were independently inspected: title wrapping, CTA visibility, ornament spacing and linen texture passed the MVP acceptance checks. The design is a usable interpretation, not a pixel-identical copy. Fresh-client reconstruction is not an abrupt process-crash test. Abrupt crashes, interruption of external effects, and concurrent Neo4j interleavings remain untested.
 
 All integration records use unique IDs. The workflow test removes only its own PostgreSQL investigation, checkpoint rows for its generated thread ID, and Neo4j nodes scoped to its generated investigation ID. It does not drop databases, shared tables/constraints, or volumes. Other existing database integration tests may retain their uniquely identified test records.
+## Positive finding retention
+
+Only tool-reported positive results (`Registered` / `Found`, normalized as `registered`) are admitted to persisted evidence and therefore to the graph and report. Negative, unknown, skipped and provider-error rows are not retained as findings; valid omitted results are not counted as unsupported inputs. A successful scan may produce no admitted evidence. Execution failures remain terminal action failures and are not silently discarded or retried. Findings describe the observed target, including cross-discovered targets, not necessarily the original email seed. A tool report is not independent proof of identity, ownership or infallible account existence.

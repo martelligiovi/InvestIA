@@ -43,7 +43,8 @@ const FENCE_AND_INVESTIGATION = `
       i.paused = $paused,
       i.authorizationGranted = $authorizationGranted,
       i.authorizationAt = $authorizationAt,
-      i.authorizationReason = $authorizationReason
+      i.authorizationReason = $authorizationReason,
+      i.authorizationCatalogScope = $authorizationCatalogScope
   RETURN i.revision AS revision`;
 
 const PROJECT_SEEDS = `
@@ -85,7 +86,14 @@ const PROJECT_EVIDENCE = `
       e.provider = record.provider,
       e.status = record.status,
       e.sourceId = record.sourceId,
-      e.recordedAt = record.recordedAt
+      e.recordedAt = record.recordedAt,
+      e.findingJson = record.findingJson,
+      e.targetKind = record.targetKind,
+      e.targetValue = record.targetValue,
+      e.url = record.url,
+      e.upstreamStatus = record.upstreamStatus,
+      e.pivotSource = record.pivotSource,
+      e.confidence = record.confidence
   MERGE (i)-[:HAS_EVIDENCE]->(e)
   MERGE (s:EmailSeed {investigationId: $investigationId, value: record.seedValue})
   MERGE (s)-[:HAS_EVIDENCE]->(e)
@@ -159,6 +167,13 @@ function evidenceProjection(record: EvidenceRecord) {
     status: record.status,
     sourceId: record.sourceId,
     recordedAt: record.recordedAt,
+    findingJson: record.finding ? JSON.stringify(record.finding) : null,
+    targetKind: record.finding?.target.kind ?? "email",
+    targetValue: record.finding?.target.value ?? record.seed.value,
+    url: record.finding?.url ?? null,
+    upstreamStatus: record.finding?.upstreamStatus ?? null,
+    pivotSource: record.finding?.extra.pivot_source ?? null,
+    confidence: record.finding?.extra.confidence ?? null,
   };
 }
 
@@ -230,6 +245,7 @@ export class Neo4jInvestigationProjector implements InvestigationProjector {
           authorizationGranted: investigation.authorization?.granted ?? null,
           authorizationAt: investigation.authorization?.at ?? null,
           authorizationReason: investigation.authorization?.reason ?? null,
+          authorizationCatalogScope: investigation.authorization?.catalogScope ?? null,
         });
         const persistedRevision = graphRevision(fence.records[0]?.get("revision"));
         if (persistedRevision !== investigation.revision) return false;

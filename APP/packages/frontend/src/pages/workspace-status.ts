@@ -1,8 +1,15 @@
 import type { GitHubCatalogAction, Investigation } from "@investia/core";
 
+export function hasCatalogAuthorization(investigation: Investigation): boolean {
+  return investigation.authorization?.granted === true &&
+    (!investigation.actions.some((action) => action.spec.catalogId === "user-scanner.email.v1") ||
+      investigation.authorization.catalogScope === "user-scanner.email.v1");
+}
+
 export function actionDisplayState(investigation: Investigation, action: GitHubCatalogAction): string {
   if (action.status !== "queued") return action.status;
-  if (investigation.authorization?.granted !== true) return "waiting_authorization";
+  if (investigation.authorization?.granted !== true ||
+    (action.spec.catalogId === "user-scanner.email.v1" && investigation.authorization.catalogScope !== "user-scanner.email.v1")) return "waiting_authorization";
   if (investigation.paused) return "paused_queue";
   if (!action.queuedByCatalog && action.approval === undefined) return "not_executable";
   return "queued";
@@ -10,7 +17,7 @@ export function actionDisplayState(investigation: Investigation, action: GitHubC
 
 export function workspaceHeadline(investigation: Investigation): string {
   if (investigation.paused) return "Pausada";
-  if (investigation.authorization?.granted !== true) return "Esperando autorización";
+  if (!hasCatalogAuthorization(investigation)) return "Esperando autorización";
   if (investigation.actions.some((action) => action.status === "claimed")) return "Acción reclamada · efecto incierto";
   if (investigation.advancementMode !== "automatic") return "Avance manual";
   if (investigation.actions.some((action) => actionDisplayState(investigation, action) === "queued")) return "Cola automática habilitada";

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { Investigation, ValidationStatus } from "@investia/core";
 import type { WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
@@ -28,6 +28,16 @@ function TechnicalValue({ label, value }: { readonly label: string; readonly val
       <code>{value}</code>
     </details>
   );
+}
+
+function SafeLink({ value }: { readonly value: string }) {
+  try {
+    const url = new URL(value);
+    if (["https:", "http:"].includes(url.protocol) && !url.username && !url.password) {
+      return <a href={value} target="_blank" rel="noopener noreferrer">{value}</a>;
+    }
+  } catch { /* Untrusted or relative URLs are displayed only as text. */ }
+  return <span>{value}</span>;
 }
 
 export function WorkspaceDetails({ investigation, node, disabled, onValidate }: WorkspaceDetailsProps) {
@@ -71,14 +81,14 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate }: 
                   <dt>Estado</dt><dd>Dato aportado al expediente</dd>
                 </dl>
               </section>
-              <p className="detail-note">Las semillas nuevas incorporan su comprobación de registro en GitHub a la cola del expediente, sin aprobación por nodo.</p>
+              <p className="detail-note">Las semillas nuevas incorporan su búsqueda con user-scanner a la cola del expediente. Incluye plataformas, enlaces y emails descubiertos; las consultas loud pueden enviar correos o notificaciones.</p>
             </>
           )}
 
           {node.kind === "action" && node.action !== undefined && (
             <>
               <section className="detail-fact" aria-labelledby="selected-action-heading">
-                <h3 id="selected-action-heading">Comprobación de registro en GitHub</h3>
+                <h3 id="selected-action-heading">{node.action.spec.provider === "user-scanner" ? "Búsqueda con user-scanner" : "Comprobación de registro en GitHub"}</h3>
                 <dl className="fact-list">
                   <dt>Proveedor</dt><dd>{node.action.spec.provider}</dd>
                   <dt>Semilla</dt><dd className="break-value">{node.action.spec.seed.value}</dd>
@@ -131,7 +141,7 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate }: 
           {node.kind === "evidence" && node.evidence !== undefined && (
             <>
               <section className="detail-fact" aria-labelledby="selected-evidence-heading">
-                <h3 id="selected-evidence-heading">Observación de registro</h3>
+                <h3 id="selected-evidence-heading">{node.evidence.finding ? "Hallazgo de user-scanner" : "Observación de registro"}</h3>
                 <dl className="fact-list">
                   <dt>Identificador de evidencia</dt><dd><TechnicalValue label="Identificador de evidencia" value={node.evidence.id} /></dd>
                   <dt>Resultado</dt><dd><StateValue value={node.evidence.status} /></dd>
@@ -140,8 +150,22 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate }: 
                   <dt>Acción referida</dt><dd><TechnicalValue label="Identificador de la acción referida" value={node.evidence.actionId} /></dd>
                   <dt>Semilla observada</dt><dd className="break-value">{node.evidence.seed.value}</dd>
                   <dt>Registrada</dt><dd>{formatDate(node.evidence.recordedAt)}</dd>
+                  {node.evidence.finding && <>
+                    <dt>Tipo de objetivo descubierto</dt><dd>{node.evidence.finding.target.kind === "email" ? "Email" : "Usuario"}</dd>
+                    <dt>Objetivo observado</dt><dd className="break-value">{node.evidence.finding.target.value}</dd>
+                    <dt>Estado original de la herramienta</dt><dd>{node.evidence.finding.upstreamStatus}</dd>
+                    <dt>Enlace</dt><dd className="break-value"><SafeLink value={node.evidence.finding.url} /></dd>
+                    <dt>Categoría</dt><dd>{node.evidence.finding.category}</dd>
+                    <dt>Motivo informado</dt><dd className="break-value">{node.evidence.finding.reason}</dd>
+                  </>}
                 </dl>
-                <p className="detail-warning">Un registro no confirma identidad.</p>
+                {node.evidence.finding && <>
+                  <h4>Metadatos y procedencia</h4>
+                  <dl className="fact-list">{Object.entries(node.evidence.finding.extra).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value">{String(value)}</dd></Fragment>)}</dl>
+                  <h4>Referencias multimedia</h4>
+                  <dl className="fact-list">{Object.entries(node.evidence.finding.media).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value">{value}</dd></Fragment>)}</dl>
+                </>}
+                <p className="detail-warning">La herramienta reportó un hallazgo positivo para el objetivo observado. No confirma identidad ni titularidad y puede contener errores. La confianza informada por la herramienta no es una validación humana.</p>
               </section>
               <section className="detail-control" aria-labelledby="validation-heading">
                 <h3 id="validation-heading">Validación humana</h3>

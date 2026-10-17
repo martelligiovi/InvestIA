@@ -86,6 +86,20 @@ function snapshot(revision: number, paused: boolean): Investigation {
   };
 }
 
+test("rich scanner payload is projected without discarding target or provenance", async () => {
+  const driver = new FakeNeo4jDriver();
+  const projector = new Neo4jInvestigationProjector(driver, "neo4j");
+  const current = snapshot(9, false);
+  const finding = { target: { kind: "username" as const, value: "derived" }, upstreamStatus: "Found" as const,
+    url: "https://example.org/derived", category: "Social", reason: "Observed", extra: { pivot_source: "profile link", confidence: "candidate" }, media: { avatar: "https://example.org/avatar" } };
+  await projector.project({ ...current, evidence: [{ ...current.evidence[0]!, provider: "Other", finding }] });
+  const write = driver.calls.find(({ parameters }) => Array.isArray(parameters.evidence));
+  const projected = (write?.parameters.evidence as { findingJson: string; targetValue: string }[])[0]!;
+  assert.deepEqual(JSON.parse(projected.findingJson), finding);
+  assert.equal(projected.targetValue, "derived");
+  assert.match(write!.query, /e\.findingJson = record\.findingJson/);
+});
+
 test("projects factual records through parameterized Cypher and ignores stale revisions", async () => {
   const driver = new FakeNeo4jDriver();
   const projector = new Neo4jInvestigationProjector(driver, "neo4j");

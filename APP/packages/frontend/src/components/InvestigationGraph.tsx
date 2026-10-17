@@ -1,5 +1,5 @@
-import { useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import type { WorkspaceGraph, WorkspaceNode } from "../pages/workspace-model";
+import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { GRAPH_PAGE_SIZE, workspaceGraphPage, type WorkspaceGraph, type WorkspaceNode } from "../pages/workspace-model";
 import homeMountain from "../assets/home-mountain-engraving.svg";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 
@@ -12,13 +12,6 @@ export interface InvestigationGraphProps {
 interface SvgPoint {
   readonly x: number;
   readonly y: number;
-}
-
-interface GraphBounds {
-  readonly minX: number;
-  readonly minY: number;
-  readonly maxX: number;
-  readonly maxY: number;
 }
 
 function displayLines(value: string, limit = 27): readonly string[] {
@@ -62,20 +55,6 @@ function handleNodeKey(event: KeyboardEvent<SVGGElement>, node: WorkspaceNode, o
   onSelect(node);
 }
 
-function graphBounds(graph: WorkspaceGraph): GraphBounds {
-  return graph.nodes.reduce<GraphBounds>((bounds, node) => ({
-    minX: Math.min(bounds.minX, node.x),
-    minY: Math.min(bounds.minY, node.y),
-    maxX: Math.max(bounds.maxX, node.x + node.width),
-    maxY: Math.max(bounds.maxY, node.y + node.height),
-  }), {
-    minX: Number.POSITIVE_INFINITY,
-    minY: Number.POSITIVE_INFINITY,
-    maxX: Number.NEGATIVE_INFINITY,
-    maxY: Number.NEGATIVE_INFINITY,
-  });
-}
-
 export function clientDeltaToSvgUnits(
   deltaX: number,
   deltaY: number,
@@ -99,13 +78,58 @@ function fallbackClientDeltaToSvgUnits(deltaX: number, deltaY: number, svg: SVGS
   };
 }
 
-export function InvestigationGraph({ graph, selectedId, onSelect }: InvestigationGraphProps) {
+export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: InvestigationGraphProps) {
+  const [page, setPage] = useState(0);
+  const evidenceCount = fullGraph.nodes.filter((node) => node.kind === "evidence").length;
+  const pageCount = Math.max(1, Math.ceil(evidenceCount / GRAPH_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount - 1);
+  const graph = useMemo(() => workspaceGraphPage(fullGraph, currentPage), [fullGraph, currentPage]);
+  const viewHeight = Math.max(graph.height, 700);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const viewportRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<{ pointerId: number; x: number; y: number; startX: number; startY: number } | null>(null);
   const empty = graph.nodes.length === 0;
+
+  function viewportCenter(): SvgPoint {
+    const svg = svgRef.current, viewport = viewportRef.current;
+    if (!svg || !viewport) return { x: graph.width / 2, y: viewHeight / 2 };
+    const rect = viewport.getBoundingClientRect();
+    const matrix = svg.getScreenCTM?.();
+    if (matrix) return clientDeltaToSvgUnits(rect.left + viewport.clientWidth / 2 - matrix.e, rect.top + viewport.clientHeight / 2 - matrix.f, matrix);
+    return { x: graph.width / 2, y: viewHeight / 2 };
+  }
+
+  function changeZoom(factor: number) {
+    const next = Math.min(2.4, Math.max(1, zoom * factor));
+    const center = viewportCenter();
+    setPan({ x: center.x - (center.x - pan.x) * next / zoom, y: center.y - (center.y - pan.y) * next / zoom });
+    setZoom(next);
+  }
+
+  function selectFromList(node: WorkspaceNode) {
+    const center = viewportCenter();
+    setZoom(1);
+    setPan({ x: center.x - node.x - node.width / 2, y: center.y - node.y - node.height / 2 });
+    onSelect(node);
+  }
+
+  function changePage(next: number) {
+    const bounded = Math.max(0, Math.min(pageCount - 1, next));
+    setPage(bounded);
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+    const first = workspaceGraphPage(fullGraph, bounded).nodes.find((node) => node.kind === "evidence");
+    if (first) {
+      const viewport = viewportRef.current;
+      if (viewport) {
+        viewport.scrollLeft = Math.max(0, first.x + first.width / 2 - viewport.clientWidth / 2);
+        viewport.scrollTop = Math.max(0, first.y + first.height / 2 - viewport.clientHeight / 2);
+      }
+      onSelect(first);
+    }
+  }
 
   function beginPan(event: PointerEvent<HTMLDivElement>) {
     if ((event.target as Element).tagName.toLowerCase() !== "svg" || svgRef.current === null) return;
@@ -121,7 +145,7 @@ export function InvestigationGraph({ graph, selectedId, onSelect }: Investigatio
     const deltaY = event.clientY - active.y;
     const matrix = svg.getScreenCTM?.() ?? null;
     const delta = matrix === null
-      ? fallbackClientDeltaToSvgUnits(deltaX, deltaY, svg, graph)
+      ? fallbackClientDeltaToSvgUnits(deltaX, deltaY, svg, { ...graph, height: viewHeight })
       : clientDeltaToSvgUnits(deltaX, deltaY, matrix);
     setPan({ x: active.startX + delta.x, y: active.startY + delta.y });
   }
@@ -132,38 +156,9 @@ export function InvestigationGraph({ graph, selectedId, onSelect }: Investigatio
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   }
 
-  function fitGraphToViewport() {
-    const viewport = viewportRef.current;
-    const svg = svgRef.current;
-    if (viewport === null || svg === null || graph.nodes.length === 0) return;
-    const bounds = graphBounds(graph);
-    const width = bounds.maxX - bounds.minX;
-    const height = bounds.maxY - bounds.minY;
-    const viewportRect = viewport.getBoundingClientRect();
-    const svgRect = svg.getBoundingClientRect();
-    const matrix = svg.getScreenCTM?.() ?? null;
-    const scaleX = matrix === null ? svgRect.width / graph.width : Math.hypot(matrix.a, matrix.b);
-    const scaleY = matrix === null ? svgRect.height / graph.height : Math.hypot(matrix.c, matrix.d);
-    if (width <= 0 || height <= 0 || scaleX <= 0 || scaleY <= 0 || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) {
-      setZoom(1);
-      setPan({ x: 0, y: 0 });
-      return;
-    }
-
-    const fitZoom = Math.min(
-      2.4,
-      viewport.clientWidth / (scaleX * width),
-      viewport.clientHeight / (scaleY * height),
-    );
-    const centerX = (bounds.minX + bounds.maxX) / 2;
-    const centerY = (bounds.minY + bounds.maxY) / 2;
-    const svgOffsetX = svgRect.left - viewportRect.left;
-    const svgOffsetY = svgRect.top - viewportRect.top;
-    setZoom(fitZoom);
-    setPan({
-      x: (viewport.clientWidth / 2 - svgOffsetX) / scaleX - fitZoom * centerX,
-      y: (viewport.clientHeight / 2 - svgOffsetY) / scaleY - fitZoom * centerY,
-    });
+  function centerSelectedNode() {
+    const node = graph.nodes.find((item) => item.id === selectedId) ?? graph.nodes[0];
+    if (node) selectFromList(node);
   }
 
   return (
@@ -173,15 +168,27 @@ export function InvestigationGraph({ graph, selectedId, onSelect }: Investigatio
           <h2 id="graph-heading" className="sr-only">Grafo factual</h2>
           <details className="graph-description">
             <summary>Sobre el grafo</summary>
-            <p id="graph-description" className="graph-caption">Las líneas expresan referencias registradas, no relaciones personales. Seleccioná un nodo con Enter o espacio; arrastrá el fondo para desplazarlo.</p>
+            <p id="graph-description" className="graph-caption">Las líneas expresan referencias registradas, no relaciones personales. Seleccioná un nodo con Enter o espacio; arrastrá el fondo o usá las barras de desplazamiento. Centrar lleva el nodo seleccionado al centro sin achicarlo.</p>
           </details>
         </div>
         <div className="graph-controls" aria-label="Controles del grafo">
-          <button type="button" aria-label="Alejar grafo" onClick={() => setZoom((value) => Math.max(0.05, value * 0.8))}>−</button>
-          <button type="button" aria-label="Acercar grafo" onClick={() => setZoom((value) => Math.min(2.4, value * 1.25))}>+</button>
-          <button type="button" aria-label="Ajustar grafo" onClick={fitGraphToViewport}>Ajustar</button>
+          <button type="button" aria-label="Alejar grafo" disabled={zoom <= 1} onClick={() => changeZoom(0.8)}>−</button>
+          <button type="button" aria-label="Acercar grafo" onClick={() => changeZoom(1.25)}>+</button>
+          <button type="button" aria-label="Centrar nodo seleccionado" onClick={centerSelectedNode}>Centrar</button>
         </div>
       </div>
+      {pageCount > 1 && (
+        <nav className="graph-pagination" aria-label="Páginas de resultados">
+          <p role="status">Resultados {currentPage * GRAPH_PAGE_SIZE + 1}–{Math.min((currentPage + 1) * GRAPH_PAGE_SIZE, evidenceCount)} de {evidenceCount}</p>
+          <div>
+            <button type="button" aria-label="Primera página de resultados" disabled={currentPage === 0} onClick={() => changePage(0)}>«</button>
+            <button type="button" aria-label="Página anterior de resultados" disabled={currentPage === 0} onClick={() => changePage(currentPage - 1)}>Anterior</button>
+            <span>{currentPage + 1} / {pageCount}</span>
+            <button type="button" aria-label="Siguiente página de resultados" disabled={currentPage === pageCount - 1} onClick={() => changePage(currentPage + 1)}>Siguiente</button>
+            <button type="button" aria-label="Última página de resultados" disabled={currentPage === pageCount - 1} onClick={() => changePage(pageCount - 1)}>»</button>
+          </div>
+        </nav>
+      )}
       {empty ? (
         <p className="graph-empty">Todavía no hay semillas, acciones ni observaciones registradas.</p>
       ) : (
@@ -201,7 +208,8 @@ export function InvestigationGraph({ graph, selectedId, onSelect }: Investigatio
               role="group"
               aria-label="Grafo factual de semillas, acciones y observaciones"
               aria-describedby="graph-description"
-              viewBox={`0 0 ${graph.width} ${graph.height}`}
+              style={{ width: graph.width, height: viewHeight }}
+              viewBox={`0 0 ${graph.width} ${viewHeight}`}
               xmlns="http://www.w3.org/2000/svg"
             >
               <defs>
@@ -266,7 +274,7 @@ export function InvestigationGraph({ graph, selectedId, onSelect }: Investigatio
                   <button
                     type="button"
                     aria-pressed={selectedId === node.id}
-                    onClick={() => onSelect(node)}
+                    onClick={() => selectFromList(node)}
                   >
                     <span>{node.accessibleLabel}</span>
                   </button>

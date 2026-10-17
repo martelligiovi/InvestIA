@@ -57,6 +57,11 @@
 .graph-controls { display: flex; flex: 0 0 auto; gap: 7px; }
 .graph-controls button { min-width: 44px; min-height: 44px; padding: 6px 10px; border: 1px solid var(--color-linen-shadow); border-radius: 0; background: transparent; color: var(--color-carbon-black); cursor: pointer; }
 .graph-controls button:hover { border-color: var(--color-heritage-red); }
+.graph-pagination { margin-top: 10px; font-family: var(--font-utility); font-size: 12px; }
+.graph-pagination p { margin: 6px 0; }
+.graph-pagination > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.graph-pagination button { min-height: 44px; min-width: 36px; padding: 4px 8px; background: transparent; border: 1px solid var(--color-linen-shadow); cursor: pointer; }
+.graph-pagination button:disabled { opacity: 0.4; cursor: default; }
 .graph-viewport { height: clamp(300px, 54vh, 600px); margin-top: 16px; overflow: auto; cursor: grab; touch-action: none; }
 .graph-viewport:active { cursor: grabbing; }
 .investigation-graph { display: block; width: 100%; height: 100%; overflow: visible; }

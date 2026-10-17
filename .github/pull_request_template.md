@@ -13,7 +13,7 @@
 - [ ] `pnpm --dir APP build` (before tests)
 - [ ] `pnpm --dir APP test`
 - [ ] `pnpm --dir APP typecheck`
-- [ ] Python 3.11: `python -B -m unittest discover -s APP/packages/adapter-holehe/python/tests -p test_holehe_bridge.py -v`
+- [ ] Install pinned scanner manifest, then Python 3.11: `python -B -m unittest discover -s APP/packages/adapter-user-scanner/python/tests -p test_cli_installation.py -v` (no targets)
 - [ ] `git diff --check`
 - [ ] Expected five DB-gated skips reported separately; unexpected skips/failures explained
 - [ ] Hosted **Offline checks** result inspected (do not equate local checks with hosted CI)
