@@ -29,6 +29,7 @@ const WORKSPACE_STATUS_LABELS: Readonly<Record<string, string>> = {
   paused_queue: "En cola · pausada",
   not_executable: "En cola · no ejecutable",
   no_information: "Sin información",
+  leaf_group: "Sin acciones asociadas",
   proposed: "Propuesta",
   queued: "En cola",
   claimed: "Reclamada",

@@ -6,6 +6,7 @@ import "./styles/shell.css";
 import "./styles/home.css";
 import "./styles/create.css";
 import "./styles/workspace.css";
+import "./styles/interface.css";
 
 const rootElement = document.getElementById("root");
 if (rootElement === null) throw new Error("Missing root element");

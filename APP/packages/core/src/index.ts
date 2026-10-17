@@ -40,6 +40,17 @@ export {
   type ValidationStatus,
 } from "./domain/investigation.ts";
 export {
+  emailSeedNodeId,
+  findingSeedNodeId,
+  investigationSeedGraph,
+  seedHasActions,
+  type EmailSeedNode,
+  type FindingSeedNode,
+  type InvestigationSeedGraph,
+  type InvestigationSeedId,
+  type InvestigationSeedNode,
+} from "./domain/seed-graph.ts";
+export {
   createInvestigationService,
   createSeedBoxExecutor,
   InvestigationService,

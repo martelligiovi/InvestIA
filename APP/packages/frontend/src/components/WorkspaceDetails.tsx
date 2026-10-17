@@ -1,12 +1,13 @@
 import { Fragment, useState } from "react";
 import type { Investigation, ValidationStatus } from "@investia/core";
-import type { WorkspaceNode } from "../pages/workspace-model";
+import { GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 
 export interface WorkspaceDetailsProps {
   readonly investigation: Investigation;
   readonly node: WorkspaceNode | null;
   readonly disabled: boolean;
+  readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
 }
 
@@ -40,7 +41,38 @@ function SafeLink({ value }: { readonly value: string }) {
   return <span>{value}</span>;
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, onValidate }: WorkspaceDetailsProps) {
+function LeafGroupDetails({ node, onSelectNode }: { readonly node: WorkspaceNode; readonly onSelectNode?: (id: string) => void }) {
+  const [page, setPage] = useState(0);
+  const members = node.members ?? [];
+  const lastPage = Math.max(0, Math.ceil(members.length / GRAPH_PAGE_SIZE) - 1);
+  const currentPage = Math.min(page, lastPage);
+  const start = currentPage * GRAPH_PAGE_SIZE;
+  return (
+    <section className="detail-fact" aria-labelledby="group-heading">
+      <h3 id="group-heading">Semillas agrupadas · {members.length} resultados</h3>
+      <p className="detail-note">Son semillas producidas por la misma acción, sin acciones asociadas por ahora. Abrir un resultado no ejecuta ninguna acción ni expande el grafo.</p>
+      <ul className="leaf-group-members">
+        {members.slice(start, start + GRAPH_PAGE_SIZE).map((member) => (
+          <li key={member.id}><button type="button" className="workspace-button"
+            aria-label={`Ver resultado: ${member.title}`} disabled={onSelectNode === undefined}
+            onClick={() => onSelectNode?.(member.id)}>{member.title}</button></li>
+        ))}
+      </ul>
+      {lastPage > 0 && <nav className="graph-pagination" aria-label="Páginas del grupo">
+        <p role="status">Resultados {start + 1}–{Math.min(start + GRAPH_PAGE_SIZE, members.length)} de {members.length}</p>
+        <div>
+          <button type="button" aria-label="Primera página del grupo" disabled={currentPage === 0} onClick={() => setPage(0)}>«</button>
+          <button type="button" aria-label="Página anterior del grupo" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Anterior</button>
+          <span>{currentPage + 1} / {lastPage + 1}</span>
+          <button type="button" aria-label="Siguiente página del grupo" disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}>Siguiente</button>
+          <button type="button" aria-label="Última página del grupo" disabled={currentPage === lastPage} onClick={() => setPage(lastPage)}>»</button>
+        </div>
+      </nav>}
+    </section>
+  );
+}
+
+export function WorkspaceDetails({ investigation, node, disabled, onValidate, onSelectNode }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [formError, setFormError] = useState("");
 
@@ -71,6 +103,9 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate }: 
         <p className="detail-empty">Seleccioná una semilla, acción u observación del grafo.</p>
       ) : (
         <div className="detail-content" key={node.id}>
+          {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} onSelectNode={onSelectNode} />}
+          {node.groupId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
+            onClick={() => onSelectNode(node.groupId!)}>Volver al grupo</button>}
           {node.kind === "seed" && node.seedValue !== undefined && (
             <>
               <section className="detail-fact" aria-labelledby="selected-seed-heading">

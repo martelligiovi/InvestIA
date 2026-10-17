@@ -78,6 +78,11 @@ export interface UserScannerActionSpec {
 export interface GitHubCatalogAction {
   readonly id: InvestigationActionId;
   readonly spec: GitHubActionSpec | UserScannerActionSpec;
+  /**
+   * Explicit input seed reference (see seed-graph.ts). Absent on historical actions and on
+   * actions whose input is the operator email embedded in their spec.
+   */
+  readonly sourceSeedId?: string;
   readonly status: InvestigationActionStatus;
   readonly proposedAt: string;
   readonly proposalReason: string;

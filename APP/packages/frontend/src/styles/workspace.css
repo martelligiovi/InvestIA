@@ -360,3 +360,9 @@
   .report-heading-row { flex-direction: column; align-items: flex-start; }
   .workspace-popover { position: fixed; top: auto; right: 16px; left: 16px; width: auto; max-height: 70svh; margin-top: 8px; }
 }
+
+/* A fixed decorative paper stack, independent of the number of grouped seeds. */
+.graph-stack-sheet { fill: var(--paper); stroke: var(--line-strong); stroke-width: 1; pointer-events: none; vector-effect: non-scaling-stroke; }
+.graph-node--leaf-group .graph-node-card { filter: drop-shadow(0 2px 2px rgb(35 32 30 / 12%)); }
+.leaf-group-members { display: grid; gap: 8px; margin: 16px 0; padding: 0; list-style: none; }
+.leaf-group-members button { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; }

@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import { GRAPH_PAGE_SIZE, workspaceGraphPage, type WorkspaceGraph, type WorkspaceNode } from "../pages/workspace-model";
+import { GRAPH_PAGE_SIZE, workspaceGraphPage, workspacePageEvidence, workspaceNodeSelected, type WorkspaceGraph, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 
 export interface InvestigationGraphProps {
@@ -45,6 +45,7 @@ function displayLines(value: string, limit = 27): readonly string[] {
 function nodeHeading(node: WorkspaceNode): string {
   if (node.kind === "seed") return "✉ Semilla";
   if (node.kind === "action") return "⚙ Acción";
+  if (node.kind === "leaf-group") return "▤ Semillas agrupadas";
   return "▤ Resultado";
 }
 
@@ -79,7 +80,7 @@ function fallbackClientDeltaToSvgUnits(deltaX: number, deltaY: number, svg: SVGS
 
 export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: InvestigationGraphProps) {
   const [page, setPage] = useState(0);
-  const evidenceCount = fullGraph.nodes.filter((node) => node.kind === "evidence").length;
+  const evidenceCount = workspacePageEvidence(fullGraph).length;
   const pageCount = Math.max(1, Math.ceil(evidenceCount / GRAPH_PAGE_SIZE));
   const currentPage = Math.min(page, pageCount - 1);
   const graph = useMemo(() => workspaceGraphPage(fullGraph, currentPage), [fullGraph, currentPage]);
@@ -119,7 +120,9 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
     setPage(bounded);
     setZoom(1);
     setPan({ x: 0, y: 0 });
-    const first = workspaceGraphPage(fullGraph, bounded).nodes.find((node) => node.kind === "evidence");
+    const projected = workspaceGraphPage(fullGraph, bounded);
+    const pageable = new Set(workspacePageEvidence(fullGraph).map((node) => node.id));
+    const first = projected.nodes.find((node) => pageable.has(node.id));
     if (first) {
       const viewport = viewportRef.current;
       if (viewport) {
@@ -158,7 +161,7 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
   }
 
   function centerSelectedNode() {
-    const node = graph.nodes.find((item) => item.id === selectedId) ?? graph.nodes[0];
+    const node = graph.nodes.find((item) => workspaceNodeSelected(item, selectedId)) ?? graph.nodes[0];
     if (node) selectFromList(node);
   }
 
@@ -169,7 +172,7 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
           <h2 id="graph-heading" className="sr-only">Grafo factual</h2>
           <details className="graph-description">
             <summary>Sobre el grafo</summary>
-            <p id="graph-description" className="graph-caption">Las líneas expresan referencias registradas, no relaciones personales. Seleccioná un nodo con Enter o espacio; arrastrá el fondo o usá las barras de desplazamiento. Centrar lleva el nodo seleccionado al centro sin achicarlo.</p>
+            <p id="graph-description" className="graph-caption">Las líneas expresan referencias registradas, no relaciones personales. Las semillas sin acciones de una misma rama se agrupan; seleccioná la pila para consultar cada resultado. Seleccioná un nodo con Enter o espacio; arrastrá el fondo o usá las barras de desplazamiento. Centrar lleva el nodo seleccionado al centro sin achicarlo.</p>
           </details>
         </div>
         <div className="graph-controls" aria-label="Controles del grafo">
@@ -230,7 +233,7 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
                 ))}
                 {graph.nodes.map((node) => {
                   const lines = displayLines(node.title);
-                  const active = selectedId === node.id;
+                  const active = workspaceNodeSelected(node, selectedId);
                   const failure = node.kind === "result" && node.state === "failed";
                   return (
                     <g
@@ -245,6 +248,11 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
                       onKeyDown={(event) => handleNodeKey(event, node, onSelect)}
                     >
                       <title>{node.accessibleLabel}</title>
+                      {node.kind === "leaf-group" && [-3, 2.5].map((angle) => (
+                        <rect key={angle} className="graph-stack-sheet" aria-hidden="true"
+                          x={node.x} y={node.y} width={node.width} height={node.height} rx={2}
+                          transform={`rotate(${angle} ${node.x + node.width / 2} ${node.y + node.height / 2})`} />
+                      ))}
                       {failure ? (
                         <>
                           <circle className="graph-node-card" cx={node.x + node.width / 2} cy={node.y + node.height / 2} r={node.height / 2} />
@@ -274,7 +282,7 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
                 <li key={`list:${node.id}`}>
                   <button
                     type="button"
-                    aria-pressed={selectedId === node.id}
+                    aria-pressed={workspaceNodeSelected(node, selectedId)}
                     onClick={() => selectFromList(node)}
                   >
                     <span>{node.accessibleLabel}</span>

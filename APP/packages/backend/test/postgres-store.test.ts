@@ -185,6 +185,38 @@ test("scanner actions and cross-target findings round-trip, malformed new findin
   assert.deepEqual(database.records.get(created.id), before);
 });
 
+test("explicit action sourceSeedId round-trips, legacy actions load without it, malformed values never write", async () => {
+  const { database, store, service } = makeStoreHarness();
+  const created = await service.createInvestigation();
+  const seeded = await service.addEmailSeed(created.id, "seed@example.org");
+  const legacy = await store.get(created.id);
+  assert.equal(legacy?.actions[0]?.sourceSeedId, undefined);
+  assert.ok(!Object.prototype.hasOwnProperty.call(database.records.get(created.id)!.document.actions[0], "sourceSeedId"));
+  assert.deepEqual(legacy, seeded);
+
+  const linked: Investigation = {
+    ...seeded,
+    revision: seeded.revision + 1,
+    actions: seeded.actions.map((action) => ({ ...action, sourceSeedId: "seed:evidence:ev-1" })),
+  };
+  await store.transact(created.id, () => ({ next: linked, result: undefined }));
+  assert.equal((await store.get(created.id))?.actions[0]?.sourceSeedId, "seed:evidence:ev-1");
+
+  const before = structuredClone(database.records.get(created.id));
+  for (const invalid of ["", "   ", 42, null]) {
+    const corrupt = {
+      ...linked,
+      revision: linked.revision + 1,
+      actions: linked.actions.map((action) => ({ ...action, sourceSeedId: invalid })),
+    } as unknown as Investigation;
+    await assert.rejects(store.transact(created.id, () => ({ next: corrupt, result: undefined })), InvestigationSchemaError);
+    assert.deepEqual(database.records.get(created.id), before);
+  }
+  const row = database.records.get(created.id)!;
+  row.document = { ...linked, actions: linked.actions.map((action) => ({ ...action, sourceSeedId: 7 })) } as unknown as Investigation;
+  await assert.rejects(store.get(created.id), InvestigationSchemaError);
+});
+
 test("catalog queues round-trip without approvals and automatic claims recheck mode and gates", async () => {
   const { database, store, service } = makeStoreHarness();
   const created = await service.createInvestigation("Automático", "Intención única");

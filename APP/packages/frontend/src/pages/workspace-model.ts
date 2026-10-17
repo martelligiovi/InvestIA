@@ -1,7 +1,7 @@
-import type { EvidenceRecord, GitHubCatalogAction, Investigation, ValidationDecision } from "@investia/core";
+import { investigationSeedGraph, seedHasActions, findingSeedNodeId, type EvidenceRecord, type GitHubCatalogAction, type Investigation, type ValidationDecision } from "@investia/core";
 import { actionDisplayState, workspaceStatusLabel } from "./workspace-status";
 
-export type WorkspaceNodeKind = "seed" | "action" | "evidence" | "result";
+export type WorkspaceNodeKind = "seed" | "action" | "evidence" | "result" | "leaf-group";
 
 export interface WorkspaceNode {
   readonly id: string;
@@ -12,6 +12,8 @@ export interface WorkspaceNode {
   readonly seedValue?: string;
   readonly action?: GitHubCatalogAction;
   readonly evidence?: EvidenceRecord;
+  readonly members?: readonly WorkspaceNode[];
+  readonly groupId?: string;
   readonly x: number;
   readonly y: number;
   readonly width: number;
@@ -48,12 +50,13 @@ function nodeLabel(kind: WorkspaceNodeKind, title: string, state: string): strin
 
 export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGraph {
   const nodes: WorkspaceNode[] = [];
-  const seedIds = new Map<string, string>();
   const actionIds = new Set(investigation.actions.map((action) => action.id));
+  const seedGraph = investigationSeedGraph(investigation);
+  const visualSeedIds = new Map(seedGraph.seeds.map((seed) => [seed.id,
+    seed.kind === "email" ? seedNodeId(seed.value) : `evidence:${seed.evidence.id}`]));
 
   investigation.emailSeeds.forEach((seed, index) => {
     const id = seedNodeId(seed.value);
-    seedIds.set(seed.value, id);
     nodes.push({
       id,
       kind: "seed",
@@ -124,10 +127,63 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
     });
   }
 
-  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  // Only sibling leaves collapse; seeds which feed another action remain visible.
+  const leavesByAction = new Map<string, WorkspaceNode[]>();
+  for (const node of nodes) {
+    if (node.evidence === undefined || !actionIds.has(node.evidence.actionId) ||
+      seedHasActions(seedGraph, findingSeedNodeId(node.evidence.id))) continue;
+    const leaves = leavesByAction.get(node.evidence.actionId) ?? [];
+    leaves.push(node);
+    leavesByAction.set(node.evidence.actionId, leaves);
+  }
+  const groupedIds = new Set<string>();
+  for (const [actionId, leaves] of leavesByAction) {
+    if (leaves.length < 2) continue;
+    const id = `leaf-group:${actionId}`;
+    const title = `${leaves.length} resultados sin acciones`;
+    const members = leaves.map((node) => ({ ...node, groupId: id }));
+    for (const member of members) {
+      groupedIds.add(member.id);
+      visualSeedIds.set(findingSeedNodeId(member.evidence!.id), id);
+    }
+    nodes.push({ id, kind: "leaf-group", title, state: "leaf_group", members,
+      accessibleLabel: `Grupo de semillas: ${title}.`,
+      x: 836, y: TOP, width: NODE_WIDTH, height: NODE_HEIGHT });
+  }
+  const visibleNodes = nodes.filter((node) => !groupedIds.has(node.id));
+
+  // Follow recorded provenance, not discovered-value equality, to lay out branches.
+  const seedsById = new Map(seedGraph.seeds.map((seed) => [seed.id, seed]));
+  const actionById = new Map(investigation.actions.map((action) => [action.id, action]));
+  const depthByAction = new Map<string, number>();
+  function actionDepth(id: string, visiting = new Set<string>()): number {
+    const cached = depthByAction.get(id);
+    if (cached !== undefined) return cached;
+    if (visiting.has(id)) return 1; // Malformed cyclic references must not hang the view.
+    visiting.add(id);
+    const input = seedGraph.actionInputs.get(id);
+    const seed = input === undefined ? undefined : seedsById.get(input);
+    const producer = seed?.origin.kind === "action" ? seed.origin.actionId : undefined;
+    const depth = producer !== undefined && actionById.has(producer) ? actionDepth(producer, visiting) + 2 : 1;
+    visiting.delete(id);
+    depthByAction.set(id, depth);
+    return depth;
+  }
+  const rowsByDepth = new Map<number, number>();
+  const laidOut = visibleNodes.map((node) => {
+    const producer = node.evidence?.actionId ?? node.action?.id ??
+      (node.kind === "leaf-group" ? node.members?.[0]?.evidence?.actionId : undefined);
+    const depth = node.kind === "seed" ? 0 : node.kind === "action" ? actionDepth(node.action!.id) :
+      producer !== undefined && actionIds.has(producer) ? actionDepth(producer) + 1 : 2;
+    const row = rowsByDepth.get(depth) ?? 0;
+    rowsByDepth.set(depth, row + 1);
+    return { ...node, x: 32 + depth * 402, y: TOP + row * ROW_GAP };
+  });
+  const nodeById = new Map(laidOut.map((node) => [node.id, node]));
   const edges: WorkspaceEdge[] = [];
   for (const action of investigation.actions) {
-    const seedId = seedIds.get(action.spec.seed.value);
+    const input = seedGraph.actionInputs.get(action.id);
+    const seedId = input === undefined ? undefined : visualSeedIds.get(input);
     const from = seedId === undefined ? undefined : nodeById.get(seedId);
     const to = nodeById.get(`action:${action.id}`);
     if (from !== undefined && to !== undefined) {
@@ -142,10 +198,10 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
   for (const record of investigation.evidence) {
     if (!actionIds.has(record.actionId)) continue;
     const from = nodeById.get(`action:${record.actionId}`);
-    const to = nodeById.get(`evidence:${record.id}`);
-    if (from !== undefined && to !== undefined) {
+    const to = nodeById.get(visualSeedIds.get(findingSeedNodeId(record.id)) ?? `evidence:${record.id}`);
+    if (from !== undefined && to !== undefined && !edges.some((edge) => edge.from === from.id && edge.to === to.id)) {
       edges.push({
-        id: `action-evidence:${record.id}`,
+        id: to.kind === "leaf-group" ? `action-group:${record.actionId}` : `action-evidence:${record.id}`,
         from: from.id,
         to: to.id,
         path: orthogonalPath(from, to),
@@ -153,7 +209,7 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
     }
   }
 
-  for (const node of nodes) {
+  for (const node of laidOut) {
     if (node.kind !== "result" || node.action === undefined) continue;
     const from = nodeById.get(`action:${node.action.id}`);
     if (from !== undefined) {
@@ -166,29 +222,47 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
     }
   }
 
-  const rowCount = Math.max(
-    investigation.emailSeeds.length,
-    investigation.actions.length,
-    resultRow,
-    1,
-  );
-  return { width: 1100, height: TOP * 2 + rowCount * ROW_GAP, nodes, edges };
+  const rowCount = Math.max(...rowsByDepth.values(), 1);
+  return { width: Math.max(1100, ...laidOut.map((node) => node.x + node.width + 32)),
+    height: TOP * 2 + rowCount * ROW_GAP, nodes: laidOut, edges };
+}
+
+export function findWorkspaceNode(graph: WorkspaceGraph, id: string | null): WorkspaceNode | undefined {
+  return graph.nodes.find((node) => node.id === id) ??
+    graph.nodes.flatMap((node) => node.members ?? []).find((node) => node.id === id);
+}
+
+export function workspaceNodeSelected(node: WorkspaceNode, id: string | null): boolean {
+  return node.id === id || node.members?.some((member) => member.id === id) === true;
 }
 
 export const GRAPH_PAGE_SIZE = 50;
 
+/** Branch inputs stay visible on every page so no action loses its recorded source. */
+export function workspacePageEvidence(graph: WorkspaceGraph): readonly WorkspaceNode[] {
+  const actions = new Set(graph.nodes.filter((node) => node.kind === "action").map((node) => node.id));
+  const branches = new Set(graph.edges.filter((edge) => actions.has(edge.to)).map((edge) => edge.from));
+  return graph.nodes.filter((node) => node.kind === "evidence" && !branches.has(node.id));
+}
+
 /** Project a bounded view without changing the persisted investigation or evidence. */
 export function workspaceGraphPage(graph: WorkspaceGraph, page: number): WorkspaceGraph {
-  const evidence = graph.nodes.filter((node) => node.kind === "evidence");
+  const evidence = workspacePageEvidence(graph);
   if (evidence.length <= GRAPH_PAGE_SIZE) return graph;
   const lastPage = Math.ceil(evidence.length / GRAPH_PAGE_SIZE) - 1;
   const offset = Math.max(0, Math.min(lastPage, page)) * GRAPH_PAGE_SIZE;
   const visible = evidence.slice(offset, offset + GRAPH_PAGE_SIZE);
+  const pageable = new Set(evidence.map((node) => node.id));
+  const rows = new Map<number, number>();
   const nodes = [
-    ...graph.nodes.filter((node) => node.kind === "seed" || node.kind === "action"),
-    ...visible.map((node, index) => ({ ...node, y: TOP + index * ROW_GAP })),
-    ...graph.nodes.filter((node) => node.kind === "result").map((node, index) => ({ ...node, y: TOP + (visible.length + index) * ROW_GAP })),
-  ];
+    ...graph.nodes.filter((node) => !pageable.has(node.id) && node.kind !== "result"),
+    ...visible,
+    ...graph.nodes.filter((node) => node.kind === "result"),
+  ].map((node) => {
+    const row = rows.get(node.x) ?? 0;
+    rows.set(node.x, row + 1);
+    return { ...node, y: TOP + row * ROW_GAP };
+  });
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const edges = graph.edges.flatMap((edge) => {
     const from = byId.get(edge.from), to = byId.get(edge.to);
