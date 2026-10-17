@@ -131,7 +131,9 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
   }
 
   function beginPan(event: PointerEvent<HTMLDivElement>) {
-    if ((event.target as Element).tagName.toLowerCase() !== "svg" || svgRef.current === null) return;
+    // Pan from empty canvas only: the SVG background or the viewport area around a smaller graph.
+    const onEmptyCanvas = event.target === event.currentTarget || (event.target as Element).tagName.toLowerCase() === "svg";
+    if (!onEmptyCanvas || svgRef.current === null) return;
     drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, startX: pan.x, startY: pan.y };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }

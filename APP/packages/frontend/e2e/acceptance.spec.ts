@@ -76,7 +76,8 @@ async function findRightOrnamentIntersections(page: Page): Promise<string[]> {
       const decorationRect = decoration.getBoundingClientRect();
       if (window.getComputedStyle(decoration).display === "none" || decorationRect.width === 0 || decorationRect.height === 0) continue;
       for (const element of protectedElements) {
-        if (element === decoration || element.getClientRects().length === 0) continue;
+        // A container that holds the ornament (for example a section divider) is not covered by it.
+        if (element === decoration || element.contains(decoration) || element.getClientRects().length === 0) continue;
         // Closed disclosures and clipped SVG geometry are not painted control areas.
         let bounds = element.getBoundingClientRect();
         let hidden = false;
@@ -547,8 +548,11 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   const graphBox = await page.locator(".graph-viewport").boundingBox();
   expect(graphBox).not.toBeNull();
   const dragStart = { x: graphBox!.x + graphBox!.width - 12, y: graphBox!.y + graphBox!.height - 12 };
-  const dragTargetTag = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName.toLowerCase(), dragStart);
-  expect(dragTargetTag, "pan starts on empty SVG canvas rather than a node").toBe("svg");
+  const dragTarget = await page.evaluate(({ x, y }) => {
+    const element = document.elementFromPoint(x, y);
+    return element?.tagName.toLowerCase() === "svg" ? "svg" : element?.classList.contains("graph-viewport") ? "viewport" : element?.tagName.toLowerCase();
+  }, dragStart);
+  expect(["svg", "viewport"], "pan starts on empty canvas rather than a node").toContain(dragTarget);
   const matrixBefore = await graph.evaluate((svg) => {
     const matrix = (svg as SVGSVGElement).getScreenCTM();
     return matrix === null ? null : { a: matrix.a, b: matrix.b, c: matrix.c, d: matrix.d };

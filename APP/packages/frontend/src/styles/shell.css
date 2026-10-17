@@ -85,7 +85,12 @@
   .brand-name { font-size: 22px; }
   .site-nav { gap: var(--space-3); }
   .new-investigation-link { padding-inline: 12px; font-size: 12px; white-space: nowrap; }
-  /* The workspace header already offers "Volver al historial". */
-  .application-shell--quiet .home-link { display: none; }
+  /* The brand already links home; keep the primary action on one line. */
+  .site-nav:has(.new-investigation-link) .home-link { display: none; }
   .main-content { padding-top: var(--space-6); }
+}
+
+@media (max-width: 380px) {
+  /* The flower mark keeps the "InvestIA, inicio" link; the wordmark yields room to the primary action. */
+  .brand-name { display: none; }
 }
