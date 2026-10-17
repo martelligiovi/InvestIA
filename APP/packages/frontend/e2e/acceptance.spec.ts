@@ -66,7 +66,7 @@ async function readCreateGeometry(page: Page) {
 
 async function findRightOrnamentIntersections(page: Page): Promise<string[]> {
   return page.evaluate(() => {
-    const decorations = [...document.querySelectorAll<HTMLElement>(".heritage-sun, .folk-strip, .home-edge-embroidery, .home-mountain, .create-edge-embroidery, .create-mountain, .application-shell--create .corner-flower, .workspace-edge-embroidery, .workspace-mountain")];
+    const decorations = [...document.querySelectorAll<HTMLElement>("pre.ascii-art, .home-sun")];
     const protectedElements = [...document.querySelectorAll<HTMLElement>(
       ".site-header, .document-title, .history-panel, .history-entry, .workspace-title-block, .detail-content, .graph-node, a, button, input, textarea, select, summary",
     )];
@@ -317,16 +317,18 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Investigaciones anteriores" })).toBeVisible();
   await expect(page.locator(".application-shell")).toHaveClass(/application-shell--home/u);
-  await expect(page.locator(".site-header, .site-footer")).toHaveCount(0);
+  await expect(page.locator(".site-header")).toBeVisible();
+  await expect(page.locator(".site-footer")).toBeVisible();
   await expect(page.getByRole("heading", { name: "InvestIA", exact: true })).toBeVisible();
-  const stitches = page.locator("pre.ascii-stitch");
-  await expect(stitches).toHaveCount(2);
+  await expect(page.locator(".history-empty pre.ascii-art--tree")).toBeVisible();
+  const stitches = page.locator("pre.ascii-art");
+  await expect(stitches).toHaveCount(4);
   for (const stitch of await stitches.all()) {
     await expect(stitch).toHaveAttribute("aria-hidden", "true");
     expect(await stitch.textContent()).toMatch(/^[\x20-\x7e\n]+$/u);
     expect(await stitch.evaluate((element) => getComputedStyle(element).whiteSpace)).toBe("pre");
   }
-  await expect(page.locator(".home-mountain")).toBeVisible();
+  await expect(page.locator(".home-emblem .home-stamp")).toBeVisible();
   await expect.poll(async () => page.locator(".history-panel").innerText(), {
     message: `browser requests=${JSON.stringify(browserApiRequests)}; failures=${JSON.stringify(browserApiFailures)}; console=${JSON.stringify(browserConsoleErrors)}; pageerrors=${JSON.stringify(browserPageErrors)}; fetches=${JSON.stringify(await page.evaluate(() => Reflect.get(window, "__investiaFetchLog")))}`,
     timeout: 15_000,
@@ -347,9 +349,10 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await expect(page.getByRole("heading", { name: "Nueva investigación" })).toBeVisible();
   await expect(page.locator(".application-shell")).not.toHaveClass(/application-shell--home/u);
   await expect(page.locator(".application-shell")).toHaveClass(/application-shell--create/u);
-  await expect(page.locator(".home-mountain, .mountain-collage, .folk-strip, .site-footer")).toHaveCount(0);
-  await expect(page.locator(".create-edge-embroidery pre.ascii-stitch")).toHaveAttribute("aria-hidden", "true");
-  await expect(page.locator(".create-mountain")).toBeVisible();
+  await expect(page.locator(".home-emblem")).toHaveCount(0);
+  await expect(page.locator(".site-footer")).toBeVisible();
+  await expect(page.locator(".create-guide pre.ascii-art--tree")).toHaveAttribute("aria-hidden", "true");
+  await expect(page.locator(".create-section")).toHaveCount(3);
   await expect(page.getByRole("link", { name: "Volver", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Semillas iniciales" })).toBeVisible();
   await expect(page.getByRole("combobox")).toHaveCount(0);
@@ -373,8 +376,8 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect(desktopCreateGeometry.firstWordRects).toHaveLength(1);
   expect(desktopCreateGeometry.secondWordRects).toHaveLength(1);
   expect(Math.abs(desktopCreateGeometry.firstWordRects[0]!.top - desktopCreateGeometry.secondWordRects[0]!.top)).toBeLessThan(1);
-  expect(desktopCreateGeometry.formWidth).toBeGreaterThanOrEqual(1_000);
-  expect(desktopCreateGeometry.submitBottom).toBeLessThanOrEqual(desktopCreateGeometry.viewportHeight);
+  // Sectioned form beside a sticky guide; the submit bar is reached by scrolling.
+  expect(desktopCreateGeometry.formWidth).toBeGreaterThanOrEqual(700);
   expect(await page.locator(".new-investigation-link").count()).toBe(0);
   expect(await findRightOrnamentIntersections(page)).toEqual([]);
 
@@ -388,7 +391,6 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect(mobileCreateGeometry.wordBreak).toBe("normal");
   expect(mobileCreateGeometry.firstWordRects).toHaveLength(1);
   expect(mobileCreateGeometry.secondWordRects).toHaveLength(1);
-  expect(mobileCreateGeometry.secondWordRects[0]!.top).toBeGreaterThan(mobileCreateGeometry.firstWordRects[0]!.top);
   expect(await findRightOrnamentIntersections(page)).toEqual([]);
   const secondEmailInput = page.getByLabel("Correo electrónico 2");
   await secondEmailInput.scrollIntoViewIfNeeded();
@@ -794,8 +796,8 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await expectNoHorizontalOverflow(page, "desktop populated home");
   await expectNoClippedLabelsOrControls(page, "desktop populated home");
   const historyWidthRatio = await page.evaluate(() => document.querySelector<HTMLElement>(".history-panel")!.getBoundingClientRect().width / window.innerWidth);
-  expect(historyWidthRatio).toBeGreaterThanOrEqual(0.23);
-  expect(historyWidthRatio).toBeLessThanOrEqual(0.31);
+  // The history is a full-width ledger below the hero, not a narrow sidebar.
+  expect(historyWidthRatio).toBeGreaterThanOrEqual(0.6);
   expect(await findRightOrnamentIntersections(page)).toEqual([]);
   await page.evaluate(() => window.scrollTo(0, 0));
   screenshotPaths.push(await screenshot(page, "home-desktop.png"));

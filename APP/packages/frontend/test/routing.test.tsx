@@ -80,8 +80,15 @@ describe("App route scaffold", () => {
     expect(screen.getByLabelText("Nombre de la investigación")).toHaveAccessibleDescription(/Hasta/u);
     expect(screen.getByLabelText("Correo electrónico 1")).toHaveAttribute("type", "email");
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-    expect(container.querySelector(".creation-page > .eyebrow, .create-back-link")).not.toBeInTheDocument();
-    expect(container.querySelector(".creation-page .motif-divider")).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector(".creation-page > .eyebrow, .create-back-link, .motif-divider")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      "Expediente",
+      "Semillas iniciales",
+      "Avance y autorización",
+      "Cómo se abre un expediente",
+    ]);
+    expect(screen.getByRole("complementary", { name: "Cómo se abre un expediente" })).toBeInTheDocument();
+    expect(container.querySelector(".create-guide .ascii-art--tree")).toHaveAttribute("aria-hidden", "true");
   });
 
   it("renders a safe not-found screen for malformed investigation URLs", () => {
