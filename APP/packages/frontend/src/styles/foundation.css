@@ -258,14 +258,3 @@ input[type="checkbox"]:checked::before { opacity: 1; }
 }
 .status-chip::before { width: 6px; height: 6px; border-radius: 50%; background: var(--red); content: ""; }
 .status-chip--muted::before { background: var(--muted); }
-
-/* Legacy aliases still read by workspace.css; removed when the workspace is restyled. */
-:root {
-  --color-heritage-red: var(--red);
-  --color-carbon-black: var(--ink);
-  --color-linen-base: var(--linen);
-  --color-linen-shadow: var(--line);
-  --color-halftone-gray: var(--muted);
-  --font-body: var(--font-text);
-  --font-utility: var(--font-mono);
-}

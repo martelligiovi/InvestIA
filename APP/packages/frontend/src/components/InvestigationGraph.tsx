@@ -1,6 +1,5 @@
 import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { GRAPH_PAGE_SIZE, workspaceGraphPage, type WorkspaceGraph, type WorkspaceNode } from "../pages/workspace-model";
-import homeMountain from "../assets/home-mountain-engraving.svg";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 
 export interface InvestigationGraphProps {
@@ -284,7 +283,6 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
           </details>
         </>
       )}
-      <div className="workspace-landscape" aria-hidden="true"><img className="workspace-mountain" src={homeMountain} alt="" /></div>
     </section>
   );
 }

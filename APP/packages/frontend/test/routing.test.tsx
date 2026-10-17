@@ -120,6 +120,8 @@ describe("App route scaffold", () => {
     expect(container.querySelector(".application-shell")).toHaveClass("application-shell--quiet");
     expect(container.querySelector(".site-header .new-investigation-link")).toHaveAttribute("href", "#/nueva");
     expect(container.querySelector(".site-footer")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Volver al historial" })).toHaveAttribute("href", "#/");
+    expect(container.querySelector(".workspace-brand, .workspace-landscape, .workspace-mountain")).not.toBeInTheDocument();
   });
 
   it("navigates from the brand preview to the create scaffold", async () => {

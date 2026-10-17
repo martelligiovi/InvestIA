@@ -84,6 +84,8 @@
   .site-header-inner { min-height: 56px; }
   .brand-name { font-size: 22px; }
   .site-nav { gap: var(--space-3); }
-  .new-investigation-link { padding-inline: 12px; font-size: 12px; }
+  .new-investigation-link { padding-inline: 12px; font-size: 12px; white-space: nowrap; }
+  /* The workspace header already offers "Volver al historial". */
+  .application-shell--quiet .home-link { display: none; }
   .main-content { padding-top: var(--space-6); }
 }

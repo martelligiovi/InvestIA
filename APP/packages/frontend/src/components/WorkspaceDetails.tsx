@@ -61,7 +61,7 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate }: 
   return (
     <aside className="workspace-detail-panel" aria-labelledby="detail-heading">
       <div className="detail-heading-row">
-        <span className="detail-mark" aria-hidden="true">✳</span>
+        <span className="detail-mark" aria-hidden="true">x</span>
         <div>
           <p className="eyebrow">REGISTRO SELECCIONADO</p>
           <h2 id="detail-heading">Detalle del nodo</h2>

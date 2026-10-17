@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { ValidationStatus } from "@investia/core";
-import flower from "../assets/folk-flower.svg";
+import { AsciiArt } from "../components/AsciiArt";
 import { InvestigationGraph } from "../components/InvestigationGraph";
 import { WorkspaceDetails } from "../components/WorkspaceDetails";
 import { buildWorkspaceGraph, type WorkspaceNode } from "./workspace-model";
@@ -16,6 +16,7 @@ type MobilePanel = "graph" | "detail";
 function LoadingWorkspace() {
   return (
     <section className="workspace-state-page" aria-live="polite">
+      <AsciiArt motif="rosette" className="workspace-state-art" />
       <p className="eyebrow">CUADERNO DE INVESTIGACIÓN</p>
       <h1 className="document-title">Cargando expediente…</h1>
       <p role="status">Leyendo el estado registrado de la investigación.</p>
@@ -39,6 +40,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   if (controller.phase === "error") {
     return (
       <section className="workspace-state-page" aria-labelledby="workspace-error-title">
+        <AsciiArt motif="tree" className="workspace-state-art" />
         <p className="eyebrow">CUADERNO DE INVESTIGACIÓN</p>
         <h1 id="workspace-error-title" className="document-title">No se pudo cargar el expediente</h1>
         <p role="alert">{controller.loadError || "Revisá la conexión e intentá otra vez."}</p>
@@ -54,6 +56,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   if (controller.phase === "not-found" || investigation === null) {
     return (
       <section className="workspace-state-page" aria-labelledby="workspace-not-found-title">
+        <AsciiArt motif="tree" className="workspace-state-art" />
         <p className="eyebrow">CUADERNO DE INVESTIGACIÓN</p>
         <h1 id="workspace-not-found-title" className="document-title">No existe este expediente</h1>
         <p>La referencia <code className="break-value">{id}</code> no corresponde a una investigación disponible.</p>
@@ -126,34 +129,39 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   return (
     <section className="investigation-workspace" aria-labelledby="workspace-title">
       <header className="workspace-header">
-        <a className="workspace-brand" href="#/" aria-label="InvestIA, inicio"><img src={flower} alt="" /></a>
-        <a className="workspace-back-link" href="#/" aria-label="Volver al historial">
-          <span aria-hidden="true">←</span><span>Volver al historial</span>
-        </a>
-        <div className="workspace-title-block">
-          <p className="eyebrow">INVESTIGACIÓN · {investigation.revision.toString().padStart(2, "0")}</p>
-          <h1 id="workspace-title">{investigation.name ?? "Investigación"}</h1>
-          <span className={`workspace-state-tag${investigation.paused ? " is-paused" : ""}`}>
-            {controller.stale ? "Estado desactualizado" : workspaceHeadline(investigation)}
-          </span>
+        <div className="workspace-header-main">
+          <a className="workspace-back-link" href="#/" aria-label="Volver al historial">
+            <span aria-hidden="true">←</span><span>Volver al historial</span>
+          </a>
+          <div className="workspace-title-block">
+            <p className="eyebrow">INVESTIGACIÓN · {investigation.revision.toString().padStart(2, "0")}</p>
+            <div className="workspace-title-row">
+              <h1 id="workspace-title">{investigation.name ?? "Investigación"}</h1>
+              <span className={`workspace-state-tag status-chip${investigation.paused ? " is-paused status-chip--muted" : ""}`}>
+                {controller.stale ? "Estado desactualizado" : workspaceHeadline(investigation)}
+              </span>
+            </div>
+          </div>
         </div>
         <div className="workspace-header-actions">
           <details className="workspace-pause-disclosure">
             <summary>{investigation.paused ? "Reanudar" : "Pausar"}</summary>
-          <label className="workspace-header-reason">
-            <span>Motivo para {investigation.paused ? "reanudar" : "pausar"}</span>
-            <input
-              value={pauseReason}
-              maxLength={2_000}
-              onChange={(event) => { setPauseReason(event.currentTarget.value); setFormError(""); }}
-              disabled={controlsDisabled}
-              aria-label={`Motivo para ${investigation.paused ? "reanudar" : "pausar"} el expediente`}
-            />
-          </label>
-          <button className="workspace-button workspace-button--primary" type="button" disabled={controlsDisabled || pauseReason.trim() === ""} onClick={() => void togglePause()}>
-            {investigation.paused ? "Reanudar expediente" : "Pausar expediente"}
-          </button>
-          <p className="workspace-pause-note">Pausar impide nuevas reclamaciones; no cancela acciones en curso.</p>
+            <div className="workspace-pause-panel">
+              <label className="workspace-header-reason">
+                <span>Motivo para {investigation.paused ? "reanudar" : "pausar"}</span>
+                <input
+                  value={pauseReason}
+                  maxLength={2_000}
+                  onChange={(event) => { setPauseReason(event.currentTarget.value); setFormError(""); }}
+                  disabled={controlsDisabled}
+                  aria-label={`Motivo para ${investigation.paused ? "reanudar" : "pausar"} el expediente`}
+                />
+              </label>
+              <button className="workspace-button workspace-button--primary" type="button" disabled={controlsDisabled || pauseReason.trim() === ""} onClick={() => void togglePause()}>
+                {investigation.paused ? "Reanudar expediente" : "Pausar expediente"}
+              </button>
+              <p className="workspace-pause-note">Pausar impide nuevas reclamaciones; no cancela acciones en curso.</p>
+            </div>
           </details>
           <button className="workspace-button workspace-button--report" type="button" disabled={controller.busy || controller.stale} onClick={() => void controller.loadReport()}>
             {controller.reportLoading ? "Obteniendo informe…" : "Obtener informe"}
