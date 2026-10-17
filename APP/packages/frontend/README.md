@@ -46,7 +46,7 @@ From the repository root, start the backend in one shell using the [backend setu
 pnpm --dir APP frontend:dev
 ```
 
-The Vite server is loopback-only and proxies `/investigations` to `127.0.0.1:4317`. These commands are the same in Bash. Backend process environment variables, including `PYTHON`, must be set explicitly in the shell; Node does not automatically load `.env` or `.env.example`. Use the interpreter path appropriate to the host as shown above.
+The Vite server is loopback-only and proxies `/investigations` to `127.0.0.1:4317`; set `INVESTIA_API_TARGET` (for example `http://127.0.0.1:4318` for a Docker app published on `APP_PORT=4318`) to proxy to another local backend. These commands are the same in Bash. Backend process environment variables, including `PYTHON`, must be set explicitly in the shell; Node does not automatically load `.env` or `.env.example`. Use the interpreter path appropriate to the host as shown above.
 
 ## Build and same-origin serving
 

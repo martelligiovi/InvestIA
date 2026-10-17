@@ -167,3 +167,33 @@ it("centers using the SVG screen origin and preserves readable zoom", () => {
   expect((200 - Number(t[1])) / Number(t[3])).toBeCloseTo(before.x);
   expect((250 - Number(t[2])) / Number(t[3])).toBeCloseTo(before.y);
 });
+
+describe("desplazamiento del lienzo", () => {
+  // jsdom has no PointerEvent: dispatch mouse events carrying the pointer fields the handlers read.
+  function pointer(target: Element, type: string, clientX: number, clientY: number) {
+    const event = new MouseEvent(type, { bubbles: true, clientX, clientY });
+    Object.defineProperty(event, "pointerId", { value: 1 });
+    fireEvent(target, event);
+  }
+
+  function transform(container: HTMLElement) {
+    return container.querySelector(".investigation-graph > g")!.getAttribute("transform");
+  }
+
+  it("desplaza el grafo al arrastrar el fondo vacío del área, aunque quede fuera del SVG", () => {
+    const { container } = render(<InvestigationGraph graph={graph} selectedId={null} onSelect={vi.fn()} />);
+    const viewport = container.querySelector<HTMLElement>(".graph-viewport")!;
+    pointer(viewport, "pointerdown", 0, 0);
+    pointer(viewport, "pointermove", 30, 20);
+    pointer(viewport, "pointerup", 30, 20);
+    expect(transform(container)).toBe("translate(30 20) scale(1)");
+  });
+
+  it("no inicia el desplazamiento desde un nodo", () => {
+    const { container } = render(<InvestigationGraph graph={graph} selectedId={null} onSelect={vi.fn()} />);
+    const viewport = container.querySelector<HTMLElement>(".graph-viewport")!;
+    pointer(container.querySelector(".graph-node")!, "pointerdown", 0, 0);
+    pointer(viewport, "pointermove", 30, 20);
+    expect(transform(container)).toBe("translate(0 0) scale(1)");
+  });
+});

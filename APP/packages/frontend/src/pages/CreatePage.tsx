@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { INVESTIGATION_NAME_MAX_LENGTH, normalizeInvestigationName } from "@investia/core";
 import { InvestigationApiClient } from "../api/client";
 import { investigationHash } from "../routing";
-import flower from "../assets/folk-flower.svg";
+import { AsciiArt } from "../components/AsciiArt";
 
 const RECOVERY_STORAGE_KEY = "investia.creation-recovery.v1";
 const EMAIL_MAX_LENGTH = 320;
@@ -384,34 +384,38 @@ export function CreatePage() {
       const isCreating = recovery.phase === "creating" && pending;
       return (
         <section className="creation-page recovery-page" aria-labelledby="create-title">
-          <p className="eyebrow">APERTURA DE EXPEDIENTE · RECUPERACIÓN</p>
-          <h1 id="create-title" className="document-title">Nueva <span>investigación</span></h1>
-          {isCreating ? (
-            <p className="recovery-alert" role="status">Creando la investigación y guardando el borrador de recuperación…</p>
-          ) : (
-            <>
-              <p className="recovery-alert" role="alert">
-                {recoveryNotice || "No se pudo confirmar si se creó la investigación."}
-              </p>
-              <p className="document-note">
-                Revisá el historial para comprobar si existe antes de iniciar otra. La solicitud no se reintentará automáticamente.
-              </p>
-              <div className="recovery-actions">
-                <a className="text-link" href="#/">Revisar historial <span aria-hidden="true">←</span></a>
-                <button
-                  className="text-button"
-                  type="button"
-                  onClick={() => {
-                    clearRecovery();
-                    setRecovery(null);
-                    setRecoveryNotice("");
-                  }}
-                >
-                  Ya revisé el historial; volver al formulario
-                </button>
-              </div>
-            </>
-          )}
+          <header className="page-intro">
+            <p className="kicker">APERTURA DE EXPEDIENTE · RECUPERACIÓN</p>
+            <h1 id="create-title" className="document-title">Nueva <span>investigación</span></h1>
+          </header>
+          <div className="recovery-panel">
+            {isCreating ? (
+              <p className="recovery-alert" role="status">Creando la investigación y guardando el borrador de recuperación…</p>
+            ) : (
+              <>
+                <p className="recovery-alert" role="alert">
+                  {recoveryNotice || "No se pudo confirmar si se creó la investigación."}
+                </p>
+                <p className="document-note">
+                  Revisá el historial para comprobar si existe antes de iniciar otra. La solicitud no se reintentará automáticamente.
+                </p>
+                <div className="recovery-actions">
+                  <a className="text-link" href="#/">Revisar historial <span aria-hidden="true">←</span></a>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => {
+                      clearRecovery();
+                      setRecovery(null);
+                      setRecoveryNotice("");
+                    }}
+                  >
+                    Ya revisé el historial; volver al formulario
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </section>
       );
     }
@@ -420,41 +424,45 @@ export function CreatePage() {
     const allComplete = isComplete(recovery);
     return (
       <section className="creation-page recovery-page" aria-labelledby="create-title">
-        <p className="eyebrow">APERTURA DE EXPEDIENTE · RECUPERACIÓN</p>
-        <h1 id="create-title" className="document-title">Carga <span>pendiente</span></h1>
-        <p className="document-lead">La investigación <strong>{recovery.name}</strong> ya existe.</p>
-        {recoveryCheck === "checking" && !pending && (
-          <p className="recovery-alert" role="status">Comprobando los correos guardados en el expediente…</p>
-        )}
-        {pending && <p className="recovery-alert" role="status">Comprobando y guardando solo los correos pendientes…</p>}
-        {recoveryCheck === "error" && !pending && (
-          <p className="recovery-alert" role="alert">{recoveryNotice || "No se pudo revisar el expediente."}</p>
-        )}
-        {recoveryNotice !== "" && recoveryCheck !== "error" && !pending && (
-          <p className="recovery-alert" role="alert">{recoveryNotice}</p>
-        )}
-        {!pending && recoveryCheck === "ready" && recoveryNotice === "" && (
-          <p className="recovery-progress" role="status">
-            Se guardó {completedCount} de {recovery.emails.length} correos iniciales.
-          </p>
-        )}
-        {recovery.consent && !recovery.authorizationConfirmed && (
-          <p className="document-note">Consentimiento conservado; autorización pendiente de confirmación. No se incorporarán semillas nuevas hasta confirmarla.</p>
-        )}
-        {!allComplete && (
-          <p className="document-note">
-            Si abrís el expediente ahora, los correos pendientes todavía no estarán incorporados. Las semillas ya guardadas pueden avanzar si el expediente está autorizado y sin pausa.
-          </p>
-        )}
-        <div className="recovery-actions">
-          {!storageProblem && (
-            <button className="primary-action recovery-retry" type="button" disabled={pending} onClick={() => void handleRetry()}>
-              Reintentar correos pendientes
-            </button>
+        <header className="page-intro">
+          <p className="kicker">APERTURA DE EXPEDIENTE · RECUPERACIÓN</p>
+          <h1 id="create-title" className="document-title">Carga <span>pendiente</span></h1>
+          <p className="document-lead">La investigación <strong>{recovery.name}</strong> ya existe.</p>
+        </header>
+        <div className="recovery-panel">
+          {recoveryCheck === "checking" && !pending && (
+            <p className="recovery-alert" role="status">Comprobando los correos guardados en el expediente…</p>
           )}
-          <a className="text-link" href={investigationHash(recovery.investigationId)}>
-            Abrir expediente <span aria-hidden="true">↗</span>
-          </a>
+          {pending && <p className="recovery-alert" role="status">Comprobando y guardando solo los correos pendientes…</p>}
+          {recoveryCheck === "error" && !pending && (
+            <p className="recovery-alert" role="alert">{recoveryNotice || "No se pudo revisar el expediente."}</p>
+          )}
+          {recoveryNotice !== "" && recoveryCheck !== "error" && !pending && (
+            <p className="recovery-alert" role="alert">{recoveryNotice}</p>
+          )}
+          {!pending && recoveryCheck === "ready" && recoveryNotice === "" && (
+            <p className="recovery-progress" role="status">
+              Se guardó {completedCount} de {recovery.emails.length} correos iniciales.
+            </p>
+          )}
+          {recovery.consent && !recovery.authorizationConfirmed && (
+            <p className="document-note">Consentimiento conservado; autorización pendiente de confirmación. No se incorporarán semillas nuevas hasta confirmarla.</p>
+          )}
+          {!allComplete && (
+            <p className="document-note">
+              Si abrís el expediente ahora, los correos pendientes todavía no estarán incorporados. Las semillas ya guardadas pueden avanzar si el expediente está autorizado y sin pausa.
+            </p>
+          )}
+          <div className="recovery-actions">
+            {!storageProblem && (
+              <button className="primary-action recovery-retry" type="button" disabled={pending} onClick={() => void handleRetry()}>
+                Reintentar correos pendientes
+              </button>
+            )}
+            <a className="text-link" href={investigationHash(recovery.investigationId)}>
+              Abrir expediente <span aria-hidden="true">↗</span>
+            </a>
+          </div>
         </div>
       </section>
     );
@@ -462,133 +470,167 @@ export function CreatePage() {
 
   return (
     <section className="creation-page" aria-labelledby="create-title">
-      <div className="motif-divider" aria-hidden="true"><span /><img src={flower} alt="" /><span /></div>
-      <h1 id="create-title" className="document-title">Nueva <span>investigación</span></h1>
-      <p className="document-lead">Cargá los datos que tenés como punto de partida</p>
-      <form className="create-form" noValidate onSubmit={(event) => void handleCreate(event)}>
-        <fieldset className="create-fields" disabled={pending}>
-          <legend className="visually-hidden">Datos iniciales</legend>
-          <div className="form-field">
-            <label htmlFor="investigation-name">Nombre de la investigación</label>
-            <input
-              id="investigation-name"
-              name="name"
-              type="text"
-              autoComplete="off"
-              placeholder="Escribí un nombre para tu investigación"
-              value={name}
-              aria-invalid={fieldErrors.name !== undefined}
-              aria-describedby={`name-hint${fieldErrors.name === undefined ? "" : " name-error"}`}
-              onChange={(event) => {
-                setName(event.currentTarget.value);
-                setFieldErrors((errors) => {
-                  const next = { ...errors };
-                  delete next.name;
-                  return next;
-                });
-                setFormError("");
-              }}
-            />
-            <span id="name-hint" className="visually-hidden">Hasta {INVESTIGATION_NAME_MAX_LENGTH} caracteres Unicode.</span>
-            {fieldErrors.name !== undefined && <span id="name-error" className="field-error">{fieldErrors.name}</span>}
-          </div>
-          <div className="form-field">
-            <label htmlFor="investigation-intention">Intención de la investigación</label>
-            <textarea
-              id="investigation-intention"
-              name="intention"
-              required
-              value={intention}
-              placeholder="¿Qué querés investigar y para qué?"
-              aria-invalid={fieldErrors.intention !== undefined}
-              aria-describedby={`intention-hint${fieldErrors.intention === undefined ? "" : " intention-error"}`}
-              onChange={(event) => {
-                setIntention(event.currentTarget.value);
-                setFieldErrors((errors) => {
-                  const next = { ...errors };
-                  delete next.intention;
-                  return next;
-                });
-                setFormError("");
-              }}
-            />
-            <span id="intention-hint">La intención se registra una sola vez al abrir el expediente.</span>
-            {fieldErrors.intention !== undefined && <span id="intention-error" className="field-error">{fieldErrors.intention}</span>}
-          </div>
-          <div className="form-field create-advancement-field">
-            <label>
-              <input type="checkbox" checked={manualMode} onChange={(event) => setManualMode(event.currentTarget.checked)} />
-              Elegir avance manual
-            </label>
-            <span>El avance automático es la opción predeterminada.</span>
-          </div>
-          <div className="form-field create-advancement-field">
-            <label>
-              <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.currentTarget.checked)} aria-describedby="creation-consent-hint" />
-              Autorizar consultas del catálogo
-            </label>
-            <span id="creation-consent-hint">Autorizás semillas actuales y futuras hasta revocar. user-scanner puede enviar correos/notificaciones (loud) y explorar usuarios, enlaces y emails descubiertos (cross-scan). Automático avanza sin aprobación por nodo; sin marcar, espera autorización.</span>
-          </div>
-          <div className="email-fields">
-            <div className="email-fields-heading">
-              <h2>Semillas iniciales</h2>
-            </div>
-            {fieldErrors.emails !== undefined && <p className="field-error" role="alert">{fieldErrors.emails}</p>}
-            <div className="email-row-list">
-              {emailRows.map((row, index) => {
-                const errorId = `email-error-${row.key}`;
-                const fieldKey = `email-${row.key}`;
-                return (
-                  <div className="email-row" key={row.key}>
-                    <div className="form-field email-field">
-                      <label htmlFor={fieldKey}>Correo electrónico {index + 1}</label>
-                      <input
-                        id={fieldKey}
-                        name={`email-${index + 1}`}
-                        type="email"
-                        inputMode="email"
-                        autoComplete="off"
-                        maxLength={EMAIL_MAX_LENGTH}
-                        placeholder="ejemplo@example.com"
-                        value={row.value}
-                        aria-invalid={fieldErrors[fieldKey] !== undefined}
-                        aria-describedby={fieldErrors[fieldKey] === undefined ? undefined : errorId}
-                        onChange={(event) => updateEmail(row.key, event.currentTarget.value)}
-                      />
-                      {fieldErrors[fieldKey] !== undefined && (
-                        <span id={errorId} className="field-error">{fieldErrors[fieldKey]}</span>
-                      )}
+      <header className="page-intro">
+        <p className="kicker">Apertura de expediente</p>
+        <h1 id="create-title" className="document-title">Nueva <span>investigación</span></h1>
+        <p className="document-lead">Cargá los datos que tenés como punto de partida</p>
+      </header>
+      <div className="create-layout">
+        <form className="create-form" noValidate onSubmit={(event) => void handleCreate(event)}>
+          <fieldset className="create-fields" disabled={pending}>
+            <legend className="visually-hidden">Datos iniciales</legend>
+            <section className="create-section" aria-labelledby="create-section-case">
+              <div className="create-section-heading">
+                <span className="create-section-index" aria-hidden="true">01</span>
+                <h2 id="create-section-case">Expediente</h2>
+              </div>
+              <div className="form-field">
+                <label htmlFor="investigation-name">Nombre de la investigación</label>
+                <input
+                  id="investigation-name"
+                  name="name"
+                  type="text"
+                  autoComplete="off"
+                  placeholder="Escribí un nombre para tu investigación"
+                  value={name}
+                  aria-invalid={fieldErrors.name !== undefined}
+                  aria-describedby={`name-hint${fieldErrors.name === undefined ? "" : " name-error"}`}
+                  onChange={(event) => {
+                    setName(event.currentTarget.value);
+                    setFieldErrors((errors) => {
+                      const next = { ...errors };
+                      delete next.name;
+                      return next;
+                    });
+                    setFormError("");
+                  }}
+                />
+                <span id="name-hint" className="visually-hidden">Hasta {INVESTIGATION_NAME_MAX_LENGTH} caracteres Unicode.</span>
+                {fieldErrors.name !== undefined && <span id="name-error" className="field-error">{fieldErrors.name}</span>}
+              </div>
+              <div className="form-field">
+                <label htmlFor="investigation-intention">Intención de la investigación</label>
+                <textarea
+                  id="investigation-intention"
+                  name="intention"
+                  required
+                  value={intention}
+                  placeholder="¿Qué querés investigar y para qué?"
+                  aria-invalid={fieldErrors.intention !== undefined}
+                  aria-describedby={`intention-hint${fieldErrors.intention === undefined ? "" : " intention-error"}`}
+                  onChange={(event) => {
+                    setIntention(event.currentTarget.value);
+                    setFieldErrors((errors) => {
+                      const next = { ...errors };
+                      delete next.intention;
+                      return next;
+                    });
+                    setFormError("");
+                  }}
+                />
+                <span id="intention-hint" className="field-hint">La intención se registra una sola vez al abrir el expediente.</span>
+                {fieldErrors.intention !== undefined && <span id="intention-error" className="field-error">{fieldErrors.intention}</span>}
+              </div>
+            </section>
+
+            <section className="create-section email-fields" aria-labelledby="create-section-seeds">
+              <div className="create-section-heading email-fields-heading">
+                <span className="create-section-index" aria-hidden="true">02</span>
+                <h2 id="create-section-seeds">Semillas iniciales</h2>
+              </div>
+              {fieldErrors.emails !== undefined && <p className="field-error" role="alert">{fieldErrors.emails}</p>}
+              <div className="email-row-list">
+                {emailRows.map((row, index) => {
+                  const errorId = `email-error-${row.key}`;
+                  const fieldKey = `email-${row.key}`;
+                  return (
+                    <div className="email-row" key={row.key}>
+                      <div className="form-field email-field">
+                        <label htmlFor={fieldKey}>Correo electrónico {index + 1}</label>
+                        <input
+                          id={fieldKey}
+                          name={`email-${index + 1}`}
+                          type="email"
+                          inputMode="email"
+                          autoComplete="off"
+                          maxLength={EMAIL_MAX_LENGTH}
+                          placeholder="ejemplo@example.com"
+                          value={row.value}
+                          aria-invalid={fieldErrors[fieldKey] !== undefined}
+                          aria-describedby={fieldErrors[fieldKey] === undefined ? undefined : errorId}
+                          onChange={(event) => updateEmail(row.key, event.currentTarget.value)}
+                        />
+                        {fieldErrors[fieldKey] !== undefined && (
+                          <span id={errorId} className="field-error">{fieldErrors[fieldKey]}</span>
+                        )}
+                      </div>
+                      <button
+                        className="remove-email-button"
+                        type="button"
+                        aria-label={`Quitar correo ${index + 1}`}
+                        disabled={emailRows.length === 1}
+                        onClick={() => setEmailRows((rows) => rows.length > 1 ? rows.filter((item) => item.key !== row.key) : rows)}
+                      >
+                        Quitar
+                      </button>
                     </div>
-                    <button
-                      className="remove-email-button"
-                      type="button"
-                      aria-label={`Quitar correo ${index + 1}`}
-                      disabled={emailRows.length === 1}
-                      onClick={() => setEmailRows((rows) => rows.length > 1 ? rows.filter((item) => item.key !== row.key) : rows)}
-                    >
-                      Quitar
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <button
-              className="text-button add-email-button"
-              type="button"
-              onClick={() => {
-                setEmailRows((rows) => [...rows, { key: nextEmailKey.current++, value: "" }]);
-                setFormError("");
-              }}
-            >
-              + Agregar correo
+                  );
+                })}
+              </div>
+              <button
+                className="text-button add-email-button"
+                type="button"
+                onClick={() => {
+                  setEmailRows((rows) => [...rows, { key: nextEmailKey.current++, value: "" }]);
+                  setFormError("");
+                }}
+              >
+                + Agregar correo
+              </button>
+            </section>
+
+            <section className="create-section" aria-labelledby="create-section-run">
+              <div className="create-section-heading">
+                <span className="create-section-index" aria-hidden="true">03</span>
+                <h2 id="create-section-run">Avance y autorización</h2>
+              </div>
+              <div className="create-options">
+                <div className="form-field create-advancement-field">
+                  <label>
+                    <input type="checkbox" checked={manualMode} onChange={(event) => setManualMode(event.currentTarget.checked)} />
+                    Elegir avance manual
+                  </label>
+                  <span>El avance automático es la opción predeterminada.</span>
+                </div>
+                <div className="form-field create-advancement-field">
+                  <label>
+                    <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.currentTarget.checked)} aria-describedby="creation-consent-hint" />
+                    Autorizar consultas del catálogo
+                  </label>
+                  <span id="creation-consent-hint">Autorizás semillas actuales y futuras hasta revocar. user-scanner puede enviar correos/notificaciones (loud) y explorar usuarios, enlaces y emails descubiertos (cross-scan). Automático avanza sin aprobación por nodo; sin marcar, espera autorización.</span>
+                </div>
+              </div>
+            </section>
+            {formError !== "" && <p className="form-error" role="alert">{formError}</p>}
+          </fieldset>
+          <div className="create-submit-bar">
+            <button className="primary-action create-submit" type="submit" disabled={pending}>
+              {pending ? "Creando…" : "Crear investigación"}
             </button>
           </div>
-          {formError !== "" && <p className="form-error" role="alert">{formError}</p>}
-        </fieldset>
-        <button className="primary-action create-submit" type="submit" disabled={pending}>
-          {pending ? "Creando…" : "Crear investigación"}
-        </button>
-      </form>
+        </form>
+
+        <aside className="create-guide" aria-labelledby="create-guide-title">
+          <AsciiArt motif="tree" />
+          <h2 id="create-guide-title">Cómo se abre un expediente</h2>
+          <ol>
+            <li><span aria-hidden="true">01</span>Nombrá el caso y escribí su intención.</li>
+            <li><span aria-hidden="true">02</span>Sumá los correos que ya conocés como semillas.</li>
+            <li><span aria-hidden="true">03</span>Elegí cómo avanza y si autorizás consultas.</li>
+          </ol>
+          <p>Nada se ejecuta fuera de lo que autorices; podés pausar o revocar después.</p>
+        </aside>
+      </div>
     </section>
   );
 }

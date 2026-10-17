@@ -1,9 +1,6 @@
 import type { ReactNode } from "react";
 import flower from "../assets/folk-flower.svg";
-import folkStrip from "../assets/folk-strip.svg";
-import mountainCollage from "../assets/mountain-collage.svg";
-import homeMountain from "../assets/home-mountain-engraving.svg";
-import { AsciiStitchBorder } from "./AsciiStitchBorder";
+import { AsciiArt } from "./AsciiArt";
 
 export interface AppShellProps {
   readonly children: ReactNode;
@@ -26,46 +23,37 @@ export function AppShell({ children, quiet = false, home = false, create = false
       >
         Saltar al contenido
       </a>
-      <div className="ornament-layer" aria-hidden="true">
-        <span className="heritage-sun" />
-        {quiet ? (
-          <div className="workspace-edge-embroidery"><AsciiStitchBorder variant="floral" /></div>
-        ) : home || create ? (
-          <>
-            <div className={create ? "create-edge-embroidery" : "home-edge-embroidery"}><AsciiStitchBorder variant="floral" /></div>
-            <img className={create ? "create-mountain" : "home-mountain"} src={homeMountain} alt="" />
-          </>
-        ) : (
-          <>
-            <img className="folk-strip" src={folkStrip} alt="" />
-            <img className="mountain-collage" src={mountainCollage} alt="" />
-          </>
-        )}
-        <img className="corner-flower" src={flower} alt="" />
-      </div>
-      <div className="shell-content">
-        {!home && <header className="site-header">
+      <header className="site-header">
+        <div className="site-header-inner">
           <a className="brand" href="#/" aria-label="InvestIA, inicio">
             <img src={flower} alt="" className="brand-flower" />
             <span className="brand-name">Invest<span>IA</span></span>
           </a>
-          <span className="header-rule" aria-hidden="true" />
-          <a className="home-link" href="#/">
-            <span aria-hidden="true">←</span>
-            <span>{create ? "Volver" : "Inicio"}</span>
-          </a>
-          {showNewInvestigationLink && (
-            <a className="new-investigation-link" href="#/nueva">Nueva investigación <span aria-hidden="true">↗</span></a>
-          )}
-        </header>}
-        <main id="main-content" className="main-content" tabIndex={-1}>
-          {children}
-        </main>
-        {!home && !create && <footer className="site-footer">
-          <span>INVESTIA · CUADERNO DE EVIDENCIA</span>
-          <span>DATOS PÚBLICOS · DECISIONES EXPLÍCITAS</span>
-        </footer>}
-      </div>
+          <nav className="site-nav" aria-label="Navegación principal">
+            {!home && (
+              <a className="home-link" href="#/">
+                <span aria-hidden="true">←</span>
+                <span>{create ? "Volver" : "Inicio"}</span>
+              </a>
+            )}
+            {showNewInvestigationLink && (
+              <a className="new-investigation-link" href="#/nueva">Nueva investigación <span aria-hidden="true">↗</span></a>
+            )}
+          </nav>
+        </div>
+      </header>
+      <main id="main-content" className="main-content" tabIndex={-1}>
+        {children}
+      </main>
+      {!quiet && (
+        <footer className="site-footer">
+          <AsciiArt motif="band" className="site-footer-band" />
+          <div className="site-footer-inner">
+            <span>INVESTIA · CUADERNO DE EVIDENCIA</span>
+            <span>DATOS PÚBLICOS · DECISIONES EXPLÍCITAS</span>
+          </div>
+        </footer>
+      )}
     </div>
   );
 }
