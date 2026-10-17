@@ -340,7 +340,7 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
     expect(await stitch.textContent()).toMatch(/^[\x20-\x7e\n]+$/u);
     expect(await stitch.evaluate((element) => getComputedStyle(element).whiteSpace)).toBe("pre");
   }
-  await expect(page.locator(".home-emblem .home-stamp")).toBeVisible();
+  await expect(page.locator(".home-emblem .home-stamp")).toBeHidden();
   await expect.poll(async () => page.locator(".history-panel").innerText(), {
     message: `browser requests=${JSON.stringify(browserApiRequests)}; failures=${JSON.stringify(browserApiFailures)}; console=${JSON.stringify(browserConsoleErrors)}; pageerrors=${JSON.stringify(browserPageErrors)}; fetches=${JSON.stringify(await page.evaluate(() => Reflect.get(window, "__investiaFetchLog")))}`,
     timeout: 15_000,

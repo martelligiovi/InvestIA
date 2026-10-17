@@ -2,6 +2,12 @@
 
 Use Vite at `127.0.0.1:5173` for development, or build once and let the loopback backend serve the frontend and API from the same origin. The frontend uses hash routes and relative `/investigations` API paths, so production-style local serving does not need CORS or an SPA fallback.
 
+## Interface design
+
+`src/styles/interface.css` is the final presentation layer: warm neutral surfaces, editorial headings, system UI typography for controls and data, and restrained red accents. It adapts the inherited design to the current sectioned creation form, compact workspace header, light-dismiss controls and detail drawer, without changing routes or graph scale. Decorative stamps and separators are hidden; their surrounding content remains accessible.
+
+`e2e/visual-design.spec.ts` checks desktop/mobile navigation, history visibility, compact headings, email controls and graph/detail controls. Screenshots are written to the ignored `test-results/redesign/` directory. The acceptance suite covers complete workflows.
+
 ## Full stack without a dev server
 
 From `APP/`, run `docker compose up -d --build` and open http://127.0.0.1:4317. The app image builds and bundles this frontend beside the backend's TS sources; there is no separate Vite container. Relative API calls are same-origin, with no CORS or proxy setup required. The image also provisions the Linux Python CLI, so the host venv instructions below apply only to native development.

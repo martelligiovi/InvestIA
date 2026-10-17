@@ -1,0 +1,200 @@
+/*
+ * Editorial presentation layer, imported last. It restyles the existing markup only:
+ * routes, controls, the detail drawer, header popovers and graph geometry stay intact.
+ * Warm neutral surfaces, serif headings, system UI type for controls and data,
+ * and red reserved for primary actions, selection and alerts.
+ */
+:root {
+  --red: #A33232;
+  --red-deep: #842525;
+  --red-wash: rgb(163 50 50 / 6%);
+  --danger: #B81D24;
+  --ink: #23201E;
+  --ink-soft: #46413D;
+  --muted: #6E6862;
+  --line: #E4DED4;
+  --line-strong: #CBC2B5;
+  --linen: #F6F3EE;
+  --paper: #FFFDF9;
+
+  --font-ui: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-code: "IBM Plex Mono", "Courier New", monospace;
+  --font-display: "EB Garamond", "Garamond", Georgia, serif;
+  /* Body copy, labels and data share the system UI stack; code and ASCII art keep monospace. */
+  --font-text: var(--font-ui);
+  --font-mono: var(--font-ui);
+
+  --radius: 6px;
+  --radius-panel: 10px;
+  --print-shadow: 0 10px 30px -12px rgb(35 32 30 / 22%);
+}
+
+body { background: var(--linen); font-size: 15px; line-height: 1.55; }
+h1, h2, h3, h4 { font-weight: 500; }
+code, pre, .ascii-art { font-family: var(--font-code); }
+
+/* Decorative ornaments are hidden; the sections and controls around them remain. */
+.home-emblem, .create-guide .ascii-art, .site-footer-band, .history-divider { display: none; }
+
+/* ── Type roles ────────────────────────────────────────── */
+.eyebrow, .kicker { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; }
+.kicker::before { width: 6px; height: 6px; border-radius: 50%; }
+.document-lead { color: var(--ink-soft); font-size: 17px; line-height: 1.55; }
+.document-note { font-size: 15px; line-height: 1.6; }
+
+/* ── Shell ─────────────────────────────────────────────── */
+.site-header { border-color: var(--line); background: rgb(246 243 238 / 92%); }
+.brand-name { font-weight: 500; letter-spacing: -0.035em; }
+.home-link { font-size: 14px; letter-spacing: 0; }
+.new-investigation-link { border-color: var(--line-strong); background: transparent; color: var(--red); font-size: 14px; font-weight: 600; }
+.new-investigation-link:hover { border-color: var(--red); background: transparent; }
+.site-footer-inner { font-size: 10px; letter-spacing: 0.08em; }
+
+/* ── Buttons and forms ─────────────────────────────────── */
+.primary-action, .secondary-action, .text-button, .workspace-button { font-size: 14px; font-weight: 600; letter-spacing: 0; }
+.primary-action:hover:not(:disabled) { box-shadow: none; transform: none; }
+.text-link { font-size: 14px; font-weight: 600; }
+
+.form-field > label, .form-field > span:first-child { font-size: 13px; font-weight: 600; letter-spacing: 0; }
+.form-field input:not([type="checkbox"]), .form-field textarea {
+  min-height: 46px;
+  padding: 10px 12px;
+  border-color: var(--line-strong);
+  background: #fff;
+  font-size: 16px;
+  line-height: 1.45;
+}
+.form-field textarea { min-height: 96px; }
+.form-field input::placeholder, .form-field textarea::placeholder { color: #7A736C; font-style: normal; }
+.form-field input:not([type="checkbox"]):focus-visible, .form-field textarea:focus-visible { box-shadow: 0 0 0 3px var(--red-wash); }
+.field-error, .form-error, .detail-form-error { font-size: 13px; }
+input[type="checkbox"] { width: 18px; height: 18px; border-color: var(--ink-soft); border-radius: 4px; }
+input[type="checkbox"]::before { font-size: 12px; }
+.status-chip { font-size: 12px; }
+
+/* ── Home: compact hero above a full-width history ledger ── */
+.home-page { gap: 40px; }
+.home-hero { grid-template-columns: minmax(0, 1fr); }
+.home-hero-copy { gap: 20px; }
+.home-title { font-size: clamp(64px, 7vw, 104px); font-weight: 500; line-height: 0.95; }
+.home-title span { font-weight: 500; }
+.home-lead { max-width: 34ch; font-size: 18px; line-height: 1.5; }
+.home-hero .primary-action { min-height: 48px; font-size: 15px; }
+.home-principles li { grid-template-columns: 32px minmax(0, 1fr); column-gap: var(--space-2); }
+.home-principle-index { grid-row: span 2; padding-top: 4px; }
+.home-principles strong { font-size: 19px; }
+.home-principles li > span:last-child { font-size: 14px; line-height: 1.45; }
+
+.history-panel { padding: 28px; border: 1px solid var(--line); border-radius: var(--radius-panel); background: var(--paper); }
+.history-title { font-size: 30px; }
+.history-count { font-size: 12px; }
+.history-message { font-size: 15px; }
+.history-list { border-top-color: var(--line-strong); }
+.history-entry { padding: 16px 12px; }
+.history-entry:hover, .history-entry:focus-visible { background: var(--linen); }
+.history-entry-name { font-family: var(--font-ui); font-size: 16px; font-weight: 600; line-height: 1.4; }
+.history-entry-date { font-size: 13px; }
+
+/* ── Create ────────────────────────────────────────────── */
+.creation-page { gap: var(--space-6); }
+.creation-page .document-title { font-size: clamp(34px, 4vw, 46px); line-height: 1.1; }
+.create-section { gap: 20px; padding: 24px 28px; border-radius: var(--radius-panel); }
+.create-section-heading { padding-bottom: 12px; }
+.create-section-index { font-size: 12px; font-weight: 600; }
+.create-section-heading h2 { font-size: 24px; }
+.field-hint { font-size: 13px; line-height: 1.5; }
+.remove-email-button { min-height: 46px; border-radius: var(--radius); font-size: 14px; }
+.create-advancement-field { border-color: var(--line); border-radius: 8px; background: var(--linen); }
+.create-advancement-field > label { font-weight: 600; }
+.create-advancement-field > span { font-size: 13px; line-height: 1.5; }
+.form-error { border-radius: 0 var(--radius) var(--radius) 0; }
+.create-guide { grid-template-columns: minmax(0, 1fr); border-top-color: var(--line-strong); }
+.create-guide h2 { font-size: 22px; }
+.create-guide li { font-size: 15px; }
+.create-guide > p { font-size: 14px; font-style: normal; }
+.recovery-panel { border-radius: var(--radius-panel); }
+.recovery-alert, .recovery-progress { border-radius: 0 var(--radius) var(--radius) 0; font-size: 15px; }
+
+/* ── Workspace ─────────────────────────────────────────── */
+.workspace-header { border-bottom-color: var(--line-strong); background: var(--paper); }
+.workspace-back-link { font-size: 13px; letter-spacing: 0; }
+.workspace-title-block h1 { letter-spacing: -0.02em; }
+.workspace-disclosure summary { font-size: 13px; font-weight: 600; }
+.workspace-disclosure summary:hover, .workspace-disclosure[open] summary { border-color: var(--ink-soft); }
+.workspace-popover { border-color: var(--line-strong); border-radius: var(--radius-panel); font-size: 14px; }
+.workspace-header-reason { font-size: 13px; }
+.workspace-header-reason input { border-radius: var(--radius); background: #fff; font-size: 15px; }
+.workspace-alert, .workspace-claimed-warning { border-radius: 0 var(--radius) var(--radius) 0; font-size: 14px; }
+.workspace-claimed-warning { border-left-color: #96713B; background: #FAF3E7; }
+
+.graph-description summary, .graph-node-list summary { font-size: 12px; }
+.graph-caption { font-size: 14px; }
+.graph-controls { border-color: var(--line-strong); border-radius: var(--radius); }
+.graph-controls button { font-size: 13px; font-weight: 600; }
+.graph-pagination button { border-radius: var(--radius); }
+.graph-viewport {
+  border-color: var(--line);
+  border-radius: 8px;
+  background-color: #FAF8F4;
+  background-image: radial-gradient(circle, rgb(110 104 98 / 22%) 0.8px, transparent 1.2px);
+  background-size: 20px 20px;
+}
+.graph-edge { stroke: var(--muted); stroke-opacity: 0.7; }
+.investigation-graph marker path { fill: var(--muted); }
+.graph-node-card { stroke: var(--line-strong); }
+.graph-node--evidence .graph-node-card { stroke: #9A8F82; }
+/* Failure results keep the stronger danger red independently of the softened accent. */
+.graph-node--failure .graph-node-card { fill: var(--danger); stroke: var(--danger); }
+.graph-node-kicker { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+.graph-node-title { font-size: 14px; }
+.graph-node-list { font-size: 14px; }
+
+.workspace-detail-column::before { background: var(--line-strong); }
+.detail-close { border-color: var(--line); border-radius: var(--radius); }
+.detail-heading-row { border-bottom-color: var(--line-strong); }
+.detail-mark { border-radius: var(--radius); font-size: 13px; }
+.detail-heading-row h2 { font-size: 24px; }
+.detail-fact h3, .detail-control h3 { font-family: var(--font-ui); font-size: 15px; font-weight: 600; line-height: 1.45; }
+.detail-fact h4 { font-size: 11px; font-weight: 600; }
+.detail-control > p, .detail-history > p, .detail-empty { font-size: 14px; line-height: 1.55; }
+.fact-list { font-size: 14px; line-height: 1.5; }
+.detail-warning, .detail-note { border-radius: 0 var(--radius) var(--radius) 0; font-size: 13px; line-height: 1.55; }
+.detail-control .form-field textarea, .workspace-case-controls .form-field textarea { font-size: 15px; }
+.detail-history ol { font-size: 14px; }
+.workspace-state-value { font-size: 12px; }
+
+.workspace-report { border-color: var(--line-strong); border-radius: var(--radius-panel); }
+.workspace-report summary { font-size: 13px; font-weight: 600; }
+.workspace-report h2 { font-size: 26px; }
+.workspace-report pre { border-radius: var(--radius); }
+
+.document-page .ascii-art, .workspace-state-art { opacity: 0.7; }
+.workspace-state-page [role="alert"] { border-radius: 0 var(--radius) var(--radius) 0; }
+
+@media (min-width: 901px) {
+  /* Copy on the left, principles as a quiet list on the right: the hero stays short. */
+  .home-hero-copy { grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr); align-items: end; column-gap: clamp(32px, 6vw, 96px); }
+  .home-hero-copy > :not(.home-principles) { grid-column: 1; }
+  .home-principles { grid-column: 2; grid-row: 1 / span 4; grid-template-columns: minmax(0, 1fr); align-self: end; gap: 0; margin: 0; padding: 0; border-top: 0; }
+  .home-principles li { padding: 12px 0; border-top: 1px solid var(--line); }
+}
+
+@media (max-width: 820px) {
+  .workspace-mobile-tabs { border-color: var(--line-strong); border-radius: var(--radius); overflow: hidden; }
+  .workspace-mobile-tabs button { font-size: 14px; }
+  .workspace-mobile-tabs button[aria-selected="true"] { background: var(--paper); color: var(--red); box-shadow: inset 0 -2px 0 var(--red); font-weight: 600; }
+}
+
+@media (max-width: 600px) {
+  /* Flatten the hero so history follows the call to action and principles close the page. */
+  .home-page { display: flex; flex-direction: column; gap: 16px; }
+  .home-hero, .home-hero-copy { display: contents; }
+  .home-hero .primary-action { align-self: flex-start; }
+  .home-principles { order: 1; margin-top: 16px; }
+  .home-title { font-size: 60px; }
+  .home-lead { font-size: 16px; }
+  .history-panel { margin-top: 16px; padding: 20px; }
+  .history-title { font-size: 26px; }
+  .create-section { padding: 20px; }
+  .creation-page .document-title { font-size: 34px; }
+}
