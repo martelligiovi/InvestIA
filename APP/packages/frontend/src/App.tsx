@@ -31,5 +31,5 @@ export default function App() {
       break;
   }
 
-  return <AppShell create={route.kind === "create"} home={route.kind === "home"} quiet={route.kind === "investigation"} showNewInvestigationLink={route.kind === "not-found"}>{page}</AppShell>;
+  return <AppShell create={route.kind === "create"} home={route.kind === "home"} quiet={route.kind === "investigation"} showNewInvestigationLink={route.kind === "not-found" || route.kind === "investigation"}>{page}</AppShell>;
 }

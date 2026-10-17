@@ -45,7 +45,7 @@ describe("parseHashRoute", () => {
 });
 
 describe("App route scaffold", () => {
-  it("keeps home intact and gives creation its own reference shell", async () => {
+  it("shares one top bar and stitched footer between home and creation", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("[]", {
       headers: { "content-type": "application/json" },
     })));
@@ -54,25 +54,20 @@ describe("App route scaffold", () => {
     expect(await screen.findByText("Todavía no hay investigaciones.")).toBeInTheDocument();
     expect(container.querySelector(".application-shell")).toHaveClass("application-shell--home");
     expect(screen.getByRole("complementary", { name: "Investigaciones anteriores" })).toBeInTheDocument();
-    expect(container.querySelector(".site-header")).not.toBeInTheDocument();
-    expect(container.querySelector(".site-footer")).not.toBeInTheDocument();
-    const stitches = container.querySelectorAll("pre.ascii-stitch");
-    expect(stitches.length).toBeGreaterThanOrEqual(2);
-    for (const stitch of stitches) {
-      expect(stitch).toHaveAttribute("aria-hidden", "true");
-      expect(stitch.textContent).toMatch(/^[\x20-\x7e\n]+$/u);
-      expect(stitch.textContent).toContain("x");
-    }
-    expect(container.querySelector(".home-mountain")).toHaveAttribute("alt", "");
+    expect(screen.getByRole("link", { name: "InvestIA, inicio" })).toHaveAttribute("href", "#/");
+    expect(screen.queryByRole("link", { name: /Inicio|Volver/u })).not.toBeInTheDocument();
+    expect(container.querySelector(".new-investigation-link")).not.toBeInTheDocument();
+    expect(container.querySelector(".site-footer .ascii-art--band")).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector(".home-emblem .ascii-art--rosette")).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector(".history-empty .ascii-art--tree")).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector("pre.ascii-stitch, .home-mountain, .mountain-collage, .folk-strip")).not.toBeInTheDocument();
     await user.click(screen.getByRole("link", { name: /^Nueva investigación/u }));
     expect(await screen.findByRole("heading", { name: "Nueva investigación" })).toBeInTheDocument();
     expect(container.querySelector(".application-shell")).not.toHaveClass("application-shell--home");
-    expect(container.querySelector(".site-header")).toBeInTheDocument();
     expect(container.querySelector(".application-shell")).toHaveClass("application-shell--create");
-    expect(container.querySelector(".site-footer")).not.toBeInTheDocument();
-    expect(container.querySelector(".create-edge-embroidery pre.ascii-stitch")).toHaveAttribute("aria-hidden", "true");
-    expect(container.querySelector(".create-mountain")).toHaveAttribute("alt", "");
-    expect(container.querySelector(".mountain-collage, .folk-strip")).not.toBeInTheDocument();
+    expect(container.querySelector(".site-header")).toBeInTheDocument();
+    expect(container.querySelector(".site-footer")).toBeInTheDocument();
+    expect(container.querySelector(".new-investigation-link")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Volver" })).toHaveAttribute("href", "#/");
   });
   it("renders the Spanish create screen for its hash route", () => {
@@ -91,8 +86,10 @@ describe("App route scaffold", () => {
 
   it("renders a safe not-found screen for malformed investigation URLs", () => {
     window.history.replaceState(null, "", "/#/investigaciones/%2F");
-    render(<App />);
+    const { container } = render(<App />);
     expect(screen.getByRole("heading", { name: "No encontramos esta página" })).toBeInTheDocument();
+    expect(container.querySelector(".document-page .ascii-art--tree")).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector(".new-investigation-link")).toHaveAttribute("href", "#/nueva");
   });
 
   it("loads the workspace for its decoded identifier", async () => {
@@ -110,9 +107,12 @@ describe("App route scaffold", () => {
       audit: [],
     }), { status: 200, headers: { "content-type": "application/json" } })));
     window.history.replaceState(null, "", "/#/investigaciones/caso%2042");
-    render(<App />);
+    const { container } = render(<App />);
     expect(await screen.findByRole("heading", { name: "Caso de prueba" })).toBeInTheDocument();
     expect(screen.getByText("caso 42")).toBeInTheDocument();
+    expect(container.querySelector(".application-shell")).toHaveClass("application-shell--quiet");
+    expect(container.querySelector(".site-header .new-investigation-link")).toHaveAttribute("href", "#/nueva");
+    expect(container.querySelector(".site-footer")).not.toBeInTheDocument();
   });
 
   it("navigates from the brand preview to the create scaffold", async () => {
