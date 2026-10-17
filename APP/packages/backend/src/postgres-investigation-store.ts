@@ -152,6 +152,7 @@ function isStoredAction(value: unknown): boolean {
   const approvalPresent = value.approval !== undefined;
   if (approvalPresent && !isApproval(value.approval)) return false;
   if (value.queuedByCatalog !== undefined && value.queuedByCatalog !== true) return false;
+  if (value.sourceSeedId !== undefined && !isNonEmptyString(value.sourceSeedId)) return false;
   if (["queued", "claimed", "succeeded", "failed"].includes(String(value.status)) &&
     !approvalPresent && value.queuedByCatalog !== true) return false;
 
