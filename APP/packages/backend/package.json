@@ -25,7 +25,7 @@
   },
   "scripts": {
     "start": "node --experimental-strip-types src/main.ts",
-    "test": "node --experimental-strip-types --test test/api.test.ts test/config.test.ts test/static-serving.test.ts test/investigation-run-graph.test.ts test/neo4j-investigation-projector.test.ts test/nvidia-build.test.ts test/neo4j-projection.integration.test.ts test/postgres-checkpoint.integration.test.ts test/postgres-store.test.ts test/postgres.integration.test.ts test/startup.test.ts test/workflow.test.ts test/workflow.integration.test.ts",
+    "test": "node --experimental-strip-types --test test/ai-settings.test.ts test/api.test.ts test/config.test.ts test/static-serving.test.ts test/investigation-run-graph.test.ts test/neo4j-investigation-projector.test.ts test/nvidia-build.test.ts test/neo4j-projection.integration.test.ts test/postgres-checkpoint.integration.test.ts test/postgres-store.test.ts test/postgres.integration.test.ts test/startup.test.ts test/workflow.test.ts test/workflow.integration.test.ts",
     "typecheck": "tsc --noEmit"
   }
 }

@@ -11,11 +11,13 @@ import {
   createSeedBoxExecutor,
   type InvestigationExecutor,
 } from "@investia/core";
+import { PostgresAiSettingsStore } from "./ai-settings-store.ts";
 import { createBackendApp } from "./api.ts";
 import { AutomaticInvestigationRunner } from "./automatic-investigation-runner.ts";
 import { isAllowedBackendHost, loadBackendConfig, type BackendConfig } from "./config.ts";
 import { createInvestigationRunGraph } from "./investigation-run-graph.ts";
 import { Neo4jInvestigationProjector, type Neo4jDriverLike } from "./neo4j-investigation-projector.ts";
+import { createNvidiaBuildGateway, type NvidiaBuildGateway } from "./nvidia-build.ts";
 import { PostgresInvestigationStore } from "./postgres-investigation-store.ts";
 
 export interface BackendStartOptions {
@@ -24,6 +26,8 @@ export interface BackendStartOptions {
   readonly neo4jDriver?: Neo4jDriverLike;
   /** In-memory savers are for offline tests only; production defaults to PostgresSaver. */
   readonly checkpointer?: BaseCheckpointSaver;
+  /** Offline tests inject a fake; production calls NVIDIA Build only when the operator requests a report. */
+  readonly nvidiaGateway?: NvidiaBuildGateway;
   /** Temporary frontend root override for startup tests; never read from environment. */
   readonly frontendDistPath?: string;
 }
@@ -54,6 +58,8 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     );
     const store = new PostgresInvestigationStore(pool);
     await store.migrate();
+    const aiSettings = new PostgresAiSettingsStore(pool);
+    await aiSettings.migrate();
     const checkpointer = options.checkpointer ?? new PostgresSaver(pool);
     if (options.checkpointer === undefined) await (checkpointer as PostgresSaver).setup();
     const service = createInvestigationService({
@@ -73,6 +79,11 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     app = createBackendApp(service, {
       actionRunner: createInvestigationRunGraph(service, checkpointer),
       projector,
+      ai: {
+        settings: aiSettings,
+        gateway: options.nvidiaGateway ?? createNvidiaBuildGateway(),
+        clock: () => new Date().toISOString(),
+      },
     }, {
       frontendDistPath: options.frontendDistPath,
       onFrontendUnavailable: () => console.info(

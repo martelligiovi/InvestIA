@@ -1,8 +1,14 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
+  AI_MAX_TOKENS_RANGE,
+  AI_REASONING_EFFORTS,
+  buildAiReportMessages,
   compileInvestigationReport,
+  composeAiReport,
+  DEFAULT_AI_REPORT_SETTINGS,
   INVESTIGATION_NAME_MAX_LENGTH,
+  normalizeAiReportSettings,
   type GitHubCatalogAction,
   type Investigation,
   type InvestigationService,
@@ -11,7 +17,9 @@ import {
   InvestigationClaimConflictError,
   InvestigationNotFoundError,
 } from "./postgres-investigation-store.ts";
+import type { AiSettingsRecord, AiSettingsStore } from "./ai-settings-store.ts";
 import type { InvestigationActionRunner } from "./investigation-run-graph.ts";
+import { NvidiaProviderError, type NvidiaBuildGateway } from "./nvidia-build.ts";
 import type { InvestigationProjector } from "./neo4j-investigation-projector.ts";
 import { registerFrontend } from "./serve-frontend.ts";
 
@@ -45,6 +53,39 @@ const EmptyBody = z.object({}).strict().optional();
 const InvestigationParams = z.object({ id: z.string().min(1).max(200) }).strict();
 const ActionParams = InvestigationParams.extend({ actionId: z.string().min(1).max(200) }).strict();
 const EvidenceParams = InvestigationParams.extend({ evidenceId: z.string().min(1).max(200) }).strict();
+const AiSettingsBody = z.object({
+  apiKey: z.string().trim().min(1).max(512).regex(/^\S+$/).optional(),
+  settings: z.object({
+    model: z.string(),
+    reasoningEffort: z.enum(AI_REASONING_EFFORTS),
+    temperature: z.number(),
+    topP: z.number(),
+    maxTokens: z.number().int().min(AI_MAX_TOKENS_RANGE.min).max(AI_MAX_TOKENS_RANGE.max),
+  }).partial().strict().optional(),
+}).strict().refine((body) => body.apiKey !== undefined || body.settings !== undefined);
+
+const PROVIDER_ERRORS = {
+  unauthorized: new HttpError(502, "AI_PROVIDER_UNAUTHORIZED", "NVIDIA Build rejected the API key"),
+  rate_limited: new HttpError(502, "AI_PROVIDER_RATE_LIMITED", "NVIDIA Build rate limit reached; try again later"),
+  rejected: new HttpError(502, "AI_PROVIDER_REJECTED", "NVIDIA Build rejected the model or parameters"),
+  unavailable: new HttpError(502, "AI_PROVIDER_UNAVAILABLE", "NVIDIA Build is unavailable or returned no report"),
+  invalid_response: new HttpError(502, "AI_PROVIDER_UNAVAILABLE", "NVIDIA Build is unavailable or returned no report"),
+} as const;
+
+/** Shows enough to recognize the stored key without disclosing it. */
+function apiKeyHint(apiKey: string): string {
+  return apiKey.length >= 16 ? `${apiKey.slice(0, 6)}…${apiKey.slice(-4)}` : "…";
+}
+
+function aiSettingsView(record: AiSettingsRecord | undefined) {
+  const apiKey = record?.apiKey ?? null;
+  return {
+    apiKeyConfigured: apiKey !== null,
+    apiKeyHint: apiKey === null ? null : apiKeyHint(apiKey),
+    settings: record?.settings ?? DEFAULT_AI_REPORT_SETTINGS,
+    defaults: DEFAULT_AI_REPORT_SETTINGS,
+  };
+}
 
 function input<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value);
@@ -58,6 +99,7 @@ function isErrorCode(error: unknown, code: string): boolean {
 
 function publicError(error: unknown): unknown {
   if (error instanceof HttpError) return error;
+  if (error instanceof NvidiaProviderError) return PROVIDER_ERRORS[error.kind];
   if (error instanceof InvestigationNotFoundError) return new HttpError(404, "NOT_FOUND", "Investigation not found");
   if (error instanceof InvestigationClaimConflictError) return new HttpError(409, "CONFLICT", "Action state changed; reload before retrying");
   if (isErrorCode(error, "23505")) return new HttpError(409, "CONFLICT", "The requested record already exists");
@@ -100,9 +142,17 @@ function statusCode(error: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
+export interface AiReportAdapters {
+  readonly settings: AiSettingsStore;
+  readonly gateway: NvidiaBuildGateway;
+  readonly clock: () => string;
+}
+
 export interface BackendAppAdapters {
   readonly actionRunner: InvestigationActionRunner;
   readonly projector: InvestigationProjector;
+  /** NVIDIA Build settings and AI reports; their routes are absent when omitted. */
+  readonly ai?: AiReportAdapters;
 }
 
 export interface BackendAppOptions {
@@ -266,5 +316,54 @@ export function createBackendApp(
     return reply.type("text/markdown; charset=utf-8").send(compileInvestigationReport(publicInvestigation(investigation)));
   });
 
+  const ai = adapters.ai;
+  if (ai !== undefined) registerAiRoutes(app, service, ai);
+
   return app;
+}
+
+function registerAiRoutes(app: FastifyInstance, service: InvestigationService, ai: AiReportAdapters): void {
+  app.get("/settings/ai", async () => aiSettingsView(await ai.settings.load()));
+
+  app.put("/settings/ai", async (request) => {
+    const body = input(AiSettingsBody, request.body);
+    const current = await ai.settings.load();
+    let settings;
+    try {
+      settings = normalizeAiReportSettings({ ...current?.settings, ...body.settings });
+    } catch {
+      throw new HttpError(400, "INVALID_REQUEST", "Invalid request");
+    }
+    const record = { apiKey: body.apiKey ?? current?.apiKey ?? null, settings };
+    await ai.settings.save(record, ai.clock());
+    return aiSettingsView(record);
+  });
+
+  app.delete("/settings/ai/api-key", async () => {
+    const current = await ai.settings.load();
+    const record = { apiKey: null, settings: current?.settings ?? DEFAULT_AI_REPORT_SETTINGS };
+    await ai.settings.save(record, ai.clock());
+    return aiSettingsView(record);
+  });
+
+  app.get("/settings/ai/models", async () => ai.gateway.listFreeChatModels());
+
+  app.post<{ Params: { id: string } }>("/investigations/:id/report/ai", async (request, reply) => {
+    const { id } = input(InvestigationParams, request.params);
+    input(EmptyBody, request.body);
+    const investigation = await serviceCall(() => service.loadInvestigation(id));
+    if (investigation === undefined) throw new HttpError(404, "NOT_FOUND", "Investigation not found");
+    const configuration = await ai.settings.load();
+    if (configuration?.apiKey == null) {
+      throw new HttpError(409, "AI_NOT_CONFIGURED", "Configure an NVIDIA Build API key first");
+    }
+    const visible = publicInvestigation(investigation);
+    const narrative = await ai.gateway.complete(configuration.apiKey, configuration.settings, buildAiReportMessages(visible));
+    return reply.type("text/markdown; charset=utf-8").send(composeAiReport({
+      narrative,
+      factualReport: compileInvestigationReport(visible),
+      model: configuration.settings.model,
+      generatedAt: ai.clock(),
+    }));
+  });
 }
