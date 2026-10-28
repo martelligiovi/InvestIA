@@ -19,6 +19,11 @@ describe("parseHashRoute", () => {
     expect(parseHashRoute("#/nueva")).toEqual({ kind: "create" });
   });
 
+  it("recognizes the AI settings route", () => {
+    expect(parseHashRoute("#/ajustes")).toEqual({ kind: "settings" });
+    expect(parseHashRoute("#/ajustes/extra")).toEqual({ kind: "not-found" });
+  });
+
   it("decodes a safe investigation identifier", () => {
     expect(parseHashRoute("#/investigaciones/caso%2042")).toEqual({
       kind: "investigation",
@@ -122,6 +127,30 @@ describe("App route scaffold", () => {
     expect(container.querySelector(".site-footer")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Volver al historial" })).toHaveAttribute("href", "#/");
     expect(container.querySelector(".workspace-brand, .workspace-landscape, .workspace-mountain")).not.toBeInTheDocument();
+  });
+
+  it("links to AI settings from every page except the settings page", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input) === "/settings/ai/models"
+        ? { models: [], source: "live" }
+        : String(input) === "/settings/ai"
+          ? {
+            apiKeyConfigured: false,
+            apiKeyHint: null,
+            settings: { model: "deepseek-ai/deepseek-v4.1-flash", reasoningEffort: "default", temperature: 0.6, topP: 0.95, maxTokens: 4096 },
+            defaults: { model: "deepseek-ai/deepseek-v4.1-flash", reasoningEffort: "default", temperature: 0.6, topP: 0.95, maxTokens: 4096 },
+          }
+          : [],
+    ), { headers: { "content-type": "application/json" } })));
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", "/#/");
+    render(<App />);
+    expect(screen.getByRole("link", { name: "Ajustes de IA" })).toHaveAttribute("href", "#/ajustes");
+
+    await user.click(screen.getByRole("link", { name: "Ajustes de IA" }));
+    expect(await screen.findByRole("heading", { name: "Ajustes de IA", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Ajustes de IA" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Inicio" })).toHaveAttribute("href", "#/");
   });
 
   it("navigates from the brand preview to the create scaffold", async () => {

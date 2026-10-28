@@ -1,4 +1,5 @@
 import type {
+  AiReportSettings,
   GitHubCatalogAction,
   Investigation,
   InvestigationSummary,
@@ -13,6 +14,31 @@ export interface ProjectionReconciliationOutcome {
 
 export interface ProjectionReconciliation {
   readonly outcomes: readonly ProjectionReconciliationOutcome[];
+}
+
+export interface AiSettingsView {
+  readonly apiKeyConfigured: boolean;
+  /** Masked hint of the stored key; the key itself is never returned. */
+  readonly apiKeyHint: string | null;
+  readonly settings: AiReportSettings;
+  readonly defaults: AiReportSettings;
+}
+
+export interface AiSettingsUpdate {
+  readonly apiKey?: string;
+  readonly settings?: Partial<AiReportSettings>;
+}
+
+export interface AiModelOption {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly reasoning: boolean;
+}
+
+export interface AiModelList {
+  readonly models: readonly AiModelOption[];
+  readonly source: "live" | "fallback";
 }
 
 interface ApiErrorEnvelope {
@@ -120,8 +146,32 @@ export class InvestigationApiClient {
   }
 
   async getReport(id: string): Promise<string> {
-    const response = await this.fetcher(`/investigations/${pathPart(id)}/report`, {
-      method: "GET",
+    return this.requestMarkdown(`/investigations/${pathPart(id)}/report`, "GET");
+  }
+
+  async generateAiReport(id: string): Promise<string> {
+    return this.requestMarkdown(`/investigations/${pathPart(id)}/report/ai`, "POST");
+  }
+
+  async getAiSettings(): Promise<AiSettingsView> {
+    return this.requestJson<AiSettingsView>("/settings/ai");
+  }
+
+  async saveAiSettings(update: AiSettingsUpdate): Promise<AiSettingsView> {
+    return this.send<AiSettingsView>("PUT", "/settings/ai", update);
+  }
+
+  async removeAiApiKey(): Promise<AiSettingsView> {
+    return this.send<AiSettingsView>("DELETE", "/settings/ai/api-key");
+  }
+
+  async listAiModels(): Promise<AiModelList> {
+    return this.requestJson<AiModelList>("/settings/ai/models");
+  }
+
+  private async requestMarkdown(path: string, method: "GET" | "POST"): Promise<string> {
+    const response = await this.fetcher(path, {
+      method,
       headers: { Accept: "text/markdown, text/plain;q=0.9" },
     });
     await this.throwForError(response);
@@ -129,7 +179,11 @@ export class InvestigationApiClient {
   }
 
   private async post<T>(path: string, body?: unknown): Promise<T> {
-    const init: RequestInit = { method: "POST" };
+    return this.send<T>("POST", path, body);
+  }
+
+  private async send<T>(method: "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
+    const init: RequestInit = { method };
     if (body !== undefined) {
       init.headers = { "Content-Type": "application/json", Accept: "application/json" };
       init.body = JSON.stringify(body);

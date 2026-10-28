@@ -102,6 +102,8 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const controlsDisabled = controller.busy || controller.stale;
   const investigationPaused = investigation.paused;
   const reportIsFresh = controller.report !== null && controller.reportRevision === investigation.revision && !controller.stale;
+  const aiReport = controller.reportKind === "ai";
+  const reportFileId = id.replace(/[^a-zA-Z0-9._-]/gu, "_");
 
   function selectNode(node: WorkspaceNode) {
     setSelectedId(node.id);
@@ -242,7 +244,10 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             </div>
           </details>
           <button className="workspace-button workspace-button--report" type="button" disabled={controller.busy || controller.stale} onClick={() => void controller.loadReport()}>
-            {controller.reportLoading ? "Obteniendo informe…" : "Obtener informe"}
+            {controller.reportLoadingKind === "factual" ? "Obteniendo informe…" : "Obtener informe"}
+          </button>
+          <button className="workspace-button workspace-button--ai-report" type="button" disabled={controller.busy || controller.stale} onClick={() => void controller.loadAiReport()}>
+            {controller.reportLoadingKind === "ai" ? "Generando informe con IA…" : "Generar informe con IA"}
           </button>
         </div>
       </header>
@@ -320,21 +325,21 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
       {controller.reportError !== "" && <p className="workspace-alert" role="alert">{controller.reportError}</p>}
       {reportIsFresh && !controller.busy && controller.report !== null && (
         <details className="workspace-report" open>
-          <summary>Informe Markdown · vista previa y descarga</summary>
+          <summary>{aiReport ? "Informe con IA · vista previa y descarga" : "Informe Markdown · vista previa y descarga"}</summary>
           <div className="report-heading-row">
             <div>
-              <p className="eyebrow">SALIDA DOCUMENTAL</p>
-              <h2 id="report-heading">Informe Markdown</h2>
+              <p className="eyebrow">{aiReport ? "SALIDA GENERADA CON IA · HIPOTÉTICA" : "SALIDA DOCUMENTAL"}</p>
+              <h2 id="report-heading">{aiReport ? "Informe con IA (hipotético)" : "Informe Markdown"}</h2>
             </div>
             <a
               className="workspace-button"
               href={`data:text/markdown;charset=utf-8,${encodeURIComponent(controller.report)}`}
-              download={`investigacion-${id.replace(/[^a-zA-Z0-9._-]/gu, "_")}.md`}
+              download={aiReport ? `informe-ia-${reportFileId}.md` : `investigacion-${reportFileId}.md`}
             >
               Descargar Markdown
             </a>
           </div>
-          <pre aria-label="Vista previa del informe">{controller.report}</pre>
+          <pre aria-label={aiReport ? "Vista previa del informe con IA" : "Vista previa del informe"}>{controller.report}</pre>
         </details>
       )}
     </section>

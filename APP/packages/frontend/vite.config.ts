@@ -15,6 +15,10 @@ export default defineConfig({
         target: apiTarget,
         changeOrigin: false,
       },
+      "/settings": {
+        target: apiTarget,
+        changeOrigin: false,
+      },
     },
   },
   test: {
