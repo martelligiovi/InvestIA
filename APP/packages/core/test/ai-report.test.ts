@@ -4,6 +4,7 @@ import {
   AI_REPORT_SYSTEM_PROMPT,
   buildAiReportMessages,
   composeAiReport,
+  countOmittedAiReportFindings,
   DEFAULT_AI_REPORT_SETTINGS,
   normalizeAiReportSettings,
   stripModelReasoning,
@@ -104,7 +105,9 @@ test("system prompt asks who the person could be, in Spanish, as a hypothesis", 
     "Gustos e intereses posibles",
     "salud",
     "orientación sexual",
+    "situación migratoria o estatus legal",
     "rechazada",
+    "No intentes ubicar ni localizar físicamente a la persona",
     "No agregues una sección con los datos",
   ]) {
     assert.ok(AI_REPORT_SYSTEM_PROMPT.includes(phrase), phrase);
@@ -154,6 +157,20 @@ test("findings beyond the request budget are counted instead of sent", () => {
   const json = JSON.parse(user.slice(user.indexOf("```json") + 7, user.lastIndexOf("```")));
   assert.ok(json.findings.length > 0 && json.findings.length < 400);
   assert.equal(json.findings.length + json.omittedFindings, 400);
+  assert.equal(countOmittedAiReportFindings({ ...base, evidence, validations: [] }), json.omittedFindings);
+  assert.equal(countOmittedAiReportFindings(base), 0);
+});
+
+test("appendix says which findings were not sent when the request budget truncated them", () => {
+  const report = composeAiReport({
+    narrative: "## Resumen\nTexto",
+    factualReport: "# Caso",
+    model: "openai/gpt-oss-20b",
+    generatedAt: "2026-10-28T12:00:00.000Z",
+    omittedFindings: 12,
+  });
+  assert.match(report, /Estos son todos los datos recopilados\. Por el tamaño del pedido, 12 hallazgos no se enviaron al modelo y no sostienen las conclusiones; igual figuran en este anexo\./);
+  assert.doesNotMatch(report, /que se enviaron al modelo para elaborar/);
 });
 
 test("composed report puts the hypothetical narrative first and all the data used last", () => {

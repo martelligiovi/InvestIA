@@ -64,6 +64,7 @@ export {
   AI_REPORT_SYSTEM_PROMPT,
   buildAiReportMessages,
   composeAiReport,
+  countOmittedAiReportFindings,
   DEFAULT_AI_REPORT_SETTINGS,
   normalizeAiReportSettings,
   stripModelReasoning,

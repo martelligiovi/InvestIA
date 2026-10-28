@@ -239,3 +239,49 @@ test("PostgreSQL store round-trips the record and falls back to defaults for unr
   pool.row = { api_key: KEY, settings: { maxTokens: "lots" } };
   assert.deepEqual(await store.load(), { apiKey: KEY, settings: DEFAULT_AI_REPORT_SETTINGS });
 });
+
+test("boundary settings save, while malformed updates preserve the exact record", async (t) => {
+  const { app, settings } = harness();
+  t.after(() => app.close());
+  const saved = await app.inject({
+    method: "PUT", url: "/settings/ai",
+    payload: { apiKey: KEY, settings: { temperature: 0, topP: 0.000001, maxTokens: 256 } },
+  });
+  assert.equal(saved.statusCode, 200);
+
+  const before = JSON.stringify(settings.record);
+  for (const payload of [
+    null,
+    [],
+    { apiKey: null },
+    { settings: null },
+    { settings: [] },
+    { settings: { temperature: -0.001 } },
+    { settings: { temperature: 2.001 } },
+    { settings: { temperature: "1" } },
+    { settings: { topP: 0 } },
+    { settings: { topP: 1.001 } },
+    { settings: { maxTokens: 256.5 } },
+    { settings: { maxTokens: 32769 } },
+    { apiKey: "replacement-secret", settings: { topP: 0 } },
+  ]) {
+    const response = await app.inject({
+      method: "PUT", url: "/settings/ai",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify(payload),
+    });
+    assert.equal(response.statusCode, 400, JSON.stringify(payload));
+    assert.deepEqual(response.json(), { error: "INVALID_REQUEST", message: "Invalid request" });
+    assert.equal(JSON.stringify(settings.record), before);
+    assert.doesNotMatch(response.body, /AbCdEf|replacement-secret/);
+  }
+
+  const upper = await app.inject({
+    method: "PUT", url: "/settings/ai",
+    payload: { settings: { temperature: 2, topP: 1, maxTokens: 32768 } },
+  });
+  assert.equal(upper.statusCode, 200);
+  assert.equal(settings.record?.apiKey, KEY);
+  assert.equal(settings.record?.settings.maxTokens, 32768);
+  assert.doesNotMatch(upper.body, /AbCdEf/);
+});

@@ -66,8 +66,8 @@ export const AI_REPORT_SYSTEM_PROMPT = [
   "- Basate solo en los datos provistos. No inventes cuentas, nombres, lugares, fechas ni relaciones. Si los datos no alcanzan para una conclusión, decilo.",
   "- Citá entre paréntesis la evidencia que sostiene cada hipótesis (servicio, URL o evidenceId).",
   "- Un registro reportado por la herramienta no confirma titularidad ni identidad y puede ser un falso positivo. La evidencia rechazada por el operador no debe sostener ninguna conclusión; la evidencia pendiente vale menos que la aceptada.",
-  "- No infieras categorías sensibles: salud, orientación sexual, religión, afiliación política, origen étnico, datos biométricos ni antecedentes judiciales.",
-  "- No intentes ubicar domicilios ni datos de contacto que no estén en los datos, y no des recomendaciones para contactar, vigilar, acosar o perjudicar a la persona.",
+  "- No infieras categorías sensibles: salud, orientación sexual, religión, afiliación política, origen étnico, datos biométricos, antecedentes judiciales ni situación migratoria o estatus legal.",
+  "- No intentes ubicar ni localizar físicamente a la persona (domicilio, lugar de trabajo o ubicación en tiempo real) ni deducir datos de contacto, y no des recomendaciones para contactar, vigilar, acosar o perjudicar a la persona.",
   "",
   "Estructura del informe:",
   "## Resumen",
@@ -110,8 +110,7 @@ function findingInputs(investigation: Investigation): FindingInput[] {
   });
 }
 
-/** Builds the provider request from persisted facts only; findings beyond the budget are counted, not sent. */
-export function buildAiReportMessages(investigation: Investigation): readonly AiChatMessage[] {
+function selectFindings(investigation: Investigation): { readonly findings: FindingInput[]; readonly total: number } {
   const findings: FindingInput[] = [];
   let used = 0;
   const all = findingInputs(investigation);
@@ -121,6 +120,18 @@ export function buildAiReportMessages(investigation: Investigation): readonly Ai
     findings.push(finding);
     used += size;
   }
+  return { findings, total: all.length };
+}
+
+/** Number of findings left out of the provider request because of its size budget. */
+export function countOmittedAiReportFindings(investigation: Investigation): number {
+  const { findings, total } = selectFindings(investigation);
+  return total - findings.length;
+}
+
+/** Builds the provider request from persisted facts only; findings beyond the budget are counted, not sent. */
+export function buildAiReportMessages(investigation: Investigation): readonly AiChatMessage[] {
+  const { findings, total } = selectFindings(investigation);
   const data = {
     investigation: {
       name: investigation.name ?? null,
@@ -129,7 +140,7 @@ export function buildAiReportMessages(investigation: Investigation): readonly Ai
     },
     emailSeeds: investigation.emailSeeds.map((seed) => seed.value),
     findings,
-    ...(findings.length < all.length ? { omittedFindings: all.length - findings.length } : {}),
+    ...(findings.length < total ? { omittedFindings: total - findings.length } : {}),
   };
   return [
     { role: "system", content: AI_REPORT_SYSTEM_PROMPT },
@@ -157,6 +168,8 @@ export interface ComposeAiReportInput {
   readonly factualReport: string;
   readonly model: string;
   readonly generatedAt: string;
+  /** Findings the appendix lists but the model never received. */
+  readonly omittedFindings?: number;
 }
 
 function demoteHeadings(markdown: string, levels: number): string {
@@ -175,7 +188,9 @@ export function composeAiReport(input: ComposeAiReportInput): string {
     "",
     "## Datos utilizados",
     "",
-    "Estos son todos los datos recopilados que se enviaron al modelo para elaborar las conclusiones.",
+    (input.omittedFindings ?? 0) > 0
+      ? `Estos son todos los datos recopilados. Por el tamaño del pedido, ${input.omittedFindings} hallazgos no se enviaron al modelo y no sostienen las conclusiones; igual figuran en este anexo.`
+      : "Estos son todos los datos recopilados que se enviaron al modelo para elaborar las conclusiones.",
     "",
     demoteHeadings(input.factualReport.trim(), 2),
     "",

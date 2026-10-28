@@ -264,7 +264,7 @@ export function AiSettingsPage() {
                 <NumberField id="ai-top-p" label="Top P" value={draft.topP} error={fieldErrors.topP} min={0.01} max={1} step={0.01} onChange={(topP) => updateDraft({ topP })} />
                 <NumberField id="ai-max-tokens" label="Máximo de tokens" value={draft.maxTokens} error={fieldErrors.maxTokens} min={AI_MAX_TOKENS_RANGE.min} max={AI_MAX_TOKENS_RANGE.max} step={1} onChange={(maxTokens) => updateDraft({ maxTokens })} />
               </div>
-              <p className="field-hint">El esfuerzo de razonamiento solo se envía a los modelos que lo admiten; “Predeterminado del modelo” no lo modifica.</p>
+              <p className="field-hint">“Predeterminado del modelo” no envía el esfuerzo de razonamiento. Si elegís otro valor y el modelo no lo admite, NVIDIA Build rechaza el pedido y vas a ver el error al generar el informe.</p>
             </details>
             <div className="ai-settings-actions">
               <button className="text-button" type="button" onClick={restoreDefaults}>Restaurar valores por defecto</button>

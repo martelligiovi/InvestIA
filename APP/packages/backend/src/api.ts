@@ -6,6 +6,7 @@ import {
   buildAiReportMessages,
   compileInvestigationReport,
   composeAiReport,
+  countOmittedAiReportFindings,
   DEFAULT_AI_REPORT_SETTINGS,
   INVESTIGATION_NAME_MAX_LENGTH,
   normalizeAiReportSettings,
@@ -364,6 +365,7 @@ function registerAiRoutes(app: FastifyInstance, service: InvestigationService, a
       factualReport: compileInvestigationReport(visible),
       model: configuration.settings.model,
       generatedAt: ai.clock(),
+      omittedFindings: countOmittedAiReportFindings(visible),
     }));
   });
 }
