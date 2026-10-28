@@ -633,6 +633,43 @@ describe("informe con IA", () => {
     expect(screen.getByRole("button", { name: "Generar informe con IA" })).toBeEnabled();
   });
 
+  it("avisa mientras genera y lleva la vista al informe o al error cuando llegan", async () => {
+    const scrolled: Element[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) { scrolled.push(this); };
+    try {
+      let respond: (response: Response) => void = () => undefined;
+      let attempt = 0;
+      installFetch(async (call) => {
+        if (pathOf(call) === "/investigations/case-1") return json(snapshot());
+        if (pathOf(call) === "/investigations/case-1/report/ai") {
+          attempt++;
+          if (attempt === 1) return json({ error: "AI_PROVIDER_UNAVAILABLE", message: "detail" }, 502);
+          return new Promise<Response>((resolve) => { respond = resolve; });
+        }
+        throw new Error(`Ruta inesperada: ${pathOf(call)}`);
+      });
+      const user = userEvent.setup();
+      render(<WorkspacePage id="case-1" />);
+      await user.click(await screen.findByRole("button", { name: "Generar informe con IA" }));
+      const alert = await screen.findByRole("alert");
+      expect(scrolled).toContain(alert);
+      expect(alert).toHaveFocus();
+
+      await user.click(screen.getByRole("button", { name: "Generar informe con IA" }));
+      expect(await screen.findByText("Generando el informe con IA en NVIDIA Build. Puede tardar varios minutos; el resultado aparece al final de la página.")).toHaveAttribute("role", "status");
+      respond(reportResponse("# Informe con IA"));
+
+      const preview = await screen.findByLabelText("Vista previa del informe con IA");
+      const report = preview.closest("details")!;
+      expect(scrolled).toContain(report);
+      expect(report).toHaveFocus();
+      expect(screen.queryByText(/Generando el informe con IA/)).not.toBeInTheDocument();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it("mantiene el informe factual de Obtener informe después de generar uno con IA", async () => {
     installFetch(async (call) => {
       if (pathOf(call) === "/investigations/case-1") return json(snapshot());

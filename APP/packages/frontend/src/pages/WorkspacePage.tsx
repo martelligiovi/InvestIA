@@ -7,6 +7,12 @@ import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./wo
 import { useWorkspaceController } from "./useWorkspaceController";
 import { hasCatalogAuthorization, workspaceHeadline } from "./workspace-status";
 
+function revealElement(element: HTMLElement) {
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  element.scrollIntoView?.({ block: "start", behavior: reducedMotion ? "auto" : "smooth" });
+  element.focus({ preventScroll: true });
+}
+
 export interface WorkspacePageProps {
   readonly id: string;
 }
@@ -37,6 +43,22 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const [formError, setFormError] = useState("");
   const graphTabRef = useRef<HTMLButtonElement>(null);
   const detailTabRef = useRef<HTMLButtonElement>(null);
+  const reportRef = useRef<HTMLDetailsElement>(null);
+  const reportErrorRef = useRef<HTMLParagraphElement>(null);
+  const revealedReport = useRef<string | null>(null);
+
+  // Reports and their errors render below the full-height workspace; bring each new one into view.
+  useEffect(() => {
+    const element = reportRef.current;
+    if (element === null || controller.report === null || revealedReport.current === controller.report) return;
+    revealedReport.current = controller.report;
+    revealElement(element);
+  }, [controller.report, controller.busy]);
+
+  useEffect(() => {
+    const element = reportErrorRef.current;
+    if (element !== null && controller.reportError !== "") revealElement(element);
+  }, [controller.reportError]);
   const investigation = controller.investigation;
   const graph = useMemo(() => investigation === null ? null : buildWorkspaceGraph(investigation), [investigation]);
 
@@ -251,6 +273,9 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
           </button>
         </div>
       </header>
+      {controller.reportLoadingKind === "ai" && (
+        <p className="workspace-claimed-warning" role="status">Generando el informe con IA en NVIDIA Build. Puede tardar varios minutos; el resultado aparece al final de la página.</p>
+      )}
 
 
       {!authorizationGranted && queuedActions.length > 0 && (
@@ -322,9 +347,9 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
         </div>
       </div>
 
-      {controller.reportError !== "" && <p className="workspace-alert" role="alert">{controller.reportError}</p>}
+      {controller.reportError !== "" && <p ref={reportErrorRef} className="workspace-alert" role="alert" tabIndex={-1}>{controller.reportError}</p>}
       {reportIsFresh && !controller.busy && controller.report !== null && (
-        <details className="workspace-report" open>
+        <details ref={reportRef} className="workspace-report" open tabIndex={-1}>
           <summary>{aiReport ? "Informe con IA · vista previa y descarga" : "Informe Markdown · vista previa y descarga"}</summary>
           <div className="report-heading-row">
             <div>
