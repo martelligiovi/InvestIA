@@ -7,6 +7,12 @@ import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./wo
 import { useWorkspaceController } from "./useWorkspaceController";
 import { hasCatalogAuthorization, workspaceHeadline } from "./workspace-status";
 
+function revealElement(element: HTMLElement) {
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  element.scrollIntoView?.({ block: "start", behavior: reducedMotion ? "auto" : "smooth" });
+  element.focus({ preventScroll: true });
+}
+
 export interface WorkspacePageProps {
   readonly id: string;
 }
@@ -37,6 +43,22 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const [formError, setFormError] = useState("");
   const graphTabRef = useRef<HTMLButtonElement>(null);
   const detailTabRef = useRef<HTMLButtonElement>(null);
+  const reportRef = useRef<HTMLDetailsElement>(null);
+  const reportErrorRef = useRef<HTMLParagraphElement>(null);
+  const revealedReport = useRef<string | null>(null);
+
+  // Reports and their errors render below the full-height workspace; bring each new one into view.
+  useEffect(() => {
+    const element = reportRef.current;
+    if (element === null || controller.report === null || revealedReport.current === controller.report) return;
+    revealedReport.current = controller.report;
+    revealElement(element);
+  }, [controller.report, controller.busy]);
+
+  useEffect(() => {
+    const element = reportErrorRef.current;
+    if (element !== null && controller.reportError !== "") revealElement(element);
+  }, [controller.reportError]);
   const investigation = controller.investigation;
   const graph = useMemo(() => investigation === null ? null : buildWorkspaceGraph(investigation), [investigation]);
 
@@ -102,6 +124,8 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const controlsDisabled = controller.busy || controller.stale;
   const investigationPaused = investigation.paused;
   const reportIsFresh = controller.report !== null && controller.reportRevision === investigation.revision && !controller.stale;
+  const aiReport = controller.reportKind === "ai";
+  const reportFileId = id.replace(/[^a-zA-Z0-9._-]/gu, "_");
 
   function selectNode(node: WorkspaceNode) {
     setSelectedId(node.id);
@@ -242,10 +266,16 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             </div>
           </details>
           <button className="workspace-button workspace-button--report" type="button" disabled={controller.busy || controller.stale} onClick={() => void controller.loadReport()}>
-            {controller.reportLoading ? "Obteniendo informe…" : "Obtener informe"}
+            {controller.reportLoadingKind === "factual" ? "Obteniendo informe…" : "Obtener informe"}
+          </button>
+          <button className="workspace-button workspace-button--ai-report" type="button" disabled={controller.busy || controller.stale} onClick={() => void controller.loadAiReport()}>
+            {controller.reportLoadingKind === "ai" ? "Generando informe con IA…" : "Generar informe con IA"}
           </button>
         </div>
       </header>
+      {controller.reportLoadingKind === "ai" && (
+        <p className="workspace-claimed-warning" role="status">Generando el informe con IA en NVIDIA Build. Puede tardar varios minutos; el resultado aparece al final de la página.</p>
+      )}
 
 
       {!authorizationGranted && queuedActions.length > 0 && (
@@ -317,24 +347,24 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
         </div>
       </div>
 
-      {controller.reportError !== "" && <p className="workspace-alert" role="alert">{controller.reportError}</p>}
+      {controller.reportError !== "" && <p ref={reportErrorRef} className="workspace-alert" role="alert" tabIndex={-1}>{controller.reportError}</p>}
       {reportIsFresh && !controller.busy && controller.report !== null && (
-        <details className="workspace-report" open>
-          <summary>Informe Markdown · vista previa y descarga</summary>
+        <details ref={reportRef} className="workspace-report" open tabIndex={-1}>
+          <summary>{aiReport ? "Informe con IA · vista previa y descarga" : "Informe Markdown · vista previa y descarga"}</summary>
           <div className="report-heading-row">
             <div>
-              <p className="eyebrow">SALIDA DOCUMENTAL</p>
-              <h2 id="report-heading">Informe Markdown</h2>
+              <p className="eyebrow">{aiReport ? "SALIDA GENERADA CON IA · HIPOTÉTICA" : "SALIDA DOCUMENTAL"}</p>
+              <h2 id="report-heading">{aiReport ? "Informe con IA (hipotético)" : "Informe Markdown"}</h2>
             </div>
             <a
               className="workspace-button"
               href={`data:text/markdown;charset=utf-8,${encodeURIComponent(controller.report)}`}
-              download={`investigacion-${id.replace(/[^a-zA-Z0-9._-]/gu, "_")}.md`}
+              download={aiReport ? `informe-ia-${reportFileId}.md` : `investigacion-${reportFileId}.md`}
             >
               Descargar Markdown
             </a>
           </div>
-          <pre aria-label="Vista previa del informe">{controller.report}</pre>
+          <pre aria-label={aiReport ? "Vista previa del informe con IA" : "Vista previa del informe"}>{controller.report}</pre>
         </details>
       )}
     </section>

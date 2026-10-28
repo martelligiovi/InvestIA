@@ -1,0 +1,38 @@
+/* ── AI settings page and AI report entry points ────────── */
+.settings-link { color: var(--ink-soft); font-size: 14px; font-weight: 600; text-decoration: none; }
+.settings-link:hover { color: var(--red); }
+
+.ai-settings-page { max-width: 820px; }
+.ai-settings-retry { justify-self: start; }
+.ai-settings-key-status { color: var(--ink-soft); font-size: 15px; }
+.ai-settings-actions { display: flex; flex-wrap: wrap; gap: var(--space-3) var(--space-5); }
+.ai-settings-actions .text-button { justify-self: start; }
+
+.form-field select {
+  width: 100%;
+  min-width: 0;
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+.form-field select:focus-visible { border-color: var(--ink); outline: none; box-shadow: 0 0 0 3px var(--red-wash); }
+
+.ai-settings-advanced { display: grid; gap: var(--space-4); }
+.ai-settings-advanced > summary { cursor: pointer; color: var(--ink); font-size: 14px; font-weight: 600; }
+.ai-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); margin-top: var(--space-4); }
+
+.ai-settings-privacy { padding: var(--space-3) var(--space-4); border-left: 2px solid var(--ink); background: var(--linen); }
+.ai-settings-notice { padding: var(--space-3) var(--space-4); border-left: 2px solid var(--ink); background: var(--linen); font-size: 14px; }
+
+.workspace-button--ai-report { border-color: var(--red); color: var(--red); }
+.workspace-button--ai-report:hover:not(:disabled) { border-color: var(--red-deep); color: var(--red-deep); }
+
+@media (max-width: 600px) {
+  .ai-settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .site-nav:has(.new-investigation-link) .settings-link { font-size: 12px; white-space: nowrap; }
+}

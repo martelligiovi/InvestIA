@@ -8,9 +8,10 @@ export interface AppShellProps {
   readonly home?: boolean;
   readonly create?: boolean;
   readonly showNewInvestigationLink?: boolean;
+  readonly showSettingsLink?: boolean;
 }
 
-export function AppShell({ children, quiet = false, home = false, create = false, showNewInvestigationLink = true }: AppShellProps) {
+export function AppShell({ children, quiet = false, home = false, create = false, showNewInvestigationLink = true, showSettingsLink = true }: AppShellProps) {
   return (
     <div className={`application-shell${quiet ? " application-shell--quiet" : ""}${home ? " application-shell--home" : ""}${create ? " application-shell--create" : ""}`}>
       <a
@@ -36,6 +37,7 @@ export function AppShell({ children, quiet = false, home = false, create = false
                 <span>{create ? "Volver" : "Inicio"}</span>
               </a>
             )}
+            {showSettingsLink && <a className="settings-link" href="#/ajustes">Ajustes de IA</a>}
             {showNewInvestigationLink && (
               <a className="new-investigation-link" href="#/nueva">Nueva investigación <span aria-hidden="true">↗</span></a>
             )}

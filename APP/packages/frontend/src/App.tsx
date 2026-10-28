@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AppShell } from "./components/AppShell";
+import { AiSettingsPage } from "./pages/AiSettingsPage";
 import { CreatePage } from "./pages/CreatePage";
 import { HomePage } from "./pages/HomePage";
 import { NotFoundPage } from "./pages/NotFoundPage";
@@ -23,6 +24,9 @@ export default function App() {
     case "create":
       page = <CreatePage />;
       break;
+    case "settings":
+      page = <AiSettingsPage />;
+      break;
     case "investigation":
       page = <WorkspacePage key={route.id} id={route.id} />;
       break;
@@ -31,5 +35,5 @@ export default function App() {
       break;
   }
 
-  return <AppShell create={route.kind === "create"} home={route.kind === "home"} quiet={route.kind === "investigation"} showNewInvestigationLink={route.kind === "not-found" || route.kind === "investigation"}>{page}</AppShell>;
+  return <AppShell create={route.kind === "create"} home={route.kind === "home"} quiet={route.kind === "investigation"} showNewInvestigationLink={route.kind === "not-found" || route.kind === "investigation" || route.kind === "settings"} showSettingsLink={route.kind !== "settings"}>{page}</AppShell>;
 }

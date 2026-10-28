@@ -586,6 +586,115 @@ describe("detalle del nodo como panel desplegable", () => {
   });
 });
 
+describe("informe con IA", () => {
+  it("genera el informe con IA por POST y lo presenta rotulado como IA", async () => {
+    const markdown = "# Informe hipotético\n\n## Datos utilizados";
+    const { calls } = installFetch(async (call) => {
+      if (pathOf(call) === "/investigations/case-1") return json(snapshot());
+      if (pathOf(call) === "/investigations/case-1/report/ai") return reportResponse(markdown);
+      throw new Error(`Ruta inesperada: ${pathOf(call)}`);
+    });
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    await screen.findByRole("heading", { name: "Caso de prueba" });
+    expect(screen.getByRole("button", { name: "Obtener informe" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Generar informe con IA" }));
+
+    const preview = await screen.findByLabelText("Vista previa del informe con IA");
+    expect(preview.tagName).toBe("PRE");
+    expect(preview.textContent).toBe(markdown);
+    expect(screen.getByRole("heading", { name: "Informe con IA (hipotético)" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /descargar markdown/i })).toHaveAttribute("download", "informe-ia-case-1.md");
+    const aiCalls = calls.filter((call) => pathOf(call) === "/investigations/case-1/report/ai");
+    expect(aiCalls).toHaveLength(1);
+    expect(aiCalls[0]?.init?.method).toBe("POST");
+    expect(calls.some((call) => pathOf(call) === "/investigations/case-1/report")).toBe(false);
+  });
+
+  it.each([
+    ["AI_NOT_CONFIGURED", 409, "Falta la API key de NVIDIA Build. Cargala en Ajustes de IA."],
+    ["AI_PROVIDER_UNAUTHORIZED", 502, "NVIDIA Build rechazó la API key. Revisala en Ajustes de IA."],
+    ["AI_PROVIDER_RATE_LIMITED", 502, "NVIDIA Build alcanzó el límite de uso gratuito. Probá de nuevo más tarde."],
+    ["AI_PROVIDER_REJECTED", 502, "NVIDIA Build rechazó el modelo o los parámetros. Probá otro modelo o restaurá los valores por defecto."],
+    ["AI_PROVIDER_UNAVAILABLE", 502, "NVIDIA Build no respondió o no devolvió un informe. Probá de nuevo."],
+    ["AI_PROVIDER_TIMEOUT", 502, "El modelo no empezó a responder a tiempo; su endpoint gratuito puede estar saturado. Elegí otro modelo en Ajustes de IA o probá más tarde."],
+    ["AI_PROVIDER_TRUNCATED", 502, "El modelo agotó el máximo de tokens antes de escribir el informe. Subí el máximo de tokens o bajá el esfuerzo de razonamiento en Ajustes de IA."],
+  ] as const)("traduce %s a un mensaje en español", async (code, status, message) => {
+    installFetch(async (call) => {
+      if (pathOf(call) === "/investigations/case-1") return json(snapshot());
+      if (pathOf(call) === "/investigations/case-1/report/ai") return json({ error: code, message: "provider detail" }, status);
+      throw new Error(`Ruta inesperada: ${pathOf(call)}`);
+    });
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    await user.click(await screen.findByRole("button", { name: "Generar informe con IA" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(screen.queryByLabelText(/vista previa del informe/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generar informe con IA" })).toBeEnabled();
+  });
+
+  it("avisa mientras genera y lleva la vista al informe o al error cuando llegan", async () => {
+    const scrolled: Element[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) { scrolled.push(this); };
+    try {
+      let respond: (response: Response) => void = () => undefined;
+      let attempt = 0;
+      installFetch(async (call) => {
+        if (pathOf(call) === "/investigations/case-1") return json(snapshot());
+        if (pathOf(call) === "/investigations/case-1/report/ai") {
+          attempt++;
+          if (attempt === 1) return json({ error: "AI_PROVIDER_UNAVAILABLE", message: "detail" }, 502);
+          return new Promise<Response>((resolve) => { respond = resolve; });
+        }
+        throw new Error(`Ruta inesperada: ${pathOf(call)}`);
+      });
+      const user = userEvent.setup();
+      render(<WorkspacePage id="case-1" />);
+      await user.click(await screen.findByRole("button", { name: "Generar informe con IA" }));
+      const alert = await screen.findByRole("alert");
+      expect(scrolled).toContain(alert);
+      expect(alert).toHaveFocus();
+
+      await user.click(screen.getByRole("button", { name: "Generar informe con IA" }));
+      expect(await screen.findByText("Generando el informe con IA en NVIDIA Build. Puede tardar varios minutos; el resultado aparece al final de la página.")).toHaveAttribute("role", "status");
+      respond(reportResponse("# Informe con IA"));
+
+      const preview = await screen.findByLabelText("Vista previa del informe con IA");
+      const report = preview.closest("details")!;
+      expect(scrolled).toContain(report);
+      expect(report).toHaveFocus();
+      expect(screen.queryByText(/Generando el informe con IA/)).not.toBeInTheDocument();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("mantiene el informe factual de Obtener informe después de generar uno con IA", async () => {
+    installFetch(async (call) => {
+      if (pathOf(call) === "/investigations/case-1") return json(snapshot());
+      if (pathOf(call) === "/investigations/case-1/report/ai") return reportResponse("# Informe con IA");
+      if (pathOf(call) === "/investigations/case-1/report") return reportResponse("# Informe factual");
+      throw new Error(`Ruta inesperada: ${pathOf(call)}`);
+    });
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    await user.click(await screen.findByRole("button", { name: "Generar informe con IA" }));
+    await screen.findByLabelText("Vista previa del informe con IA");
+
+    await user.click(screen.getByRole("button", { name: "Obtener informe" }));
+
+    const preview = await screen.findByLabelText("Vista previa del informe");
+    expect(preview).toHaveTextContent("# Informe factual");
+    expect(screen.queryByLabelText("Vista previa del informe con IA")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Informe Markdown" })).toBeInTheDocument();
+    expect(screen.getByText("Informe Markdown · vista previa y descarga")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /descargar markdown/i })).toHaveAttribute("download", "investigacion-case-1.md");
+  });
+});
+
 describe("desplegables del encabezado", () => {
   it("se cierran al interactuar fuera de ellos o con Escape, sin cerrarse al usarlos", async () => {
     installFetch(async () => json(snapshot()));

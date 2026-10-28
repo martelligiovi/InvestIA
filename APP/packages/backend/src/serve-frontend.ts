@@ -37,7 +37,8 @@ function isReservedApiPath(pathname: string): boolean {
   } catch {
     return true;
   }
-  return decodedPath === "/investigations" || decodedPath.startsWith("/investigations/");
+  return decodedPath === "/investigations" || decodedPath.startsWith("/investigations/") ||
+    decodedPath === "/settings" || decodedPath.startsWith("/settings/");
 }
 
 function isSafeStaticPath(pathname: string, root: string): boolean {

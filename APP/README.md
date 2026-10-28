@@ -74,6 +74,10 @@ pnpm --dir APP start
 
 The build is optional for API-only startup; a missing build prints a notice and does not enable an SPA fallback. See the [frontend guide](packages/frontend/README.md) for build, test, and typecheck commands and the [backend guide](packages/backend/README.md) for Windows PowerShell and Bash environment setup. `.env.example` is not automatically loaded by the backend process.
 
+## NVIDIA Build AI reports
+
+Open **Ajustes de IA** (`#/ajustes`) and paste a free API key from [build.nvidia.com/models](https://build.nvidia.com/models); saving only the key is enough. The key is stored in PostgreSQL, never returned to the browser, and shown only as a masked hint. In the workspace, **Generar informe con IA** sends the case data to NVIDIA Build and returns a hypothetical Markdown narrative with a **Datos utilizados** appendix; **Obtener informe** keeps producing the factual report. See the [frontend guide](packages/frontend/README.md#nvidia-build-ai-reports) for defaults and model selection.
+
 ## Workspace checks and test status
 
 From the repository root:

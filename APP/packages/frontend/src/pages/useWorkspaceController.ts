@@ -3,6 +3,7 @@ import type { Investigation } from "@investia/core";
 import { ApiError, InvestigationApiClient } from "../api/client";
 
 export type WorkspaceLoadPhase = "loading" | "ready" | "error" | "not-found";
+export type ReportKind = "factual" | "ai";
 
 export interface WorkspaceController {
   readonly investigation: Investigation | null;
@@ -12,6 +13,10 @@ export interface WorkspaceController {
   readonly busy: boolean;
   readonly stale: boolean;
   readonly report: string | null;
+  /** Kind of the report currently held in `report`. */
+  readonly reportKind: ReportKind;
+  /** Kind of the report request in flight, if any. */
+  readonly reportLoadingKind: ReportKind | null;
   readonly reportRevision: number | null;
   readonly reportError: string;
   readonly reportLoading: boolean;
@@ -19,7 +24,18 @@ export interface WorkspaceController {
   readonly retryLoad: () => Promise<void>;
   readonly mutate: (operation: (api: InvestigationApiClient, id: string) => Promise<unknown>, dispatch?: boolean) => Promise<boolean>;
   readonly loadReport: () => Promise<void>;
+  readonly loadAiReport: () => Promise<void>;
 }
+
+const AI_REPORT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  AI_NOT_CONFIGURED: "Falta la API key de NVIDIA Build. Cargala en Ajustes de IA.",
+  AI_PROVIDER_UNAUTHORIZED: "NVIDIA Build rechazó la API key. Revisala en Ajustes de IA.",
+  AI_PROVIDER_RATE_LIMITED: "NVIDIA Build alcanzó el límite de uso gratuito. Probá de nuevo más tarde.",
+  AI_PROVIDER_REJECTED: "NVIDIA Build rechazó el modelo o los parámetros. Probá otro modelo o restaurá los valores por defecto.",
+  AI_PROVIDER_UNAVAILABLE: "NVIDIA Build no respondió o no devolvió un informe. Probá de nuevo.",
+  AI_PROVIDER_TIMEOUT: "El modelo no empezó a responder a tiempo; su endpoint gratuito puede estar saturado. Elegí otro modelo en Ajustes de IA o probá más tarde.",
+  AI_PROVIDER_TRUNCATED: "El modelo agotó el máximo de tokens antes de escribir el informe. Subí el máximo de tokens o bajá el esfuerzo de razonamiento en Ajustes de IA.",
+};
 
 function messageFor(error: unknown): string {
   if (error instanceof Error && error.message.trim() !== "") return error.message;
@@ -28,6 +44,12 @@ function messageFor(error: unknown): string {
 
 function isNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
+}
+
+function reportErrorFor(kind: ReportKind, error: unknown): string {
+  if (kind === "factual") return `No se pudo obtener el informe: ${messageFor(error)}`;
+  const known = error instanceof ApiError ? AI_REPORT_ERROR_MESSAGES[error.code] : undefined;
+  return known ?? `No se pudo generar el informe con IA: ${messageFor(error)}`;
 }
 
 export function useWorkspaceController(id: string): WorkspaceController {
@@ -40,6 +62,8 @@ export function useWorkspaceController(id: string): WorkspaceController {
   const [busy, setBusy] = useState(false);
   const [stale, setStale] = useState(false);
   const [report, setReport] = useState<string | null>(null);
+  const [reportKind, setReportKind] = useState<ReportKind>("factual");
+  const [reportLoadingKind, setReportLoadingKind] = useState<ReportKind | null>(null);
   const [reportRevision, setReportRevision] = useState<number | null>(null);
   const [reportError, setReportError] = useState("");
   const [reportLoading, setReportLoading] = useState(false);
@@ -93,6 +117,7 @@ export function useWorkspaceController(id: string): WorkspaceController {
     setReportRevision(null);
     setReportError("");
     setReportLoading(false);
+    setReportLoadingKind(null);
     void readLatest(activeGeneration).catch((error: unknown) => {
       if (!isCurrent(id, activeGeneration)) return;
       if (isNotFound(error)) {
@@ -228,14 +253,15 @@ export function useWorkspaceController(id: string): WorkspaceController {
     return mutationError === undefined && refreshError === undefined;
   }, [api, id, investigationId, isCurrent, readLatest, releaseLock, stale, takeLock]);
 
-  const loadReport = useCallback(async () => {
+  const fetchReport = useCallback(async (kind: ReportKind) => {
     const activeGeneration = generation.current;
     if (investigationId !== id || stale || !takeLock(activeGeneration)) return;
     const boundRevision = investigationRef.current?.revision;
     setReportError("");
     setReportLoading(true);
+    setReportLoadingKind(kind);
     try {
-      const content = await api.getReport(id);
+      const content = kind === "ai" ? await api.generateAiReport(id) : await api.getReport(id);
       if (!isCurrent(id, activeGeneration)) return;
       if (boundRevision === undefined || investigationRef.current?.revision !== boundRevision) {
         setReport(null);
@@ -244,14 +270,21 @@ export function useWorkspaceController(id: string): WorkspaceController {
         return;
       }
       setReport(content);
+      setReportKind(kind);
       setReportRevision(boundRevision);
     } catch (error) {
-      if (isCurrent(id, activeGeneration)) setReportError(`No se pudo obtener el informe: ${messageFor(error)}`);
+      if (isCurrent(id, activeGeneration)) setReportError(reportErrorFor(kind, error));
     } finally {
-      if (isCurrent(id, activeGeneration)) setReportLoading(false);
+      if (isCurrent(id, activeGeneration)) {
+        setReportLoading(false);
+        setReportLoadingKind(null);
+      }
       releaseLock(activeGeneration);
     }
   }, [api, id, investigationId, isCurrent, releaseLock, stale, takeLock]);
+
+  const loadReport = useCallback(() => fetchReport("factual"), [fetchReport]);
+  const loadAiReport = useCallback(() => fetchReport("ai"), [fetchReport]);
 
   useEffect(() => {
     if (investigationId !== id || investigation === null || stale || phase !== "ready" ||
@@ -282,6 +315,8 @@ export function useWorkspaceController(id: string): WorkspaceController {
     busy,
     stale,
     report,
+    reportKind,
+    reportLoadingKind,
     reportRevision,
     reportError,
     reportLoading,
@@ -289,5 +324,6 @@ export function useWorkspaceController(id: string): WorkspaceController {
     retryLoad,
     mutate,
     loadReport,
+    loadAiReport,
   };
 }

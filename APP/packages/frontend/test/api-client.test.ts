@@ -109,6 +109,43 @@ describe("InvestigationApiClient", () => {
     expect(calls[0]?.init?.method).toBe("GET");
   });
 
+  it("maps the AI settings endpoints to the backend request contract", async () => {
+    const { api, calls } = clientWith({});
+    await api.getAiSettings();
+    await api.saveAiSettings({ apiKey: "nvapi-secret" });
+    await api.saveAiSettings({ settings: { temperature: 0.4, maxTokens: 2048 } });
+    await api.removeAiApiKey();
+    await api.listAiModels();
+
+    expect(calls.map(({ input, init }) => [String(input), init?.method, bodyOf({ input, init })])).toEqual([
+      ["/settings/ai", undefined, undefined],
+      ["/settings/ai", "PUT", { apiKey: "nvapi-secret" }],
+      ["/settings/ai", "PUT", { settings: { temperature: 0.4, maxTokens: 2048 } }],
+      ["/settings/ai/api-key", "DELETE", undefined],
+      ["/settings/ai/models", undefined, undefined],
+    ]);
+  });
+
+  it("generates AI reports with a bodiless POST and returns Markdown text", async () => {
+    const markdown = "# Informe con IA\n\nNarrativa hipotética.";
+    const { api, calls } = clientWith(markdown);
+
+    await expect(api.generateAiReport("case 1")).resolves.toBe(markdown);
+    expect(calls[0]?.input).toBe("/investigations/case%201/report/ai");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.body).toBeUndefined();
+  });
+
+  it("surfaces AI report error codes as typed API errors", async () => {
+    const { api } = clientWith({ error: "AI_NOT_CONFIGURED", message: "Missing NVIDIA Build API key" }, 409);
+
+    await expect(api.generateAiReport("case-1")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 409,
+      code: "AI_NOT_CONFIGURED",
+    });
+  });
+
   it("surfaces typed API errors from the backend JSON envelope", async () => {
     const { api } = clientWith({ error: "NOT_FOUND", message: "Investigation not found" }, 404);
 

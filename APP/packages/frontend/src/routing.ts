@@ -1,6 +1,7 @@
 export type AppRoute =
   | { readonly kind: "home" }
   | { readonly kind: "create" }
+  | { readonly kind: "settings" }
   | { readonly kind: "investigation"; readonly id: string }
   | { readonly kind: "not-found" };
 
@@ -38,6 +39,7 @@ export function parseHashRoute(hash: string): AppRoute {
   const [section, id, extra] = decodedSegments;
 
   if (section === "nueva" && segments.length === 1) return { kind: "create" };
+  if (section === "ajustes" && segments.length === 1) return { kind: "settings" };
   if (section === "investigaciones" && id !== undefined && extra === undefined && segments.length === 2) {
     return { kind: "investigation", id };
   }
