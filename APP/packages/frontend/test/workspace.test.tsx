@@ -618,6 +618,8 @@ describe("informe con IA", () => {
     ["AI_PROVIDER_RATE_LIMITED", 502, "NVIDIA Build alcanzó el límite de uso gratuito. Probá de nuevo más tarde."],
     ["AI_PROVIDER_REJECTED", 502, "NVIDIA Build rechazó el modelo o los parámetros. Probá otro modelo o restaurá los valores por defecto."],
     ["AI_PROVIDER_UNAVAILABLE", 502, "NVIDIA Build no respondió o no devolvió un informe. Probá de nuevo."],
+    ["AI_PROVIDER_TIMEOUT", 502, "El modelo no empezó a responder a tiempo; su endpoint gratuito puede estar saturado. Elegí otro modelo en Ajustes de IA o probá más tarde."],
+    ["AI_PROVIDER_TRUNCATED", 502, "El modelo agotó el máximo de tokens antes de escribir el informe. Subí el máximo de tokens o bajá el esfuerzo de razonamiento en Ajustes de IA."],
   ] as const)("traduce %s a un mensaje en español", async (code, status, message) => {
     installFetch(async (call) => {
       if (pathOf(call) === "/investigations/case-1") return json(snapshot());

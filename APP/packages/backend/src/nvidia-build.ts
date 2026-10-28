@@ -18,7 +18,8 @@ export interface NvidiaBuildGateway {
   complete(apiKey: string, settings: AiReportSettings, messages: readonly AiChatMessage[]): Promise<string>;
 }
 
-export type NvidiaProviderErrorKind = "unauthorized" | "rate_limited" | "rejected" | "unavailable" | "invalid_response";
+export type NvidiaProviderErrorKind =
+  | "unauthorized" | "rate_limited" | "rejected" | "unavailable" | "invalid_response" | "timeout" | "truncated";
 
 /** Carries only a classification; provider bodies and request details are never retained. */
 export class NvidiaProviderError extends Error {
@@ -35,6 +36,8 @@ export interface NvidiaBuildGatewayOptions {
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
   readonly catalogTtlMs?: number;
+  /** Aborts when neither answer nor reasoning tokens arrive in time, typically a saturated free endpoint. */
+  readonly firstTokenTimeoutMs?: number;
   readonly completionTimeoutMs?: number;
 }
 
@@ -109,6 +112,68 @@ async function getJson(fetcher: typeof fetch, url: string): Promise<unknown> {
   return response.json();
 }
 
+interface StreamedAnswer {
+  readonly content: string;
+  readonly finishReason: string | null;
+}
+
+function firstChoice(payload: unknown): Record<string, unknown> | undefined {
+  const choice = isRecord(payload) && Array.isArray(payload.choices) ? payload.choices[0] : undefined;
+  return isRecord(choice) ? choice : undefined;
+}
+
+async function readJsonAnswer(response: Response): Promise<StreamedAnswer> {
+  const choice = firstChoice(await response.json());
+  const content = isRecord(choice?.message) ? choice.message.content : undefined;
+  return {
+    content: typeof content === "string" ? content : "",
+    finishReason: typeof choice?.finish_reason === "string" ? choice.finish_reason : null,
+  };
+}
+
+/** Reads OpenAI-style server-sent events; reasoning deltas count as activity but never reach the answer. */
+async function readEventStream(response: Response, deadline: Promise<never>, onActivity: () => void): Promise<StreamedAnswer> {
+  if (response.body === null) throw new NvidiaProviderError("invalid_response");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let finishReason: string | null = null;
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), deadline]);
+      if (done) return { content, finishReason };
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const data = trimmed.slice(5).trim();
+        if (data === "[DONE]") return { content, finishReason };
+        let event: unknown;
+        try {
+          event = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        const choice = firstChoice(event);
+        if (choice === undefined) continue;
+        const delta = isRecord(choice.delta) ? choice.delta : {};
+        if (typeof delta.content === "string" && delta.content.length > 0) {
+          content += delta.content;
+          onActivity();
+        }
+        if ([delta.reasoning_content, delta.reasoning].some((value) => typeof value === "string" && value.length > 0)) onActivity();
+        if (typeof choice.finish_reason === "string") finishReason = choice.finish_reason;
+      }
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  }
+}
+
 function errorKind(status: number): NvidiaProviderErrorKind {
   if (status === 401 || status === 403) return "unauthorized";
   if (status === 429) return "rate_limited";
@@ -120,7 +185,8 @@ export function createNvidiaBuildGateway(options: NvidiaBuildGatewayOptions = {}
   const fetcher = options.fetch ?? fetch.bind(globalThis);
   const now = options.now ?? Date.now;
   const ttl = options.catalogTtlMs ?? 10 * 60_000;
-  const completionTimeoutMs = options.completionTimeoutMs ?? 5 * 60_000;
+  const firstTokenTimeoutMs = options.firstTokenTimeoutMs ?? 90_000;
+  const completionTimeoutMs = options.completionTimeoutMs ?? 10 * 60_000;
   let cached: { readonly at: number; readonly models: readonly FreeChatModel[] } | undefined;
 
   async function loadLiveModels(): Promise<FreeChatModel[]> {
@@ -163,37 +229,62 @@ export function createNvidiaBuildGateway(options: NvidiaBuildGatewayOptions = {}
     },
 
     async complete(apiKey, settings, messages) {
-      let response: Response;
+      // Streaming exposes queued free endpoints: a model that never starts answering fails fast instead of
+      // holding the request until the overall deadline.
+      const controller = new AbortController();
+      let timedOut = false;
+      let rejectDeadline: (error: NvidiaProviderError) => void = () => undefined;
+      const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+      deadline.catch(() => undefined);
+      const expire = () => {
+        timedOut = true;
+        controller.abort();
+        rejectDeadline(new NvidiaProviderError("timeout"));
+      };
+      let firstTokenTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(expire, firstTokenTimeoutMs);
+      const totalTimer = setTimeout(expire, completionTimeoutMs);
+      const onActivity = () => {
+        clearTimeout(firstTokenTimer);
+        firstTokenTimer = undefined;
+      };
       try {
-        response = await fetcher(CHAT_COMPLETIONS_URL, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({
-            model: settings.model,
-            messages,
-            temperature: settings.temperature,
-            top_p: settings.topP,
-            max_tokens: settings.maxTokens,
-            stream: false,
-            ...(settings.reasoningEffort === "default" ? {} : { reasoning_effort: settings.reasoningEffort }),
-          }),
-          signal: AbortSignal.timeout(completionTimeoutMs),
-        });
-      } catch {
-        throw new NvidiaProviderError("unavailable");
+        let response: Response;
+        try {
+          response = await Promise.race([fetcher(CHAT_COMPLETIONS_URL, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
+            body: JSON.stringify({
+              model: settings.model,
+              messages,
+              temperature: settings.temperature,
+              top_p: settings.topP,
+              max_tokens: settings.maxTokens,
+              stream: true,
+              ...(settings.reasoningEffort === "default" ? {} : { reasoning_effort: settings.reasoningEffort }),
+            }),
+            signal: controller.signal,
+          }), deadline]);
+        } catch (error) {
+          if (error instanceof NvidiaProviderError) throw error;
+          throw new NvidiaProviderError(timedOut ? "timeout" : "unavailable");
+        }
+        if (!response.ok) throw new NvidiaProviderError(errorKind(response.status));
+        let answer: StreamedAnswer;
+        try {
+          answer = (response.headers.get("content-type") ?? "").includes("text/event-stream")
+            ? await readEventStream(response, deadline, onActivity)
+            : await readJsonAnswer(response);
+        } catch (error) {
+          if (error instanceof NvidiaProviderError) throw error;
+          throw new NvidiaProviderError(timedOut ? "timeout" : "invalid_response");
+        }
+        const narrative = stripModelReasoning(answer.content);
+        if (narrative.length === 0) throw new NvidiaProviderError(answer.finishReason === "length" ? "truncated" : "invalid_response");
+        return narrative;
+      } finally {
+        clearTimeout(firstTokenTimer);
+        clearTimeout(totalTimer);
       }
-      if (!response.ok) throw new NvidiaProviderError(errorKind(response.status));
-      let payload: unknown;
-      try {
-        payload = await response.json();
-      } catch {
-        throw new NvidiaProviderError("invalid_response");
-      }
-      const choice = isRecord(payload) && Array.isArray(payload.choices) ? payload.choices[0] : undefined;
-      const content = isRecord(choice) && isRecord(choice.message) ? choice.message.content : undefined;
-      const narrative = typeof content === "string" ? stripModelReasoning(content) : "";
-      if (narrative.length === 0) throw new NvidiaProviderError("invalid_response");
-      return narrative;
     },
   };
 }

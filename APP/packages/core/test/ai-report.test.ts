@@ -63,11 +63,11 @@ function investigation(): Investigation {
 
 test("defaults make a configuration that only needs an API key", () => {
   assert.deepEqual(DEFAULT_AI_REPORT_SETTINGS, {
-    model: "deepseek-ai/deepseek-v4.1-flash",
+    model: "nvidia/nemotron-3.5-super-vl-120b-a12b",
     reasoningEffort: "default",
     temperature: 0.6,
     topP: 0.95,
-    maxTokens: 4096,
+    maxTokens: 8192,
   });
   assert.deepEqual(normalizeAiReportSettings(undefined), DEFAULT_AI_REPORT_SETTINGS);
   assert.deepEqual(normalizeAiReportSettings({ model: "openai/gpt-oss-20b", reasoningEffort: "high" }), {

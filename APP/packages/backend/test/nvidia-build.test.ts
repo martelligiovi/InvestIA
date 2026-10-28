@@ -100,10 +100,10 @@ test("sends the configured chat request and strips model reasoning", async () =>
   assert.equal(calls[0]!.url, "https://integrate.api.nvidia.com/v1/chat/completions");
   assert.equal(calls[0]!.init?.method, "POST");
   assert.deepEqual(calls[0]!.init?.headers, {
-    Authorization: `Bearer ${SECRET}`, "Content-Type": "application/json", Accept: "application/json",
+    Authorization: `Bearer ${SECRET}`, "Content-Type": "application/json", Accept: "text/event-stream, application/json",
   });
   assert.deepEqual(JSON.parse(String(calls[0]!.init?.body)), {
-    model: "openai/gpt-oss-20b", messages, temperature: 0.6, top_p: 0.95, max_tokens: 4096, stream: false, reasoning_effort: "high",
+    model: "openai/gpt-oss-20b", messages, temperature: 0.6, top_p: 0.95, max_tokens: DEFAULT_AI_REPORT_SETTINGS.maxTokens, stream: true, reasoning_effort: "high",
   });
 
   await gateway.complete(SECRET, DEFAULT_AI_REPORT_SETTINGS, messages);
@@ -129,4 +129,56 @@ test("maps provider failures to safe errors without echoing the key or provider 
   assert.ok(error instanceof NvidiaProviderError);
   assert.equal(error.kind, "unavailable");
   assert.doesNotMatch(error.message, /nvapi/);
+});
+
+function sse(events: readonly (string | object)[], { hang = false } = {}): Response {
+  const encoder = new TextEncoder();
+  const text = events.map((event) => `data: ${typeof event === "string" ? event : JSON.stringify(event)}\n\n`).join("");
+  // Split mid-event so parsing must buffer partial lines across chunks.
+  const chunks = [text.slice(0, 17), text.slice(17, 61), text.slice(61)].filter((chunk) => chunk.length > 0);
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      if (!hang) controller.close();
+    },
+  }), { headers: { "Content-Type": "text/event-stream" } });
+}
+
+const delta = (fields: Record<string, unknown>, finish: string | null = null) => ({ choices: [{ index: 0, delta: fields, finish_reason: finish }] });
+
+test("assembles a streamed answer, ignoring reasoning deltas", async () => {
+  const { fetcher } = fakeFetch(() => sse([
+    delta({ role: "assistant", reasoning_content: "pensando largo y tendido" }),
+    delta({ content: "## Resumen\n" }),
+    delta({ content: "Podría ser " }),
+    delta({ content: "melómana." }, "stop"),
+    "[DONE]",
+  ]));
+  const content = await createNvidiaBuildGateway({ fetch: fetcher }).complete(SECRET, DEFAULT_AI_REPORT_SETTINGS, []);
+  assert.equal(content, "## Resumen\nPodría ser melómana.");
+});
+
+test("fails fast with a timeout when the model never starts answering", async () => {
+  let signal: AbortSignal | undefined;
+  const { fetcher } = fakeFetch((_url, init) => { signal = init?.signal ?? undefined; return new Promise<Response>(() => undefined); });
+  const started = Date.now();
+  const error = await createNvidiaBuildGateway({ fetch: fetcher, firstTokenTimeoutMs: 30 })
+    .complete(SECRET, DEFAULT_AI_REPORT_SETTINGS, []).catch((caught: unknown) => caught);
+  assert.ok(error instanceof NvidiaProviderError);
+  assert.equal(error.kind, "timeout");
+  assert.ok(Date.now() - started < 2_000);
+  assert.equal(signal?.aborted, true);
+
+  const { fetcher: silent } = fakeFetch(() => sse([delta({ role: "assistant" })], { hang: true }));
+  const stalled = await createNvidiaBuildGateway({ fetch: silent, firstTokenTimeoutMs: 30 })
+    .complete(SECRET, DEFAULT_AI_REPORT_SETTINGS, []).catch((caught: unknown) => caught);
+  assert.ok(stalled instanceof NvidiaProviderError);
+  assert.equal(stalled.kind, "timeout");
+});
+
+test("reports truncation when the token budget ends before any answer", async () => {
+  const { fetcher } = fakeFetch(() => sse([delta({ reasoning_content: "x".repeat(50) }), delta({}, "length"), "[DONE]"]));
+  const error = await createNvidiaBuildGateway({ fetch: fetcher }).complete(SECRET, DEFAULT_AI_REPORT_SETTINGS, []).catch((caught: unknown) => caught);
+  assert.ok(error instanceof NvidiaProviderError);
+  assert.equal(error.kind, "truncated");
 });

@@ -201,6 +201,8 @@ test("provider failures map to safe error codes", async (t) => {
     ["rejected", "AI_PROVIDER_REJECTED"],
     ["unavailable", "AI_PROVIDER_UNAVAILABLE"],
     ["invalid_response", "AI_PROVIDER_UNAVAILABLE"],
+    ["timeout", "AI_PROVIDER_TIMEOUT"],
+    ["truncated", "AI_PROVIDER_TRUNCATED"],
   ] as const) {
     gateway.failure = kind;
     const response = await app.inject({ method: "POST", url: "/investigations/investigation-1/report/ai" });

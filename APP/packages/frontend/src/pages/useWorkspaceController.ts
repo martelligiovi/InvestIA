@@ -33,6 +33,8 @@ const AI_REPORT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_PROVIDER_RATE_LIMITED: "NVIDIA Build alcanzó el límite de uso gratuito. Probá de nuevo más tarde.",
   AI_PROVIDER_REJECTED: "NVIDIA Build rechazó el modelo o los parámetros. Probá otro modelo o restaurá los valores por defecto.",
   AI_PROVIDER_UNAVAILABLE: "NVIDIA Build no respondió o no devolvió un informe. Probá de nuevo.",
+  AI_PROVIDER_TIMEOUT: "El modelo no empezó a responder a tiempo; su endpoint gratuito puede estar saturado. Elegí otro modelo en Ajustes de IA o probá más tarde.",
+  AI_PROVIDER_TRUNCATED: "El modelo agotó el máximo de tokens antes de escribir el informe. Subí el máximo de tokens o bajá el esfuerzo de razonamiento en Ajustes de IA.",
 };
 
 function messageFor(error: unknown): string {

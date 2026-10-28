@@ -71,6 +71,8 @@ const PROVIDER_ERRORS = {
   rejected: new HttpError(502, "AI_PROVIDER_REJECTED", "NVIDIA Build rejected the model or parameters"),
   unavailable: new HttpError(502, "AI_PROVIDER_UNAVAILABLE", "NVIDIA Build is unavailable or returned no report"),
   invalid_response: new HttpError(502, "AI_PROVIDER_UNAVAILABLE", "NVIDIA Build is unavailable or returned no report"),
+  timeout: new HttpError(502, "AI_PROVIDER_TIMEOUT", "The NVIDIA Build model did not answer in time; its free endpoint may be saturated"),
+  truncated: new HttpError(502, "AI_PROVIDER_TRUNCATED", "The model used its whole token budget before writing the report"),
 } as const;
 
 /** Shows enough to recognize the stored key without disclosing it. */
