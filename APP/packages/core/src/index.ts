@@ -58,6 +58,20 @@ export {
   type InvestigationServiceDependencies,
 } from "./application/investigation-service.ts";
 export { compileInvestigationReport } from "./application/compile-report.ts";
+export {
+  AI_MAX_TOKENS_RANGE,
+  AI_REASONING_EFFORTS,
+  AI_REPORT_SYSTEM_PROMPT,
+  buildAiReportMessages,
+  composeAiReport,
+  DEFAULT_AI_REPORT_SETTINGS,
+  normalizeAiReportSettings,
+  stripModelReasoning,
+  type AiChatMessage,
+  type AiReasoningEffort,
+  type AiReportSettings,
+  type ComposeAiReportInput,
+} from "./application/ai-report.ts";
 export type {
   ActionClaim,
   ActionCompletion,
