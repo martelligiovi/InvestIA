@@ -1,7 +1,9 @@
 import { readFile } from "node:fs/promises";
 import {
+  authorizationCovers,
   DEFAULT_INVESTIGATION_NAME,
   isScannerFinding,
+  isScopedCatalogId,
   normalizeInvestigationName,
   type ActionClaim,
   type ClaimActionRequest,
@@ -135,7 +137,9 @@ function isApproval(value: unknown): boolean {
 function isAuthorization(value: unknown): boolean {
   return isRecord(value) && typeof value.granted === "boolean" && isTimestamp(value.at) &&
     isNonEmptyString(value.reason) && value.operator === "local-operator" &&
-    (value.catalogScope === undefined || value.catalogScope === "user-scanner.email.v1");
+    (value.catalogScope === undefined || value.catalogScope === "user-scanner.email.v1") &&
+    (value.catalogScopes === undefined || (Array.isArray(value.catalogScopes) &&
+      value.catalogScopes.every(isScopedCatalogId) && new Set(value.catalogScopes).size === value.catalogScopes.length));
 }
 
 function isStoredAction(value: unknown): boolean {
@@ -232,6 +236,7 @@ function assertSnapshot(investigation: Investigation): void {
     typeof investigation.paused !== "boolean" || !Array.isArray(investigation.emailSeeds) ||
     !Array.isArray(investigation.actions) || !Array.isArray(investigation.evidence) ||
     !Array.isArray(investigation.validations) || !Array.isArray(investigation.audit) ||
+    (investigation.authorization !== undefined && !isAuthorization(investigation.authorization)) ||
     !investigation.evidence.every(isStoredEvidence) || !investigation.actions.every(isStoredAction)
   ) throw new InvestigationSchemaError("Investigation snapshot is invalid.");
 }
@@ -313,7 +318,7 @@ export class PostgresInvestigationStore implements InvestigationStore {
         (input.automaticOnly === true && current.advancementMode !== "automatic")) return { result: undefined };
       const action = current.actions.find((candidate) => candidate.status === "queued" &&
         (candidate.queuedByCatalog === true || candidate.approval !== undefined) &&
-        (candidate.spec.catalogId !== "user-scanner.email.v1" || current.authorization?.catalogScope === "user-scanner.email.v1"));
+        authorizationCovers(current.authorization, candidate.spec.catalogId));
       if (action === undefined) return { result: undefined };
       const claimedAction = {
         ...action,

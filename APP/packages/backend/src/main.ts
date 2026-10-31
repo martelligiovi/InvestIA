@@ -8,7 +8,7 @@ import { Pool } from "pg";
 import { createUserScannerBox } from "../../adapter-user-scanner/src/index.ts";
 import {
   createInvestigationService,
-  createSeedBoxExecutor,
+  createCatalogExecutor,
   type InvestigationExecutor,
 } from "@investia/core";
 import { PostgresAiSettingsStore } from "./ai-settings-store.ts";
@@ -64,7 +64,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     if (options.checkpointer === undefined) await (checkpointer as PostgresSaver).setup();
     const service = createInvestigationService({
       store,
-      executor: options.executor ?? createSeedBoxExecutor(createUserScannerBox()),
+      executor: options.executor ?? createCatalogExecutor({ "user-scanner.email.v1": createUserScannerBox() }),
       clock: () => new Date().toISOString(),
       createId: (kind) => `${kind}-${randomUUID()}`,
     });

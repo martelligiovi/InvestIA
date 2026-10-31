@@ -53,13 +53,35 @@ export interface ActionApproval {
   readonly operator: "local-operator";
 }
 
+/** Catalog tools that run only under an explicit, per-tool consent scope. */
+export type ScopedCatalogId = "user-scanner.email.v1";
+export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1"]);
+const LEGACY_CATALOG_ID = "github.email-registration.v1";
+
+export function isScopedCatalogId(value: unknown): value is ScopedCatalogId {
+  return (SCOPED_CATALOG_IDS as readonly unknown[]).includes(value);
+}
+
 export interface AuthorizationRecord {
   /** Missing on legacy grants; those never authorize the broader scanner command. */
   readonly catalogScope?: "user-scanner.email.v1";
+  /** Every tool this grant consents to; missing on single-scope and legacy grants. */
+  readonly catalogScopes?: readonly ScopedCatalogId[];
   readonly granted: boolean;
   readonly at: string;
   readonly reason: string;
   readonly operator: "local-operator";
+}
+
+/**
+ * A grant authorizes a scoped tool only when it names that tool; grants never broaden to tools
+ * added later. Historical GitHub actions keep their original unscoped gate.
+ */
+export function authorizationCovers(authorization: AuthorizationRecord | undefined, catalogId: string): boolean {
+  if (authorization?.granted !== true) return false;
+  if (catalogId === LEGACY_CATALOG_ID) return true;
+  if (!isScopedCatalogId(catalogId)) return false;
+  return authorization.catalogScopes?.includes(catalogId) === true || authorization.catalogScope === catalogId;
 }
 
 export interface GitHubActionSpec {

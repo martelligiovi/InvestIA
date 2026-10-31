@@ -1,15 +1,13 @@
-import type { GitHubCatalogAction, Investigation } from "@investia/core";
+import { authorizationCovers, type GitHubCatalogAction, type Investigation } from "@investia/core";
 
 export function hasCatalogAuthorization(investigation: Investigation): boolean {
   return investigation.authorization?.granted === true &&
-    (!investigation.actions.some((action) => action.spec.catalogId === "user-scanner.email.v1") ||
-      investigation.authorization.catalogScope === "user-scanner.email.v1");
+    investigation.actions.every((action) => authorizationCovers(investigation.authorization, action.spec.catalogId));
 }
 
 export function actionDisplayState(investigation: Investigation, action: GitHubCatalogAction): string {
   if (action.status !== "queued") return action.status;
-  if (investigation.authorization?.granted !== true ||
-    (action.spec.catalogId === "user-scanner.email.v1" && investigation.authorization.catalogScope !== "user-scanner.email.v1")) return "waiting_authorization";
+  if (!authorizationCovers(investigation.authorization, action.spec.catalogId)) return "waiting_authorization";
   if (investigation.paused) return "paused_queue";
   if (!action.queuedByCatalog && action.approval === undefined) return "not_executable";
   return "queued";

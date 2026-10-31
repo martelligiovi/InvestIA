@@ -16,8 +16,12 @@ export {
   type ExecutionState,
 } from "./application/execute-seed-box.ts";
 export {
+  authorizationCovers,
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
+  isScopedCatalogId,
+  SCOPED_CATALOG_IDS,
+  type ScopedCatalogId,
   INVESTIGATION_NAME_MAX_LENGTH,
   normalizeInvestigationName,
   type ActionApproval,
@@ -51,8 +55,10 @@ export {
   type InvestigationSeedNode,
 } from "./domain/seed-graph.ts";
 export {
+  createCatalogExecutor,
   createInvestigationService,
   createSeedBoxExecutor,
+  type CatalogBoxes,
   InvestigationService,
   type InvestigationIdKind,
   type InvestigationServiceDependencies,

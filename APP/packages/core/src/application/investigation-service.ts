@@ -4,6 +4,9 @@ import type { SeedBox } from "../domain/seed-box.ts";
 import {
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
+  isScopedCatalogId,
+  SCOPED_CATALOG_IDS,
+  type ScopedCatalogId,
   type AdvancementMode,
   type AuditEvent,
   type AuditKind,
@@ -252,7 +255,10 @@ export class InvestigationService {
     if (typeof granted !== "boolean") throw new Error("Authorization must be explicitly granted or denied");
     const why = reasonText(reason);
     const at = timestamp(this.dependencies.clock);
-    const authorization = { granted, at, reason: why, operator: "local-operator" as const, catalogScope: CATALOG_ID };
+    const authorization = {
+      granted, at, reason: why, operator: "local-operator" as const,
+      catalogScope: CATALOG_ID, catalogScopes: [...SCOPED_CATALOG_IDS],
+    };
     const event = auditEvent(this.dependencies.createId, at, "operator", "authorization_changed", why, { granted });
     return this.dependencies.store.transact(id, (current) => {
       const next = withRevision(current, at, { authorization, audit: [...current.audit, event] });
@@ -361,6 +367,7 @@ export class InvestigationService {
     }
 
     const completedAt = timestamp(this.dependencies.clock);
+    const sourceId = this.dependencies.executor.sourceIdFor?.(claim.action) ?? this.dependencies.executor.id;
     const evidence: EvidenceRecord[] = [];
     let unsupportedObservationCount = 0;
     for (const observation of observations as readonly unknown[]) {
@@ -369,7 +376,7 @@ export class InvestigationService {
       if (
         (!scanner && !registration) ||
         (observation as { seed: EmailSeed }).seed.value !== claim.action.spec.seed.value ||
-        (scanner && claim.action.spec.catalogId !== CATALOG_ID)
+        (scanner && !isScopedCatalogId(claim.action.spec.catalogId))
       ) {
         unsupportedObservationCount++;
         continue;
@@ -387,7 +394,7 @@ export class InvestigationService {
         seed: { ...claim.action.spec.seed },
         provider: accepted.provider,
         status: accepted.status,
-        sourceId: this.dependencies.executor.id,
+        sourceId,
         recordedAt: completedAt,
         ...(scanner ? { finding: structuredClone((accepted as ScannerObservation).finding) } : {}),
       });
@@ -434,19 +441,52 @@ export function createInvestigationService(dependencies: InvestigationServiceDep
   return new InvestigationService(dependencies);
 }
 
+function assertClaimedAction(action: GitHubCatalogAction): void {
+  if (
+    typeof action !== "object" || action === null || action.status !== "claimed" ||
+    typeof action.claim !== "object" || action.claim === null ||
+    typeof action.claim.id !== "string" || action.claim.id.trim().length === 0 ||
+    typeof action.claim.claimedAt !== "string" || action.claim.claimedAt.length === 0
+  ) throw new Error("SeedBox executor requires a claimed action");
+}
+
+const RETIRED_ACTION_MESSAGE = "Historical GitHub-only action is retired; create an explicit scanner proposal instead.";
+
+export type CatalogBoxes = Readonly<Partial<Record<ScopedCatalogId, SeedBox<EmailSeed, Observation>>>>;
+
+/** Routes each claimed action to the tool registered for its catalog id. */
+export function createCatalogExecutor(boxes: CatalogBoxes): InvestigationExecutor {
+  const registry = new Map<string, SeedBox<EmailSeed, Observation>>();
+  for (const [catalogId, box] of Object.entries(boxes)) {
+    if (!isScopedCatalogId(catalogId)) throw new Error(`Unknown catalog id: ${catalogId}`);
+    if (box === undefined) continue;
+    if (box.inputKind !== "email") throw new Error(`Catalog ${catalogId} requires an email SeedBox`);
+    registry.set(catalogId, box);
+  }
+  const boxFor = (action: GitHubCatalogAction) => {
+    if (action.spec.catalogId === LEGACY_CATALOG_ID) throw new Error(RETIRED_ACTION_MESSAGE);
+    const box = registry.get(action.spec.catalogId);
+    if (box === undefined) throw new Error(`No tool is registered for catalog ${String(action.spec.catalogId)}`);
+    return box;
+  };
+  return {
+    id: "catalog",
+    async execute(action: GitHubCatalogAction, permit: ExecutionPermit): Promise<readonly Observation[]> {
+      assertClaimedAction(action);
+      return executeSeedBox(boxFor(action), action.spec.seed, permit as ExecutionState);
+    },
+    sourceIdFor: (action) => boxFor(action).id,
+  };
+}
+
 export function createSeedBoxExecutor(box: SeedBox<EmailSeed, Observation>): InvestigationExecutor {
   if (box.inputKind !== "email") throw new Error("GitHub catalog execution requires an email SeedBox");
   return {
     id: box.id,
     async execute(action: GitHubCatalogAction, permit: ExecutionPermit): Promise<readonly Observation[]> {
-      if (
-        typeof action !== "object" || action === null || action.status !== "claimed" ||
-        typeof action.claim !== "object" || action.claim === null ||
-        typeof action.claim.id !== "string" || action.claim.id.trim().length === 0 ||
-        typeof action.claim.claimedAt !== "string" || action.claim.claimedAt.length === 0
-      ) throw new Error("SeedBox executor requires a claimed action");
+      assertClaimedAction(action);
       if (box.id === "user-scanner:email" && action.spec.catalogId !== CATALOG_ID) {
-        throw new Error("Historical GitHub-only action is retired; create an explicit scanner proposal instead.");
+        throw new Error(RETIRED_ACTION_MESSAGE);
       }
       return executeSeedBox(box, action.spec.seed, permit as ExecutionState);
     },

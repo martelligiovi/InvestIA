@@ -78,4 +78,6 @@ export interface InvestigationStore {
 export interface InvestigationExecutor {
   readonly id: string;
   execute(action: ActionClaim["action"], permit: ExecutionPermit): Promise<readonly Observation[]>;
+  /** Evidence source for an action when one executor routes to several tools; defaults to `id`. */
+  sourceIdFor?(action: GitHubCatalogAction): string;
 }

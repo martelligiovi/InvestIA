@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createCatalogExecutor,
   createInitialInvestigation,
   createInvestigationService,
   type ClaimActionRequest,
@@ -259,6 +260,59 @@ test("legacy authorization cannot silently broaden into a loud cross-scan", asyn
   assert.deepEqual(database.records.get(created.id), before);
   await service.authorize(created.id, true, "Explicitly authorize scanner, loud modules and cross-targets");
   assert.ok(await store.claimNextAction(input));
+});
+
+test("per-tool consent scopes round-trip, unknown scopes never write and empty scopes never claim", async () => {
+  const { database, store, service } = makeStoreHarness();
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "seed@example.org");
+  const granted = await service.authorize(created.id, true, "Authorize the listed tools");
+  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1"]);
+  assert.deepEqual((await store.get(created.id))?.authorization?.catalogScopes, ["user-scanner.email.v1"]);
+
+  const before = structuredClone(database.records.get(created.id));
+  for (const catalogScopes of [["unknown.tool.v1"], ["user-scanner.email.v1", "user-scanner.email.v1"], "user-scanner.email.v1"]) {
+    const corrupt = { ...granted, revision: granted.revision + 1, authorization: { ...granted.authorization!, catalogScopes } } as unknown as Investigation;
+    await assert.rejects(store.transact(created.id, () => ({ next: corrupt, result: undefined })), InvestigationSchemaError);
+    assert.deepEqual(database.records.get(created.id), before);
+  }
+
+  const row = database.records.get(created.id)!;
+  const { catalogScope: _single, ...rest } = row.document.authorization!;
+  row.document = { ...row.document, authorization: { ...rest, catalogScopes: [] } };
+  const unscoped = structuredClone(row);
+  const input: ClaimActionRequest = { investigationId: created.id, claimId: "claim", claimedAt: "2025-03-01T00:01:00Z", auditEvent: auditEvent("claim", "action_claimed") };
+  assert.equal(await store.claimNextAction(input), undefined);
+  assert.deepEqual(database.records.get(created.id), unscoped);
+});
+
+test("catalog executor evidence records the tool that produced it", async () => {
+  const database = new FakePostgres();
+  const store = new PostgresInvestigationStore(database);
+  let sequence = 0;
+  const service = createInvestigationService({
+    store,
+    executor: createCatalogExecutor({
+      "user-scanner.email.v1": {
+        id: "user-scanner:email", inputKind: "email",
+        async execute(seed) {
+          return [{ kind: "scanner_finding", seed, provider: "Example", status: "registered", finding: {
+            target: { kind: "email", value: seed.value }, upstreamStatus: "Registered", url: "https://example.org",
+            category: "Social", reason: "", extra: {}, media: {},
+          } }];
+        },
+      },
+    }),
+    clock: () => "2025-03-01T00:00:00.000Z",
+    createId: (kind) => `${kind}-${++sequence}`,
+  });
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "seed@example.org");
+  await service.authorize(created.id, true, "Authorize the listed tools");
+  assert.equal((await service.executeNextAction(created.id))?.status, "succeeded");
+  const evidence = (await store.get(created.id))?.evidence;
+  assert.equal(evidence?.length, 1);
+  assert.equal(evidence?.[0]?.sourceId, "user-scanner:email");
 });
 
 test("creation metadata round-trips while legacy snapshots stay manual", async () => {
