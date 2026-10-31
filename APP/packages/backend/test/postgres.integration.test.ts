@@ -63,6 +63,8 @@ test("real PostgreSQL serializes claims and retains claim fencing across reconne
       executor,
       clock: () => new Date(Date.now() + ticks++).toISOString(),
       createId: (kind) => `${kind}-${randomUUID()}`,
+      // Pins the single-tool queue this legacy GitHub workflow was written for.
+      seedCatalog: ["user-scanner.email.v1"],
     });
     const investigation = await service.createInvestigation();
     await service.addEmailSeed(investigation.id, `${randomUUID()}@example.org`, "Dedicated PostgreSQL integration test.");
