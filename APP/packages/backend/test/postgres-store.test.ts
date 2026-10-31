@@ -10,6 +10,7 @@ import {
   type InvestigationExecutor,
   type ScopedCatalogId,
 } from "@investia/core";
+import { createGravatarBox } from "../../adapter-gravatar/src/index.ts";
 import {
   InvestigationClaimConflictError,
   InvestigationSchemaError,
@@ -370,6 +371,51 @@ test("a grant recorded before Maigret was added never claims a Maigret action", 
   assert.deepEqual(database.records.get(created.id), before);
   await service.authorize(created.id, true, "Renew the authorization for Maigret");
   assert.equal((await store.claimNextAction(input))?.action.spec.catalogId, "maigret.username.v1");
+});
+
+test("completion rejects malformed username evidence without a finding", async () => {
+  const { database, store, service } = makeStoreHarness();
+  const created = await service.createInvestigation();
+  await service.addUsernameSeed(created.id, "ana", "Operator input");
+  await service.authorize(created.id, true, "Authorize tools");
+  const claim = await store.claimNextAction({
+    investigationId: created.id, claimId: "claim",
+    claimedAt: "2025-03-01T00:01:00Z",
+    auditEvent: auditEvent("claim-audit", "action_claimed"),
+  });
+  assert.ok(claim);
+  const before = structuredClone(database.records.get(created.id));
+  for (const record of [{ seed: { kind: "username", value: "--help" } }, { seed: { kind: "username", value: "ana" } }, { seed: { kind: "phone", value: "1" } }]) {
+    await assert.rejects(store.completeAction({
+      investigationId: created.id, actionId: claim.action.id, claimId: "claim",
+      completedAt: "2025-03-01T00:02:00Z",
+      result: {
+        kind: "success", unsupportedObservationCount: 0,
+        evidence: [record] as unknown as Extract<CompleteActionInput["result"], { kind: "success" }>["evidence"],
+      },
+      auditEvent: auditEvent("completion-audit", "action_succeeded"),
+    }), InvestigationSchemaError);
+    assert.deepEqual(database.records.get(created.id), before);
+  }
+});
+
+test("Gravatar findings for a mixed-case email seed are retained", async () => {
+  const database = new FakePostgres();
+  const store = new PostgresInvestigationStore(database);
+  let sequence = 0;
+  const service = createInvestigationService({
+    store,
+    executor: createCatalogExecutor({ "gravatar.email.v1": createGravatarBox({ fetch: (async () => Response.json({ display_name: "Ana" })) as typeof fetch }) }),
+    clock: () => "2025-03-01T00:00:00.000Z",
+    createId: (kind) => `${kind}-${++sequence}`,
+    seedCatalog: ["gravatar.email.v1"],
+  });
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "Ana.Example@Example.org");
+  await service.authorize(created.id, true, "Authorize the listed tools");
+  const completed = await service.executeNextAction(created.id);
+  assert.equal(completed?.unsupportedObservationCount, 0);
+  assert.deepEqual((await store.get(created.id))?.evidence.map((record) => [record.provider, record.seed.value]), [["Gravatar", "Ana.Example@Example.org"]]);
 });
 
 test("catalog executor evidence records the tool that produced it", async () => {

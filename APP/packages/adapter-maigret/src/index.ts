@@ -23,6 +23,16 @@ const SiteSchema = z.object({
 });
 const ReportSchema = z.record(SiteSchema);
 const IMAGE_FIELDS = new Set(["image", "avatar", "avatar_url", "profile_image"]);
+/** Public profile fields worth keeping; anything else Maigret extracts is dropped. */
+const PROFILE_FIELDS = new Set([
+  "fullname", "name", "first_name", "last_name", "nickname", "username", "uid", "id",
+  "bio", "description", "about", "status", "gender", "birthday", "language",
+  "location", "country", "country_code", "city", "company", "occupation", "education", "website",
+  "created_at", "updated_at", "last_seen", "is_verified",
+  "follower_count", "following_count", "friends_count", "posts_count",
+]);
+/** Defense in depth: never keep anything that looks like a credential, even if allowlisted later. */
+const SENSITIVE_FIELD = /pass|token|secret|key|session|cookie|auth|hash|credential|private/i;
 
 function webUrl(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -58,7 +68,7 @@ export function createMaigretBox(runner: MaigretRunner = createMaigretProcessRun
           if (IMAGE_FIELDS.has(key)) {
             const avatar = webUrl(value);
             if (avatar !== "") media.avatar = avatar;
-          } else if (typeof value === "string" && value.trim().length > 0 && /^[a-z0-9_]{1,40}$/.test(key)) {
+          } else if (typeof value === "string" && value.trim().length > 0 && PROFILE_FIELDS.has(key) && !SENSITIVE_FIELD.test(key)) {
             extra[key] = value.trim();
           }
         }

@@ -13,6 +13,7 @@ python -B -m maigret <username> --json simple --folderoutput <run-dir> --top-sit
 - `--no-recursion`: usernames Maigret discovers are reported as `discovered_usernames`; they reach Maigret again only as operator-confirmed seeds.
 - `--no-autoupdate`: the pinned release always uses its bundled site database; nothing updates at runtime.
 - Similar-search sites (`is_similar`) are dropped as likely false positives.
+- Only an allowlist of public profile fields is kept from what Maigret extracts; names that look like credentials (password, token, key, session, cookie, hash...) are always dropped.
 - Usernames must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, so a seed can never be read as an option or as several targets.
 - The scan is killed after 15 minutes or 16 MiB of output; the run directory is always removed.
 

@@ -17,6 +17,7 @@ Requests time out after 10 seconds.
 
 - No key is required. Gravatar documents 100 profile requests per hour without a key and 1,000 with one.
 - Set `GRAVATAR_API_KEY` (free at gravatar.com/developers) to send it as a bearer token. Without a key, Gravatar returns at most four verified accounts and omits links and contact details.
+- Observations echo the seed exactly as sent (trimmed); only the hash uses the lowercased email.
 - The tool runs only under a case authorization that names `gravatar.email.v1`, with one lookup per email seed.
 
 ## Checks

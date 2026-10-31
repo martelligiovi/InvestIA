@@ -198,9 +198,10 @@ function isStoredAction(value: unknown): boolean {
 }
 
 function isStoredEvidence(value: unknown): boolean {
-  // Historical schema-v1 records had no finding payload. Do not rewrite them.
+  // Historical schema-v1 registration records had no finding payload. Do not rewrite them, but every
+  // username evidence carries a finding, so a finding-less record may only belong to an email seed.
   if (!isRecord(value)) return false;
-  if (value.finding === undefined) return true;
+  if (value.finding === undefined) return value.seed === undefined || isEmailSeed(value.seed);
   return isScannerFinding(value.finding) && isNonEmptyString(value.id) && isNonEmptyString(value.actionId) &&
     (isEmailSeed(value.seed) || isUsernameSeed(value.seed)) &&
     isNonEmptyString(value.provider) && isNonEmptyString(value.sourceId) && isTimestamp(value.recordedAt) &&

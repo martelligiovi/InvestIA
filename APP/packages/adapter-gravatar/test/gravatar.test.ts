@@ -46,9 +46,9 @@ test("a public profile becomes one profile finding and one finding per visible v
   assert.equal(calls[0]!.headers.get("authorization"), null);
   assert.deepEqual(observations, [
     {
-      kind: "scanner_finding", seed: { kind: "email", value: "test@example.com" }, provider: "Gravatar", status: "registered",
+      kind: "scanner_finding", seed: { kind: "email", value: "Test@Example.com" }, provider: "Gravatar", status: "registered",
       finding: {
-        target: { kind: "email", value: "test@example.com" }, upstreamStatus: "Found", url: "https://gravatar.com/anaexample",
+        target: { kind: "email", value: "Test@Example.com" }, upstreamStatus: "Found", url: "https://gravatar.com/anaexample",
         category: "Profile", reason: "",
         extra: {
           source: "gravatar public profile", display_name: "Ana Example", location: "Córdoba, Argentina",
@@ -58,9 +58,9 @@ test("a public profile becomes one profile finding and one finding per visible v
       },
     },
     {
-      kind: "scanner_finding", seed: { kind: "email", value: "test@example.com" }, provider: "GitHub", status: "registered",
+      kind: "scanner_finding", seed: { kind: "email", value: "Test@Example.com" }, provider: "GitHub", status: "registered",
       finding: {
-        target: { kind: "email", value: "test@example.com" }, upstreamStatus: "Found", url: "https://github.com/anaexample",
+        target: { kind: "email", value: "Test@Example.com" }, upstreamStatus: "Found", url: "https://github.com/anaexample",
         category: "Linked account", reason: "",
         extra: { source: "gravatar verified account", service_type: "github" },
         media: {},

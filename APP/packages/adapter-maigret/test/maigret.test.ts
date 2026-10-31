@@ -99,3 +99,14 @@ test("a report written by the real maigret 0.6.6 CLI (loopback-only smoke) parse
     ["LocalSmoke", "http://127.0.0.1:18765/user/smoketestuser/", "coding"],
   ]);
 });
+
+test("credential fields are never retained in Maigret findings", async () => {
+  const body = { Site: {
+    ...report.Reddit,
+    status: { ...report.Reddit.status, ids: {
+      fullname: "Ana", password: "secret", access_token: "token", api_key: "k", session_id: "s", password_hash: "h", uid: "42",
+    } },
+  } };
+  const [observation] = await createMaigretBox(runner(body)).execute({ kind: "username", value: "anaexample" });
+  assert.deepEqual(observation!.finding.extra, { source: "maigret", rank: 10, fullname: "Ana", uid: "42" });
+});

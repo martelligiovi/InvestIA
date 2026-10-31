@@ -13,7 +13,8 @@ const PROFILE_URL = "https://api.gravatar.com/v3/profiles/";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const PROFILE_FIELDS = ["display_name", "location", "description", "job_title", "company", "pronouns"] as const;
 
-const SeedSchema = z.object({ kind: z.literal("email"), value: z.string().trim().toLowerCase().pipe(z.string().email().max(320)) }).strict();
+/** The seed is echoed exactly as the action sent it (trimmed); only the hash input is lowercased. */
+const SeedSchema = z.object({ kind: z.literal("email"), value: z.string().trim().pipe(z.string().email().max(320)) }).strict();
 const optionalText = z.string().nullish().transform((value) => value ?? "");
 const AccountSchema = z.object({
   service_type: optionalText, service_label: optionalText, url: optionalText,
