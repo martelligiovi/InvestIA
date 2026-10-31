@@ -44,7 +44,8 @@ const FENCE_AND_INVESTIGATION = `
       i.authorizationGranted = $authorizationGranted,
       i.authorizationAt = $authorizationAt,
       i.authorizationReason = $authorizationReason,
-      i.authorizationCatalogScope = $authorizationCatalogScope
+      i.authorizationCatalogScope = $authorizationCatalogScope,
+      i.authorizationCatalogScopes = $authorizationCatalogScopes
   RETURN i.revision AS revision`;
 
 const PROJECT_SEEDS = `
@@ -53,6 +54,19 @@ const PROJECT_SEEDS = `
   UNWIND $seeds AS seed
   MERGE (s:EmailSeed {investigationId: $investigationId, value: seed.value})
   SET s.kind = seed.kind
+  MERGE (i)-[:HAS_SEED]->(s)`;
+
+const PROJECT_USERNAME_SEEDS = `
+  MATCH (i:Investigation {id: $investigationId})
+  WHERE i.revision = $revision
+  UNWIND $usernameSeeds AS seed
+  MERGE (s:UsernameSeed {investigationId: $investigationId, value: seed.value})
+  SET s.status = seed.status,
+      s.originKind = seed.originKind,
+      s.originEvidenceId = seed.originEvidenceId,
+      s.reason = seed.reason,
+      s.decisionAt = seed.decisionAt,
+      s.decisionReason = seed.decisionReason
   MERGE (i)-[:HAS_SEED]->(s)`;
 
 const PROJECT_ACTIONS = `
@@ -73,8 +87,12 @@ const PROJECT_ACTIONS = `
       a.completedAt = action.completedAt,
       a.unsupportedObservationCount = action.unsupportedObservationCount
   MERGE (i)-[:HAS_ACTION]->(a)
-  MERGE (s:EmailSeed {investigationId: $investigationId, value: action.seedValue})
-  MERGE (a)-[:USES_SEED]->(s)`;
+  FOREACH (_ IN CASE WHEN action.seedKind = 'email' THEN [1] ELSE [] END |
+    MERGE (s:EmailSeed {investigationId: $investigationId, value: action.seedValue})
+    MERGE (a)-[:USES_SEED]->(s))
+  FOREACH (_ IN CASE WHEN action.seedKind = 'username' THEN [1] ELSE [] END |
+    MERGE (s:UsernameSeed {investigationId: $investigationId, value: action.seedValue})
+    MERGE (a)-[:USES_SEED]->(s))`;
 
 const PROJECT_EVIDENCE = `
   MATCH (i:Investigation {id: $investigationId})
@@ -95,8 +113,12 @@ const PROJECT_EVIDENCE = `
       e.pivotSource = record.pivotSource,
       e.confidence = record.confidence
   MERGE (i)-[:HAS_EVIDENCE]->(e)
-  MERGE (s:EmailSeed {investigationId: $investigationId, value: record.seedValue})
-  MERGE (s)-[:HAS_EVIDENCE]->(e)
+  FOREACH (_ IN CASE WHEN record.seedKind = 'email' THEN [1] ELSE [] END |
+    MERGE (s:EmailSeed {investigationId: $investigationId, value: record.seedValue})
+    MERGE (s)-[:HAS_EVIDENCE]->(e))
+  FOREACH (_ IN CASE WHEN record.seedKind = 'username' THEN [1] ELSE [] END |
+    MERGE (s:UsernameSeed {investigationId: $investigationId, value: record.seedValue})
+    MERGE (s)-[:HAS_EVIDENCE]->(e))
   MERGE (a:CatalogAction {investigationId: $investigationId, id: record.actionId})
   MERGE (a)-[:PRODUCED]->(e)`;
 
@@ -134,6 +156,7 @@ const PROJECT_AUDIT = `
 const SCHEMA_CONSTRAINTS = [
   "CREATE CONSTRAINT investigation_id_unique IF NOT EXISTS FOR (n:Investigation) REQUIRE n.id IS UNIQUE",
   "CREATE CONSTRAINT email_seed_unique IF NOT EXISTS FOR (n:EmailSeed) REQUIRE (n.investigationId, n.value) IS UNIQUE",
+  "CREATE CONSTRAINT username_seed_unique IF NOT EXISTS FOR (n:UsernameSeed) REQUIRE (n.investigationId, n.value) IS UNIQUE",
   "CREATE CONSTRAINT catalog_action_unique IF NOT EXISTS FOR (n:CatalogAction) REQUIRE (n.investigationId, n.id) IS UNIQUE",
   "CREATE CONSTRAINT evidence_unique IF NOT EXISTS FOR (n:Evidence) REQUIRE (n.investigationId, n.id) IS UNIQUE",
   "CREATE CONSTRAINT validation_unique IF NOT EXISTS FOR (n:EvidenceValidation) REQUIRE (n.investigationId, n.id) IS UNIQUE",
@@ -145,6 +168,7 @@ function actionProjection(action: GitHubCatalogAction) {
     id: action.id,
     catalogId: action.spec.catalogId,
     provider: action.spec.provider,
+    seedKind: action.spec.seed.kind,
     seedValue: action.spec.seed.value,
     status: action.status,
     proposedAt: action.proposedAt,
@@ -162,6 +186,7 @@ function evidenceProjection(record: EvidenceRecord) {
   return {
     id: record.id,
     actionId: record.actionId,
+    seedKind: record.seed.kind,
     seedValue: record.seed.value,
     provider: record.provider,
     status: record.status,
@@ -246,6 +271,7 @@ export class Neo4jInvestigationProjector implements InvestigationProjector {
           authorizationAt: investigation.authorization?.at ?? null,
           authorizationReason: investigation.authorization?.reason ?? null,
           authorizationCatalogScope: investigation.authorization?.catalogScope ?? null,
+          authorizationCatalogScopes: investigation.authorization?.catalogScopes === undefined ? null : [...investigation.authorization.catalogScopes],
         });
         const persistedRevision = graphRevision(fence.records[0]?.get("revision"));
         if (persistedRevision !== investigation.revision) return false;
@@ -254,6 +280,18 @@ export class Neo4jInvestigationProjector implements InvestigationProjector {
         await transaction.run(PROJECT_SEEDS, {
           ...common,
           seeds: investigation.emailSeeds.map((seed) => ({ kind: seed.kind, value: seed.value })),
+        });
+        await transaction.run(PROJECT_USERNAME_SEEDS, {
+          ...common,
+          usernameSeeds: (investigation.usernameSeeds ?? []).map((record) => ({
+            value: record.value,
+            status: record.status,
+            originKind: record.origin.kind,
+            originEvidenceId: record.origin.kind === "evidence" ? record.origin.evidenceId : null,
+            reason: record.reason,
+            decisionAt: record.decision?.at ?? null,
+            decisionReason: record.decision?.reason ?? null,
+          })),
         });
         await transaction.run(PROJECT_ACTIONS, {
           ...common,

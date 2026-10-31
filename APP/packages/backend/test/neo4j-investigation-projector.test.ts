@@ -129,3 +129,41 @@ test("projects factual records through parameterized Cypher and ignores stale re
     latest.evidence[0]?.id,
   );
 });
+
+test("username seeds, Maigret actions and username evidence project as UsernameSeed nodes", async () => {
+  const driver = new FakeNeo4jDriver();
+  const projector = new Neo4jInvestigationProjector(driver, "neo4j");
+  const base = snapshot(3, false);
+  const at = base.createdAt;
+  const usernameSeed = { kind: "username" as const, value: "anaexample" };
+  await projector.project({
+    ...base,
+    authorization: { ...base.authorization!, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"] },
+    usernameSeeds: [
+      { kind: "username", value: "anaexample", origin: { kind: "evidence", evidenceId: "evidence-1" }, status: "accepted", at, reason: "Proposed from a github finding.", decision: { at, reason: "Same", operator: "local-operator" } },
+      { kind: "username", value: "manual", origin: { kind: "operator" }, status: "accepted", at, reason: "Operator" },
+    ],
+    actions: [...base.actions, { id: "maigret-1", spec: { catalogId: "maigret.username.v1", provider: "maigret", seed: usernameSeed }, status: "succeeded", queuedByCatalog: true, proposedAt: at, proposalReason: "Catalog queue" }],
+    evidence: [...base.evidence, { id: "evidence-2", actionId: "maigret-1", seed: usernameSeed, provider: "Reddit", status: "registered", sourceId: "maigret:username", recordedAt: at,
+      finding: { target: usernameSeed, upstreamStatus: "Found", url: "", category: "", reason: "", extra: {}, media: {} } }],
+  });
+  const fence = driver.calls.find(({ query }) => query.includes("RETURN i.revision AS revision"))!;
+  assert.deepEqual(fence.parameters.authorizationCatalogScopes, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"]);
+  const seedWrite = driver.calls.find(({ parameters }) => Array.isArray(parameters.usernameSeeds))!;
+  assert.match(seedWrite.query, /MERGE \(s:UsernameSeed \{investigationId: \$investigationId, value: seed\.value\}\)/);
+  assert.deepEqual(seedWrite.parameters.usernameSeeds, [
+    { value: "anaexample", status: "accepted", originKind: "evidence", originEvidenceId: "evidence-1", reason: "Proposed from a github finding.", decisionAt: at, decisionReason: "Same" },
+    { value: "manual", status: "accepted", originKind: "operator", originEvidenceId: null, reason: "Operator", decisionAt: null, decisionReason: null },
+  ]);
+  const actionWrite = driver.calls.find(({ parameters }) => Array.isArray(parameters.actions))!;
+  assert.deepEqual((actionWrite.parameters.actions as { seedKind: string }[]).map((action) => action.seedKind), ["email", "username"]);
+  assert.match(actionWrite.query, /WHEN action\.seedKind = 'username'[\s\S]*MERGE \(s:UsernameSeed/);
+  assert.match(actionWrite.query, /WHEN action\.seedKind = 'email'[\s\S]*MERGE \(s:EmailSeed/);
+  const emailMerges = actionWrite.query.split("MERGE (s:EmailSeed").length - 1;
+  assert.equal(emailMerges, 1, "username actions never create EmailSeed nodes");
+  assert.ok(actionWrite.query.indexOf("MERGE (s:EmailSeed") > actionWrite.query.indexOf("WHEN action.seedKind = 'email'"));
+  const evidenceWrite = driver.calls.find(({ parameters }) => Array.isArray(parameters.evidence))!;
+  assert.deepEqual((evidenceWrite.parameters.evidence as { seedKind: string }[]).map((record) => record.seedKind), ["email", "username"]);
+  assert.match(evidenceWrite.query, /WHEN record\.seedKind = 'username'[\s\S]*MERGE \(s:UsernameSeed/);
+  assert.ok(driver.calls.some(({ query }) => /CONSTRAINT username_seed_unique[\s\S]*n:UsernameSeed/.test(query)));
+});

@@ -57,7 +57,7 @@ export function normalizeAiReportSettings(value: Partial<Record<keyof AiReportSe
 }
 
 export const AI_REPORT_SYSTEM_PROMPT = [
-  "Sos un analista de inteligencia de fuentes abiertas (OSINT). Recibís los datos que recopiló una investigación autorizada a partir de una o más direcciones de correo: servicios donde una herramienta automática reportó una cuenta, URLs, categorías, metadatos públicos y las decisiones de validación del operador.",
+  "Sos un analista de inteligencia de fuentes abiertas (OSINT). Recibís los datos que recopiló una investigación autorizada a partir de una o más direcciones de correo y de los usernames que el operador confirmó (cada hallazgo indica si su semilla fue un correo o un username): servicios donde una herramienta automática reportó una cuenta, URLs, categorías, metadatos públicos y las decisiones de validación del operador.",
   "",
   "Tu tarea es redactar, en español y en Markdown, un informe textual que responda de forma hipotética: si tuvieras que decidir, ¿quién podría ser esta persona? Describí su posible perfil, sus gustos e intereses probables, su actividad y sus hábitos digitales, y las conclusiones que se pueden sacar de los datos.",
   "",
@@ -82,7 +82,9 @@ export const AI_REPORT_SYSTEM_PROMPT = [
 
 interface FindingInput {
   readonly evidenceId: string;
-  readonly emailSeed: string;
+  /** Exactly one: the email or the confirmed username the producing action ran on. */
+  readonly emailSeed?: string;
+  readonly usernameSeed?: string;
   readonly provider: string;
   readonly target: string;
   readonly url?: string;
@@ -98,7 +100,7 @@ function findingInputs(investigation: Investigation): FindingInput[] {
     const finding = evidence.finding;
     return {
       evidenceId: evidence.id,
-      emailSeed: evidence.seed.value,
+      ...(evidence.seed.kind === "username" ? { usernameSeed: evidence.seed.value } : { emailSeed: evidence.seed.value }),
       provider: evidence.provider,
       target: finding?.target.value ?? evidence.seed.value,
       ...(finding !== undefined && finding.url.length > 0 ? { url: finding.url } : {}),
@@ -139,6 +141,7 @@ export function buildAiReportMessages(investigation: Investigation): readonly Ai
       createdAt: investigation.createdAt,
     },
     emailSeeds: investigation.emailSeeds.map((seed) => seed.value),
+    usernameSeeds: (investigation.usernameSeeds ?? []).filter((record) => record.status === "accepted").map((record) => record.value),
     findings,
     ...(findings.length < total ? { omittedFindings: total - findings.length } : {}),
   };
