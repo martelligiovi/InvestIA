@@ -1,4 +1,4 @@
-import type { EmailSeed, Seed } from "./seed.ts";
+import type { EmailSeed, Seed, UsernameSeed } from "./seed.ts";
 
 export type RegistrationStatus =
   | "registered"
@@ -32,8 +32,8 @@ export interface ScannerFinding {
 
 export interface ScannerObservation {
   readonly kind: "scanner_finding";
-  /** Original operator-supplied seed, not a discovered address. */
-  readonly seed: EmailSeed;
+  /** Seed the tool ran on (operator-supplied or confirmed), not a discovered target. */
+  readonly seed: EmailSeed | UsernameSeed;
   readonly provider: string;
   readonly status: RegistrationStatus;
   readonly finding: ScannerFinding;

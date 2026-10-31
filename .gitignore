@@ -16,8 +16,11 @@ node_modules/
 .pnpm-store/
 .venv/
 .venv-user-scanner/
+.venv-maigret/
 .scanner-runs/
 .scanner-test-*/
+.maigret-runs/
+.maigret-test-*/
 venv/
 __pycache__/
 *.py[cod]

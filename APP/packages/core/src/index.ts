@@ -1,4 +1,4 @@
-export type { EmailSeed, Seed } from "./domain/seed.ts";
+export type { EmailSeed, Seed, UsernameSeed } from "./domain/seed.ts";
 export { isScannerFinding } from "./domain/observation.ts";
 export type {
   ScannerFinding,
