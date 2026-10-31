@@ -61,3 +61,11 @@ jobs:
 
       - name: Check installed CLI without scanning targets
         run: python -B -m unittest discover -s APP/packages/adapter-user-scanner/python/tests -p test_cli_installation.py -v
+
+      - name: Install pinned Maigret dependencies in their own venv
+        run: |
+          python -m venv .venv-maigret
+          .venv-maigret/bin/python -m pip install --no-cache-dir -r APP/packages/adapter-maigret/python/requirements.txt
+
+      - name: Check installed Maigret CLI without scanning targets
+        run: .venv-maigret/bin/python -B -m unittest discover -s APP/packages/adapter-maigret/python/tests -p test_cli_installation.py -v

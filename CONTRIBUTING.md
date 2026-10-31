@@ -41,6 +41,10 @@ pnpm --dir APP typecheck
 # Run in an isolated Python 3.11 environment; never install globally.
 python -m pip install -r APP/packages/adapter-user-scanner/python/requirements.txt
 python -B -m unittest discover -s APP/packages/adapter-user-scanner/python/tests -p test_cli_installation.py -v
+# Maigret uses its own venv so its dependencies never mix with user-scanner's.
+python -m venv .venv-maigret
+.venv-maigret/bin/python -m pip install -r APP/packages/adapter-maigret/python/requirements.txt
+.venv-maigret/bin/python -B -m unittest discover -s APP/packages/adapter-maigret/python/tests -p test_cli_installation.py -v
 git diff --check
 ```
 
