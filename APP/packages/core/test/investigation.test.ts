@@ -14,6 +14,8 @@ import {
   type InvestigationTransaction,
   type Observation,
   type ScopedCatalogId,
+  investigationSeedGraph,
+  usernameSeedNodeId,
 } from "../src/index.ts";
 
 class MemoryInvestigationStore implements InvestigationStore {
@@ -155,9 +157,65 @@ test("a seed catalog must list known scoped tools exactly once", () => {
     store: new MemoryInvestigationStore(), executor: { id: "unused", async execute() { return []; } },
     clock: () => "2025-01-01T00:00:00.000Z", createId: () => "id",
   };
-  for (const seedCatalog of [[], ["user-scanner.email.v1", "user-scanner.email.v1"], ["github.email-registration.v1"]]) {
+  for (const seedCatalog of [[], ["user-scanner.email.v1", "user-scanner.email.v1"], ["github.email-registration.v1"], ["maigret.username.v1"]]) {
     assert.throws(() => createInvestigationService({ ...base, seedCatalog: seedCatalog as ScopedCatalogId[] }), /seed catalog/i);
   }
+});
+
+test("an operator username seed is recorded once and queues one Maigret action linked to it", async () => {
+  const { store, service } = makeHarness();
+  const created = await service.createInvestigation();
+  const seeded = await service.addUsernameSeed(created.id, "  anaexample ", "Username supplied by the operator.");
+  assert.deepEqual(seeded.usernameSeeds, [{
+    kind: "username", value: "anaexample", origin: { kind: "operator" }, status: "accepted",
+    at: seeded.updatedAt, reason: "Username supplied by the operator.",
+  }]);
+  assert.equal(seeded.actions.length, 1);
+  const [action] = seeded.actions;
+  assert.deepEqual(action!.spec, { catalogId: "maigret.username.v1", provider: "maigret", seed: { kind: "username", value: "anaexample" } });
+  assert.equal(action!.status, "queued");
+  assert.equal(action!.queuedByCatalog, true);
+  assert.equal(action!.sourceSeedId, usernameSeedNodeId("anaexample"));
+  assert.deepEqual(seeded.audit.map((event) => event.kind), ["username_seed_added", "action_queued"]);
+
+  const graph = investigationSeedGraph(seeded);
+  assert.deepEqual(graph.seeds.map((seed) => [seed.kind, seed.id]), [["username", usernameSeedNodeId("anaexample")]]);
+  assert.equal(graph.actionInputs.get(action!.id), usernameSeedNodeId("anaexample"));
+
+  const before = await store.get(created.id);
+  for (const value of ["--help", "-a", "two words", "", "a".repeat(65), "slash/name"]) {
+    await assert.rejects(service.addUsernameSeed(created.id, value, "Bad username."), /A valid username seed is required/);
+  }
+  await assert.rejects(service.addUsernameSeed(created.id, "anaexample", "Again."), /Username seed already exists in this investigation/);
+  await assert.rejects(service.addUsernameSeed(created.id, "other", " "), /reason/);
+  assert.deepEqual(await store.get(created.id), before, "rejected input leaves the case unchanged");
+});
+
+test("a Maigret run keeps only findings for its own username seed", async () => {
+  const finding = (value: string) => ({
+    target: { kind: "username" as const, value }, upstreamStatus: "Found" as const, url: `https://example.org/${value}`,
+    category: "", reason: "", extra: { source: "maigret" }, media: {},
+  });
+  const { service } = makeHarness({
+    id: "maigret:username",
+    async execute(action) {
+      return [
+        { kind: "scanner_finding", seed: action.spec.seed, provider: "GitHub", status: "registered", finding: finding("anaexample") },
+        { kind: "scanner_finding", seed: { kind: "username", value: "someone-else" }, provider: "Reddit", status: "registered", finding: finding("someone-else") },
+        { kind: "scanner_finding", seed: { kind: "email", value: "anaexample@example.org" }, provider: "X", status: "registered", finding: finding("anaexample") },
+      ] as Observation[];
+    },
+  });
+  const created = await service.createInvestigation();
+  await service.addUsernameSeed(created.id, "anaexample", "Username supplied by the operator.");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  const completed = await service.executeNextAction(created.id);
+  assert.equal(completed?.status, "succeeded");
+  assert.equal(completed?.unsupportedObservationCount, 2);
+  const stored = (await service.loadInvestigation(created.id))!;
+  assert.deepEqual(stored.evidence.map((record) => [record.provider, record.seed, record.sourceId]), [
+    ["GitHub", { kind: "username", value: "anaexample" }, "maigret:username"],
+  ]);
 });
 
 async function approvedAction(

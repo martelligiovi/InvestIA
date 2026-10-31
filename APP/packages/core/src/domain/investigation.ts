@@ -1,4 +1,4 @@
-import type { EmailSeed } from "./seed.ts";
+import type { EmailSeed, UsernameSeed } from "./seed.ts";
 import type { RegistrationStatus, ScannerFinding } from "./observation.ts";
 export type { RegistrationStatus } from "./observation.ts";
 
@@ -36,6 +36,7 @@ export type InvestigationActionStatus = "proposed" | "queued" | "claimed" | "suc
 export type AuditActor = "operator" | "system";
 export type AuditKind =
   | "email_seed_added"
+  | "username_seed_added"
   | "action_proposed"
   | "action_queued"
   | "authorization_changed"
@@ -54,8 +55,14 @@ export interface ActionApproval {
 }
 
 /** Catalog tools that run only under an explicit, per-tool consent scope. */
-export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1";
-export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1", "gravatar.email.v1"]);
+export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1" | "maigret.username.v1";
+export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"]);
+/** Seed kind each scoped tool accepts. */
+export const CATALOG_INPUT_KINDS: Readonly<Record<ScopedCatalogId, "email" | "username">> = Object.freeze({
+  "user-scanner.email.v1": "email",
+  "gravatar.email.v1": "email",
+  "maigret.username.v1": "username",
+});
 const LEGACY_CATALOG_ID = "github.email-registration.v1";
 
 export function isScopedCatalogId(value: unknown): value is ScopedCatalogId {
@@ -102,10 +109,16 @@ export interface GravatarActionSpec {
   readonly seed: EmailSeed;
 }
 
+export interface MaigretActionSpec {
+  readonly catalogId: "maigret.username.v1";
+  readonly provider: "maigret";
+  readonly seed: UsernameSeed;
+}
+
 /** Historical export name retained for consumers; it covers every catalog action spec. */
 export interface GitHubCatalogAction {
   readonly id: InvestigationActionId;
-  readonly spec: GitHubActionSpec | UserScannerActionSpec | GravatarActionSpec;
+  readonly spec: GitHubActionSpec | UserScannerActionSpec | GravatarActionSpec | MaigretActionSpec;
   /**
    * Explicit input seed reference (see seed-graph.ts). Absent on historical actions and on
    * actions whose input is the operator email embedded in their spec.
@@ -126,13 +139,29 @@ export interface GitHubCatalogAction {
 export interface EvidenceRecord {
   readonly id: EvidenceId;
   readonly actionId: InvestigationActionId;
-  readonly seed: EmailSeed;
+  /** Seed of the action that produced it: an email or a confirmed username. */
+  readonly seed: EmailSeed | UsernameSeed;
   readonly provider: string;
   readonly status: RegistrationStatus;
   /** Absent on historical registration observations. */
   readonly finding?: ScannerFinding;
   readonly sourceId: string;
   readonly recordedAt: string;
+}
+
+export type UsernameSeedStatus = "proposed" | "accepted" | "rejected";
+
+/** Username seed: added by the operator, or proposed from a finding and confirmed by the operator. */
+export interface UsernameSeedRecord {
+  readonly kind: "username";
+  readonly value: string;
+  readonly origin: { readonly kind: "operator" } | { readonly kind: "evidence"; readonly evidenceId: EvidenceId };
+  readonly status: UsernameSeedStatus;
+  /** When the seed was added or proposed. */
+  readonly at: string;
+  readonly reason: string;
+  /** Operator decision on a proposed seed; absent on operator-added seeds. */
+  readonly decision?: { readonly at: string; readonly reason: string; readonly operator: "local-operator" };
 }
 
 export interface ValidationDecision {
@@ -171,6 +200,8 @@ export interface Investigation {
   readonly paused: boolean;
   readonly authorization?: AuthorizationRecord;
   readonly emailSeeds: readonly EmailSeed[];
+  /** Missing on snapshots created before username seeds existed; read as empty. */
+  readonly usernameSeeds?: readonly UsernameSeedRecord[];
   readonly actions: readonly GitHubCatalogAction[];
   readonly evidence: readonly EvidenceRecord[];
   readonly validations: readonly ValidationDecision[];

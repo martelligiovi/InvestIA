@@ -99,7 +99,8 @@ After `pnpm --dir APP build`, the backend serves the built frontend at `/` and i
 ## API and execution safety
 
 - `POST /investigations`, `GET /investigations`, `GET /investigations/:id`
-- `POST /investigations/:id/emails`
+- `POST /investigations/:id/emails` (queues user-scanner and Gravatar)
+- `POST /investigations/:id/usernames` with `username` and `reason` (accepted operator seed; queues Maigret)
 - `POST /investigations/:id/actions/proposals`
 - `POST /investigations/:id/authorization` with an explicit `granted` boolean
 - `POST /investigations/:id/actions/:actionId/approval`

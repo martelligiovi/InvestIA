@@ -131,6 +131,31 @@ function makeHarness(executorFailure?: string) {
   };
 }
 
+test("HTTP username seeds queue Maigret and reject invalid or duplicate input without changes", async (t) => {
+  const harness = makeHarness();
+  t.after(() => harness.app.close());
+  const { app } = harness;
+  const id = (await app.inject({ method: "POST", url: "/investigations" })).json<{ id: string }>().id;
+  const added = await app.inject({ method: "POST", url: `/investigations/${id}/usernames`, payload: { username: "anaexample", reason: "Operator supplied this username." } });
+  assert.equal(added.statusCode, 201);
+  const body = added.json<Investigation>();
+  assert.deepEqual(body.usernameSeeds?.map((seed) => [seed.value, seed.status, seed.origin.kind]), [["anaexample", "accepted", "operator"]]);
+  assert.deepEqual(body.actions.map((action) => [action.spec.catalogId, action.status]), [["maigret.username.v1", "queued"]]);
+  const before = await harness.store.get(id);
+  for (const payload of [
+    { username: "--help", reason: "Bad." }, { username: "two words", reason: "Bad." }, { username: "ok" },
+    { username: "ok", reason: "Fine.", extra: true }, { username: 42, reason: "Bad." },
+  ]) {
+    const response = await app.inject({ method: "POST", url: `/investigations/${id}/usernames`, payload });
+    assert.equal(response.statusCode, 400, JSON.stringify(payload));
+    assert.equal(response.json<{ error: string }>().error, "INVALID_REQUEST");
+  }
+  const duplicate = await app.inject({ method: "POST", url: `/investigations/${id}/usernames`, payload: { username: "anaexample", reason: "Again." } });
+  assert.equal(duplicate.statusCode, 409);
+  assert.deepEqual(await harness.store.get(id), before);
+  assert.equal(harness.executions, 0);
+});
+
 test("HTTP creation accepts intention and mode without executing work", async (t) => {
   const harness = makeHarness();
   t.after(() => harness.app.close());

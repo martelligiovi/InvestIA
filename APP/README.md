@@ -59,6 +59,8 @@ The API binds to `127.0.0.1:4317` by default. It does not authenticate requests;
 
 Every email seed also queues a [Gravatar](packages/adapter-gravatar/README.md) public profile lookup. Each tool runs only when the case authorization names it: grants recorded before a tool was added never extend to it, so renew the authorization to enable new tools. Gravatar needs no key; set the optional `GRAVATAR_API_KEY` to raise its rate limit.
 
+Accepted username seeds queue a [Maigret](packages/adapter-maigret/README.md) search of about 500 sites, without recursion and without runtime site-database updates. Maigret needs its own venv; point `MAIGRET_PYTHON` at it.
+
 ## Frontend quick path
 
 The frontend uses hash routes and a relative API client. For development, start the loopback backend using [its local setup](packages/backend/README.md), then run the Vite dev server:

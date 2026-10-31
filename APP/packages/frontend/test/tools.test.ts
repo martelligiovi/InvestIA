@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createInitialInvestigation, type GitHubCatalogAction, type Investigation } from "@investia/core";
-import { actionTitle, evidenceHeading } from "../src/pages/workspace-model";
+import { actionTitle, buildWorkspaceGraph, evidenceHeading } from "../src/pages/workspace-model";
 import { actionDisplayState, hasCatalogAuthorization } from "../src/pages/workspace-status";
 
 const seed = { kind: "email", value: "ana@example.test" } as const;
@@ -30,6 +30,30 @@ describe("tool-aware workspace labels", () => {
     expect(evidenceHeading({ ...base, sourceId: "gravatar:email", finding })).toBe("Hallazgo de Gravatar");
     expect(evidenceHeading({ ...base, sourceId: "user-scanner:email", finding })).toBe("Hallazgo de user-scanner");
     expect(evidenceHeading({ ...base, sourceId: "github-seed-box" })).toBe("Observación de registro");
+  });
+});
+
+describe("username seeds in the workspace graph", () => {
+  it("renders an accepted username seed linked to its Maigret action and skips proposals", () => {
+    const maigret = { ...action({ catalogId: "maigret.username.v1", provider: "maigret", seed: { kind: "username", value: "anaexample" } }), sourceSeedId: "seed:username:anaexample" };
+    const investigation: Investigation = {
+      ...createInitialInvestigation("case", at),
+      usernameSeeds: [
+        { kind: "username", value: "anaexample", origin: { kind: "operator" }, status: "accepted", at, reason: "Operator" },
+        { kind: "username", value: "pending-one", origin: { kind: "evidence", evidenceId: "e1" }, status: "proposed", at, reason: "Discovered" },
+      ],
+      actions: [maigret],
+    };
+    const graph = buildWorkspaceGraph(investigation);
+    const seeds = graph.nodes.filter((node) => node.kind === "seed");
+    expect(seeds.map((node) => [node.title, node.seedValue])).toEqual([["anaexample", "anaexample"]]);
+    expect(graph.edges.map((edge) => [edge.from, edge.to])).toEqual([[seeds[0]!.id, "action:maigret.username.v1"]]);
+    expect(actionTitle(maigret)).toBe("Búsqueda de username con Maigret");
+  });
+
+  it("names Maigret as the source of its findings", () => {
+    const finding = { target: { kind: "username", value: "anaexample" }, upstreamStatus: "Found", url: "", category: "", reason: "", extra: {}, media: {} } as const;
+    expect(evidenceHeading({ id: "e", actionId: "a", seed: { kind: "username", value: "anaexample" }, provider: "GitHub", status: "registered", recordedAt: at, sourceId: "maigret:username", finding })).toBe("Hallazgo de Maigret");
   });
 });
 

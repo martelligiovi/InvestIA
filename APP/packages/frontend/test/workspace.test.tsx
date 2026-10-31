@@ -160,7 +160,7 @@ describe("espacio de investigación factual", () => {
   });
 
   it("dibuja solo relaciones respaldadas por IDs y selecciona el mismo nodo desde la lista accesible", async () => {
-    const secondAction = { ...action("succeeded"), id: "action-2", spec: { ...action("succeeded").spec, seed: { kind: "email" as const, value: "otra@example.test" } } };
+    const secondAction = { ...action("succeeded"), id: "action-2", spec: { ...action("succeeded").spec, seed: { kind: "email" as const, value: "otra@example.test" } } as GitHubCatalogAction["spec"] };
     const secondEvidence = { ...evidence(), id: "evidence-2", actionId: "missing-action", seed: { kind: "email" as const, value: "sin-semilla@example.test" } };
     installFetch(async () => json(snapshot({
       emailSeeds: [seed, { kind: "email", value: "otra@example.test" }],

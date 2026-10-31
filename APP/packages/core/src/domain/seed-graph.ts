@@ -3,6 +3,7 @@ import type {
   EvidenceRecord,
   Investigation,
   InvestigationActionId,
+  UsernameSeedRecord,
 } from "./investigation.ts";
 
 export type InvestigationSeedId = string;
@@ -13,6 +14,14 @@ export interface EmailSeedNode {
   readonly id: InvestigationSeedId;
   readonly value: string;
   readonly origin: { readonly kind: "operator" };
+}
+
+/** Username accepted as a seed, by the operator or from a confirmed proposal. */
+export interface UsernameSeedNode {
+  readonly kind: "username";
+  readonly id: InvestigationSeedId;
+  readonly value: string;
+  readonly origin: UsernameSeedRecord["origin"];
 }
 
 /** Seed derived from one evidence record, such as "registered at Canva". */
@@ -27,7 +36,7 @@ export interface FindingSeedNode {
   };
 }
 
-export type InvestigationSeedNode = EmailSeedNode | FindingSeedNode;
+export type InvestigationSeedNode = EmailSeedNode | UsernameSeedNode | FindingSeedNode;
 
 export interface InvestigationSeedGraph {
   readonly seeds: readonly InvestigationSeedNode[];
@@ -37,6 +46,10 @@ export interface InvestigationSeedGraph {
 
 export function emailSeedNodeId(value: string): InvestigationSeedId {
   return `seed:email:${encodeURIComponent(value)}`;
+}
+
+export function usernameSeedNodeId(value: string): InvestigationSeedId {
+  return `seed:username:${encodeURIComponent(value)}`;
 }
 
 export function findingSeedNodeId(evidenceId: EvidenceId): InvestigationSeedId {
@@ -61,6 +74,15 @@ export function investigationSeedGraph(investigation: Investigation): Investigat
     seeds.push({ kind: "email", id, value: seed.value, origin: { kind: "operator" } });
   }
 
+  for (const record of investigation.usernameSeeds ?? []) {
+    // Proposed and rejected usernames are not seeds; only accepted ones feed actions.
+    if (record.status !== "accepted") continue;
+    const id = usernameSeedNodeId(record.value);
+    if (seedIds.has(id)) continue;
+    seedIds.add(id);
+    seeds.push({ kind: "username", id, value: record.value, origin: record.origin });
+  }
+
   for (const evidence of investigation.evidence) {
     const id = findingSeedNodeId(evidence.id);
     if (seedIds.has(id)) continue;
@@ -78,7 +100,7 @@ export function investigationSeedGraph(investigation: Investigation): Investigat
     if (action.sourceSeedId !== undefined) {
       actionInputs.set(action.id, seedIds.has(action.sourceSeedId) ? action.sourceSeedId : undefined);
     } else {
-      actionInputs.set(action.id, emailSeedIds.get(action.spec.seed.value));
+      actionInputs.set(action.id, action.spec.seed.kind === "email" ? emailSeedIds.get(action.spec.seed.value) : undefined);
     }
   }
 

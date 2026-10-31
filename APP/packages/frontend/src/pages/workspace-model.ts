@@ -46,11 +46,17 @@ function seedNodeId(value: string): string {
 const ACTION_TITLES: Readonly<Record<string, string>> = {
   "user-scanner": "Búsqueda de email y enlaces con user-scanner",
   gravatar: "Perfil público de Gravatar",
+  maigret: "Búsqueda de username con Maigret",
 };
 const SOURCE_TOOLS: Readonly<Record<string, string>> = {
   "user-scanner:email": "user-scanner",
   "gravatar:email": "Gravatar",
+  "maigret:username": "Maigret",
 };
+
+function usernameNodeId(value: string): string {
+  return `seed:username:${encodeURIComponent(value)}`;
+}
 
 export function actionTitle(action: GitHubCatalogAction): string {
   return ACTION_TITLES[action.spec.provider] ?? "Comprobación de registro en GitHub";
@@ -71,7 +77,8 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
   const actionIds = new Set(investigation.actions.map((action) => action.id));
   const seedGraph = investigationSeedGraph(investigation);
   const visualSeedIds = new Map(seedGraph.seeds.map((seed) => [seed.id,
-    seed.kind === "email" ? seedNodeId(seed.value) : `evidence:${seed.evidence.id}`]));
+    seed.kind === "email" ? seedNodeId(seed.value) : seed.kind === "username" ? usernameNodeId(seed.value) : `evidence:${seed.evidence.id}`]));
+  const usernameSeeds = seedGraph.seeds.filter((seed) => seed.kind === "username");
 
   investigation.emailSeeds.forEach((seed, index) => {
     const id = seedNodeId(seed.value);
@@ -84,6 +91,22 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
       seedValue: seed.value,
       x: 32,
       y: TOP + index * ROW_GAP,
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
+    });
+  });
+
+  usernameSeeds.forEach((seed, index) => {
+    const id = usernameNodeId(seed.value);
+    nodes.push({
+      id,
+      kind: "seed",
+      title: seed.value,
+      state: "aportada",
+      accessibleLabel: nodeLabel("seed", seed.value, "aportada"),
+      seedValue: seed.value,
+      x: 32,
+      y: TOP + (investigation.emailSeeds.length + index) * ROW_GAP,
       width: NODE_WIDTH,
       height: NODE_HEIGHT,
     });

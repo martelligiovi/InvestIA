@@ -6,6 +6,7 @@ import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import neo4j from "neo4j-driver";
 import { Pool } from "pg";
 import { createGravatarBox } from "../../adapter-gravatar/src/index.ts";
+import { createMaigretBox } from "../../adapter-maigret/src/index.ts";
 import { createUserScannerBox } from "../../adapter-user-scanner/src/index.ts";
 import {
   createInvestigationService,
@@ -68,6 +69,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
       executor: options.executor ?? createCatalogExecutor({
         "user-scanner.email.v1": createUserScannerBox(),
         "gravatar.email.v1": createGravatarBox({ apiKey: config.gravatarApiKey }),
+        "maigret.username.v1": createMaigretBox(),
       }),
       clock: () => new Date().toISOString(),
       createId: (kind) => `${kind}-${randomUUID()}`,

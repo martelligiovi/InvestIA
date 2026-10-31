@@ -1,4 +1,4 @@
-export type { EmailSeed, Seed, UsernameSeed } from "./domain/seed.ts";
+export { USERNAME_SEED_PATTERN, type EmailSeed, type Seed, type UsernameSeed } from "./domain/seed.ts";
 export { isScannerFinding } from "./domain/observation.ts";
 export type {
   ScannerFinding,
@@ -17,6 +17,7 @@ export {
 } from "./application/execute-seed-box.ts";
 export {
   authorizationCovers,
+  CATALOG_INPUT_KINDS,
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
   isScopedCatalogId,
@@ -33,6 +34,9 @@ export {
   type EvidenceRecord,
   type GitHubActionSpec,
   type GravatarActionSpec,
+  type MaigretActionSpec,
+  type UsernameSeedRecord,
+  type UsernameSeedStatus,
   type UserScannerActionSpec,
   type GitHubCatalogAction,
   type Investigation,
@@ -54,6 +58,8 @@ export {
   type InvestigationSeedGraph,
   type InvestigationSeedId,
   type InvestigationSeedNode,
+  type UsernameSeedNode,
+  usernameSeedNodeId,
 } from "./domain/seed-graph.ts";
 export {
   createCatalogExecutor,

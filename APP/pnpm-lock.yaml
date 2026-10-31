@@ -53,6 +53,9 @@ importers:
       '@investia/adapter-gravatar':
         specifier: workspace:*
         version: link:../adapter-gravatar
+      '@investia/adapter-maigret':
+        specifier: workspace:*
+        version: link:../adapter-maigret
       '@investia/adapter-user-scanner':
         specifier: workspace:*
         version: link:../adapter-user-scanner

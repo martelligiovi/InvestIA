@@ -1,12 +1,15 @@
 import { isScannerFinding, type Observation, type RegistrationObservation, type RegistrationStatus, type ScannerObservation } from "../domain/observation.ts";
-import type { EmailSeed } from "../domain/seed.ts";
+import { USERNAME_SEED_PATTERN, type EmailSeed, type UsernameSeed } from "../domain/seed.ts";
+import { usernameSeedNodeId } from "../domain/seed-graph.ts";
 import type { SeedBox } from "../domain/seed-box.ts";
 import {
+  CATALOG_INPUT_KINDS,
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
   isScopedCatalogId,
   SCOPED_CATALOG_IDS,
   type ScopedCatalogId,
+  type UsernameSeedRecord,
   type AdvancementMode,
   type AuditEvent,
   type AuditKind,
@@ -37,15 +40,17 @@ export interface InvestigationServiceDependencies {
   readonly executor: InvestigationExecutor;
   readonly clock: () => string;
   readonly createId: (kind: InvestigationIdKind) => string;
-  /** Tools queued for every new email seed, in order; defaults to every scoped catalog tool. */
+  /** Tools queued for every new email seed, in order; defaults to every scoped email tool. */
   readonly seedCatalog?: readonly ScopedCatalogId[];
 }
 
-const SEED_QUEUE_REASONS: Readonly<Record<ScopedCatalogId, string>> = {
+const QUEUE_REASONS: Readonly<Record<ScopedCatalogId, string>> = {
   "user-scanner.email.v1": "Catalog policy queued a user-scanner email and cross-scan check, including loud modules, for the recorded email seed.",
   "gravatar.email.v1": "Catalog policy queued a Gravatar public profile lookup for the recorded email seed.",
+  "maigret.username.v1": "Catalog policy queued a Maigret username search with page extraction, without recursion, for the accepted username seed.",
 };
-const SEED_PROVIDERS = { "user-scanner.email.v1": "user-scanner", "gravatar.email.v1": "gravatar" } as const;
+const CATALOG_PROVIDERS = { "user-scanner.email.v1": "user-scanner", "gravatar.email.v1": "gravatar", "maigret.username.v1": "maigret" } as const;
+const EMAIL_CATALOG_IDS = SCOPED_CATALOG_IDS.filter((catalogId) => CATALOG_INPUT_KINDS[catalogId] === "email");
 
 const CATALOG_ID = "user-scanner.email.v1" as const;
 const LEGACY_CATALOG_ID = "github.email-registration.v1" as const;
@@ -71,6 +76,12 @@ function newId(createId: InvestigationServiceDependencies["createId"], kind: Inv
 function reasonText(value: string): string {
   if (typeof value !== "string" || value.trim().length === 0) throw new Error("A non-empty reason is required");
   return value.trim();
+}
+
+function usernameSeed(value: string): UsernameSeed {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!USERNAME_SEED_PATTERN.test(normalized)) throw new Error("A valid username seed is required");
+  return { kind: "username", value: normalized };
 }
 
 function emailSeed(value: string): EmailSeed {
@@ -117,7 +128,7 @@ function isRegistrationObservation(
 function isScannerObservation(value: unknown): value is ScannerObservation {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<ScannerObservation>;
-  return candidate.kind === "scanner_finding" && candidate.seed?.kind === "email" &&
+  return candidate.kind === "scanner_finding" && (candidate.seed?.kind === "email" || candidate.seed?.kind === "username") &&
     typeof candidate.seed.value === "string" && typeof candidate.provider === "string" &&
     candidate.provider.trim().length > 0 && REGISTRATION_STATUSES.includes(candidate.status as RegistrationStatus) &&
     isScannerFinding(candidate.finding);
@@ -143,8 +154,9 @@ export class InvestigationService {
 
   constructor(dependencies: InvestigationServiceDependencies) {
     if (dependencies.executor.id.trim().length === 0) throw new Error("Executor id must not be empty");
-    const seedCatalog = dependencies.seedCatalog ?? SCOPED_CATALOG_IDS;
-    if (seedCatalog.length === 0 || !seedCatalog.every(isScopedCatalogId) || new Set(seedCatalog).size !== seedCatalog.length) {
+    const seedCatalog = dependencies.seedCatalog ?? EMAIL_CATALOG_IDS;
+    if (seedCatalog.length === 0 || new Set(seedCatalog).size !== seedCatalog.length ||
+      !seedCatalog.every((catalogId) => isScopedCatalogId(catalogId) && CATALOG_INPUT_KINDS[catalogId] === "email")) {
       throw new Error("The seed catalog must list known scoped tools exactly once");
     }
     this.dependencies = dependencies;
@@ -187,11 +199,11 @@ export class InvestigationService {
     const event = auditEvent(this.dependencies.createId, at, "operator", "email_seed_added", why);
     const queuedActions = this.seedCatalog.map((catalogId): GitHubCatalogAction => ({
       id: newId(this.dependencies.createId, "action"),
-      spec: { catalogId, provider: SEED_PROVIDERS[catalogId], seed: { ...seed } } as GitHubCatalogAction["spec"],
+      spec: { catalogId, provider: CATALOG_PROVIDERS[catalogId], seed: { ...seed } } as GitHubCatalogAction["spec"],
       status: "queued",
       queuedByCatalog: true,
       proposedAt: at,
-      proposalReason: SEED_QUEUE_REASONS[catalogId],
+      proposalReason: QUEUE_REASONS[catalogId],
     }));
     const queued = queuedActions.map((entry) =>
       auditEvent(this.dependencies.createId, at, "system", "action_queued", entry.proposalReason, { actionId: entry.id }));
@@ -206,6 +218,39 @@ export class InvestigationService {
       });
       return { next, result: next };
     });
+  }
+
+  async addUsernameSeed(id: string, value: string, reason: string): Promise<Investigation> {
+    const seed = usernameSeed(value);
+    const why = reasonText(reason);
+    const at = timestamp(this.dependencies.clock);
+    const record: UsernameSeedRecord = { kind: "username", value: seed.value, origin: { kind: "operator" }, status: "accepted", at, reason: why };
+    const event = auditEvent(this.dependencies.createId, at, "operator", "username_seed_added", why);
+    const action = this.usernameAction(seed, at);
+    const queued = auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id });
+    return this.dependencies.store.transact(id, (current) => {
+      if ((current.usernameSeeds ?? []).some((existing) => existing.value === seed.value)) {
+        throw new Error("Username seed already exists in this investigation");
+      }
+      const next = withRevision(current, at, {
+        usernameSeeds: [...(current.usernameSeeds ?? []), record],
+        actions: [...current.actions, action],
+        audit: [...current.audit, event, queued],
+      });
+      return { next, result: next };
+    });
+  }
+
+  private usernameAction(seed: UsernameSeed, at: string): GitHubCatalogAction {
+    return {
+      id: newId(this.dependencies.createId, "action"),
+      spec: { catalogId: "maigret.username.v1", provider: "maigret", seed: { ...seed } },
+      sourceSeedId: usernameSeedNodeId(seed.value),
+      status: "queued",
+      queuedByCatalog: true,
+      proposedAt: at,
+      proposalReason: QUEUE_REASONS["maigret.username.v1"],
+    };
   }
 
   async proposeGitHubAction(id: string, email: string, reason: string): Promise<GitHubCatalogAction> {
@@ -390,7 +435,8 @@ export class InvestigationService {
       const registration = isRegistrationObservation(observation) && observation.provider === "github";
       if (
         (!scanner && !registration) ||
-        (observation as { seed: EmailSeed }).seed.value !== claim.action.spec.seed.value ||
+        (observation as { seed: EmailSeed | UsernameSeed }).seed.kind !== claim.action.spec.seed.kind ||
+        (observation as { seed: EmailSeed | UsernameSeed }).seed.value !== claim.action.spec.seed.value ||
         (scanner && !isScopedCatalogId(claim.action.spec.catalogId))
       ) {
         unsupportedObservationCount++;
@@ -467,15 +513,21 @@ function assertClaimedAction(action: GitHubCatalogAction): void {
 
 const RETIRED_ACTION_MESSAGE = "Historical GitHub-only action is retired; create an explicit scanner proposal instead.";
 
-export type CatalogBoxes = Readonly<Partial<Record<ScopedCatalogId, SeedBox<EmailSeed, Observation>>>>;
+export interface CatalogBoxes {
+  readonly "user-scanner.email.v1"?: SeedBox<EmailSeed, Observation>;
+  readonly "gravatar.email.v1"?: SeedBox<EmailSeed, Observation>;
+  readonly "maigret.username.v1"?: SeedBox<UsernameSeed, Observation>;
+}
+type AnySeedBox = SeedBox<EmailSeed | UsernameSeed, Observation>;
 
 /** Routes each claimed action to the tool registered for its catalog id. */
 export function createCatalogExecutor(boxes: CatalogBoxes): InvestigationExecutor {
-  const registry = new Map<string, SeedBox<EmailSeed, Observation>>();
-  for (const [catalogId, box] of Object.entries(boxes)) {
+  const registry = new Map<string, AnySeedBox>();
+  for (const [catalogId, box] of Object.entries(boxes) as [string, AnySeedBox | undefined][]) {
     if (!isScopedCatalogId(catalogId)) throw new Error(`Unknown catalog id: ${catalogId}`);
     if (box === undefined) continue;
-    if (box.inputKind !== "email") throw new Error(`Catalog ${catalogId} requires an email SeedBox`);
+    const kind = CATALOG_INPUT_KINDS[catalogId];
+    if (box.inputKind !== kind) throw new Error(`Catalog ${catalogId} requires ${kind === "email" ? "an email" : "a username"} SeedBox`);
     registry.set(catalogId, box);
   }
   const boxFor = (action: GitHubCatalogAction) => {
@@ -503,6 +555,7 @@ export function createSeedBoxExecutor(box: SeedBox<EmailSeed, Observation>): Inv
       if (box.id === "user-scanner:email" && action.spec.catalogId === LEGACY_CATALOG_ID) {
         throw new Error(RETIRED_ACTION_MESSAGE);
       }
+      if (action.spec.seed.kind !== "email") throw new Error("An email SeedBox requires an email action");
       return executeSeedBox(box, action.spec.seed, permit as ExecutionState);
     },
   };

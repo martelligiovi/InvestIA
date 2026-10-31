@@ -220,7 +220,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
                 {controller.busy ? "Actualizando…" : "Actualizar expediente"}
               </button>
               <p>{investigation.authorization === undefined ? "Sin autorización registrada" : authorizationGranted ? "Autorización otorgada" : investigation.authorization.granted ? "Autorización previa: requiere consentimiento para las herramientas nuevas del catálogo" : "Autorización revocada"}</p>
-              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, y la consulta del perfil público de Gravatar. Revocar o pausar no cancela una ejecución en curso.</p>
+              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, la consulta del perfil público de Gravatar y la búsqueda de usernames aceptados con Maigret en unos 500 sitios. Revocar o pausar no cancela una ejecución en curso.</p>
               <label className="form-field">
                 <span>Motivo de autorización</span>
                 <textarea value={authorizationReason} maxLength={2_000} onChange={(event) => { setAuthorizationReason(event.currentTarget.value); setFormError(""); }} disabled={controlsDisabled} rows={2} />

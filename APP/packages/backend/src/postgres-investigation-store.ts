@@ -4,6 +4,7 @@ import {
   DEFAULT_INVESTIGATION_NAME,
   isScannerFinding,
   isScopedCatalogId,
+  USERNAME_SEED_PATTERN,
   normalizeInvestigationName,
   type ActionClaim,
   type ClaimActionRequest,
@@ -142,14 +143,41 @@ function isAuthorization(value: unknown): boolean {
       value.catalogScopes.every(isScopedCatalogId) && new Set(value.catalogScopes).size === value.catalogScopes.length));
 }
 
+function isUsernameSeed(value: unknown): boolean {
+  return isRecord(value) && value.kind === "username" && typeof value.value === "string" && USERNAME_SEED_PATTERN.test(value.value);
+}
+
+function isEmailSeed(value: unknown): boolean {
+  return isRecord(value) && value.kind === "email" && isNonEmptyString(value.value);
+}
+
+function isStoredUsernameSeeds(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  const values = new Set<string>();
+  return value.every((record) => {
+    if (!isUsernameSeed(record) || values.has(record.value)) return false;
+    values.add(record.value);
+    const origin = record.origin;
+    return isRecord(origin) && (origin.kind === "operator" || (origin.kind === "evidence" && isNonEmptyString(origin.evidenceId))) &&
+      ["proposed", "accepted", "rejected"].includes(String(record.status)) && isTimestamp(record.at) &&
+      isNonEmptyString(record.reason) && (record.decision === undefined || isApproval(record.decision));
+  });
+}
+
+const ACTION_SPECS: Readonly<Record<string, { readonly provider: string; readonly seed: (value: unknown) => boolean }>> = {
+  "github.email-registration.v1": { provider: "github", seed: isEmailSeed },
+  "user-scanner.email.v1": { provider: "user-scanner", seed: isEmailSeed },
+  "gravatar.email.v1": { provider: "gravatar", seed: isEmailSeed },
+  "maigret.username.v1": { provider: "maigret", seed: isUsernameSeed },
+};
+
 function isStoredAction(value: unknown): boolean {
   if (!isRecord(value) || !isNonEmptyString(value.id) || !isRecord(value.spec)) return false;
-  const seed = value.spec.seed;
+  const expected = Object.prototype.hasOwnProperty.call(ACTION_SPECS, String(value.spec.catalogId))
+    ? ACTION_SPECS[String(value.spec.catalogId)] : undefined;
   if (
-    !((value.spec.catalogId === "github.email-registration.v1" && value.spec.provider === "github") ||
-      (value.spec.catalogId === "user-scanner.email.v1" && value.spec.provider === "user-scanner") ||
-      (value.spec.catalogId === "gravatar.email.v1" && value.spec.provider === "gravatar")) ||
-    !isRecord(seed) || seed.kind !== "email" || !isNonEmptyString(seed.value) ||
+    expected === undefined || value.spec.provider !== expected.provider || !expected.seed(value.spec.seed) ||
     !["proposed", "queued", "claimed", "succeeded", "failed"].includes(String(value.status)) ||
     !isTimestamp(value.proposedAt) || !isNonEmptyString(value.proposalReason)
   ) return false;
@@ -174,7 +202,7 @@ function isStoredEvidence(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (value.finding === undefined) return true;
   return isScannerFinding(value.finding) && isNonEmptyString(value.id) && isNonEmptyString(value.actionId) &&
-    isRecord(value.seed) && value.seed.kind === "email" && isNonEmptyString(value.seed.value) &&
+    (isEmailSeed(value.seed) || isUsernameSeed(value.seed)) &&
     isNonEmptyString(value.provider) && isNonEmptyString(value.sourceId) && isTimestamp(value.recordedAt) &&
     ["registered", "not_registered", "rate_limited", "error", "unknown"].includes(String(value.status));
 }
@@ -219,6 +247,7 @@ function decode(row: StoredRow): Investigation {
     !Array.isArray(candidate.emailSeeds) || !Array.isArray(candidate.actions) ||
     !Array.isArray(candidate.evidence) || !Array.isArray(candidate.validations) || !Array.isArray(candidate.audit) ||
     (candidate.authorization !== undefined && !isAuthorization(candidate.authorization)) ||
+    !isStoredUsernameSeeds(candidate.usernameSeeds) ||
     !candidate.actions.every(isStoredAction) || !candidate.evidence.every(isStoredEvidence)
   ) throw new InvestigationSchemaError("Stored investigation document does not match its schema.");
   return structuredClone({ ...candidate, name, intention, advancementMode } as Investigation);
@@ -238,6 +267,7 @@ function assertSnapshot(investigation: Investigation): void {
     !Array.isArray(investigation.actions) || !Array.isArray(investigation.evidence) ||
     !Array.isArray(investigation.validations) || !Array.isArray(investigation.audit) ||
     (investigation.authorization !== undefined && !isAuthorization(investigation.authorization)) ||
+    !isStoredUsernameSeeds(investigation.usernameSeeds) ||
     !investigation.evidence.every(isStoredEvidence) || !investigation.actions.every(isStoredAction)
   ) throw new InvestigationSchemaError("Investigation snapshot is invalid.");
 }

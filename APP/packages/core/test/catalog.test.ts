@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   authorizationCovers,
+  CATALOG_INPUT_KINDS,
   createCatalogExecutor,
   SCOPED_CATALOG_IDS,
   type ActionClaim,
@@ -40,8 +41,27 @@ test("authorization covers a tool only through an explicit scope", () => {
   assert.equal(authorizationCovers({ ...current, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] }, "gravatar.email.v1"), true);
 });
 
-test("the scoped catalog lists every consentable tool", () => {
-  assert.deepEqual(SCOPED_CATALOG_IDS, ["user-scanner.email.v1", "gravatar.email.v1"]);
+test("the scoped catalog lists every consentable tool and its input kind", () => {
+  assert.deepEqual(SCOPED_CATALOG_IDS, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"]);
+  assert.deepEqual(CATALOG_INPUT_KINDS, {
+    "user-scanner.email.v1": "email", "gravatar.email.v1": "email", "maigret.username.v1": "username",
+  });
+  const scannerAndGravatar: AuthorizationRecord = { ...base, granted: true, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] };
+  assert.equal(authorizationCovers(scannerAndGravatar, "maigret.username.v1"), false, "earlier grants never cover Maigret");
+});
+
+test("catalog executor routes username actions to a username box", async () => {
+  const seen: string[] = [];
+  const executor = createCatalogExecutor({
+    "maigret.username.v1": { id: "maigret:username", inputKind: "username", async execute(seed) { seen.push(`${seed.kind}:${seed.value}`); return []; } },
+  });
+  const action = claimed({ catalogId: "maigret.username.v1", provider: "maigret", seed: { kind: "username", value: "anaexample" } });
+  await executor.execute(action, permit);
+  assert.deepEqual(seen, ["username:anaexample"]);
+  assert.equal(executor.sourceIdFor?.(action), "maigret:username");
+  assert.throws(() => createCatalogExecutor({
+    "maigret.username.v1": { id: "wrong", inputKind: "email", async execute() { return []; } },
+  } as unknown as Parameters<typeof createCatalogExecutor>[0]), /requires a username SeedBox/);
 });
 
 test("catalog executor dispatches each action to the box registered for its catalog id", async () => {

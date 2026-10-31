@@ -9,7 +9,6 @@ import {
   type Investigation,
   type InvestigationExecutor,
   type ScopedCatalogId,
-  SCOPED_CATALOG_IDS,
 } from "@investia/core";
 import {
   InvestigationClaimConflictError,
@@ -271,8 +270,8 @@ test("per-tool consent scopes round-trip, unknown scopes never write and empty s
   const created = await service.createInvestigation();
   await service.addEmailSeed(created.id, "seed@example.org");
   const granted = await service.authorize(created.id, true, "Authorize the listed tools");
-  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1"]);
-  assert.deepEqual((await store.get(created.id))?.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"]);
+  assert.deepEqual((await store.get(created.id))?.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"]);
 
   const before = structuredClone(database.records.get(created.id));
   for (const catalogScopes of [["unknown.tool.v1"], ["user-scanner.email.v1", "user-scanner.email.v1"], "user-scanner.email.v1"]) {
@@ -291,7 +290,7 @@ test("per-tool consent scopes round-trip, unknown scopes never write and empty s
 });
 
 test("each email seed queues user-scanner then Gravatar, and a user-scanner-only grant never claims Gravatar", async () => {
-  const { database, store, service } = makeStoreHarness(SCOPED_CATALOG_IDS);
+  const { database, store, service } = makeStoreHarness(["user-scanner.email.v1", "gravatar.email.v1"]);
   const created = await service.createInvestigation();
   const seeded = await service.addEmailSeed(created.id, "seed@example.org");
   assert.deepEqual(seeded.actions.map((action) => [action.spec.catalogId, action.spec.provider, action.status, action.queuedByCatalog]), [
@@ -300,7 +299,7 @@ test("each email seed queues user-scanner then Gravatar, and a user-scanner-only
   ]);
   assert.deepEqual(await store.get(created.id), seeded, "the Gravatar spec round-trips");
   const granted = await service.authorize(created.id, true, "Authorize the listed tools");
-  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"]);
 
   const row = database.records.get(created.id)!;
   row.document = { ...row.document, authorization: { ...row.document.authorization!, catalogScopes: ["user-scanner.email.v1"] } };
@@ -314,6 +313,63 @@ test("each email seed queues user-scanner then Gravatar, and a user-scanner-only
     action.spec.catalogId === "gravatar.email.v1" ? { ...action, spec: { ...action.spec, provider: "user-scanner" } } : action) } as unknown as Investigation;
   await assert.rejects(store.transact(created.id, () => ({ next: corrupt, result: undefined })), InvestigationSchemaError);
   assert.deepEqual(database.records.get(created.id), afterFirst);
+});
+
+test("username seeds, Maigret actions and username evidence round-trip while legacy snapshots load unchanged", async () => {
+  const { database, store, service } = makeStoreHarness();
+  const legacy = await service.createInvestigation();
+  await service.addEmailSeed(legacy.id, "seed@example.org");
+  const legacyDocument = structuredClone(database.records.get(legacy.id)!.document);
+  assert.ok(!Object.prototype.hasOwnProperty.call(legacyDocument, "usernameSeeds"));
+  assert.deepEqual(await store.get(legacy.id), legacyDocument);
+
+  const created = await service.createInvestigation();
+  const seeded = await service.addUsernameSeed(created.id, "anaexample", "Username supplied by the operator.");
+  assert.deepEqual(await store.get(created.id), seeded);
+  const withEvidence: Investigation = { ...seeded, revision: seeded.revision + 1, evidence: [{
+    id: "evidence", actionId: seeded.actions[0]!.id, seed: { kind: "username", value: "anaexample" }, provider: "GitHub",
+    status: "registered", sourceId: "maigret:username", recordedAt: seeded.updatedAt, finding: {
+      target: { kind: "username", value: "anaexample" }, upstreamStatus: "Found", url: "https://github.com/anaexample",
+      category: "coding", reason: "", extra: { source: "maigret" }, media: {},
+    },
+  }] };
+  await store.transact(created.id, () => ({ next: withEvidence, result: undefined }));
+  assert.deepEqual(await store.get(created.id), withEvidence);
+
+  const before = structuredClone(database.records.get(created.id));
+  const record = withEvidence.usernameSeeds![0]!;
+  const corruptions: unknown[] = [
+    { usernameSeeds: [{ ...record, value: "--help" }] },
+    { usernameSeeds: [{ ...record, kind: "email" }] },
+    { usernameSeeds: [{ ...record, status: "maybe" }] },
+    { usernameSeeds: [{ ...record, origin: { kind: "evidence" } }] },
+    { usernameSeeds: [record, record] },
+    { usernameSeeds: "anaexample" },
+    { actions: [{ ...withEvidence.actions[0]!, spec: { ...withEvidence.actions[0]!.spec, seed: { kind: "email", value: "a@example.org" } } }] },
+    { actions: [{ ...withEvidence.actions[0]!, spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: { kind: "username", value: "anaexample" } } }] },
+    { evidence: [{ ...withEvidence.evidence[0]!, seed: { kind: "username", value: "--help" } }] },
+  ];
+  for (const corruption of corruptions) {
+    const corrupt = { ...withEvidence, revision: withEvidence.revision + 1, ...(corruption as object) } as unknown as Investigation;
+    await assert.rejects(store.transact(created.id, () => ({ next: corrupt, result: undefined })), InvestigationSchemaError);
+    assert.deepEqual(database.records.get(created.id), before);
+  }
+});
+
+test("a grant recorded before Maigret was added never claims a Maigret action", async () => {
+  const { database, store, service } = makeStoreHarness();
+  const created = await service.createInvestigation();
+  await service.addUsernameSeed(created.id, "anaexample", "Username supplied by the operator.");
+  const granted = await service.authorize(created.id, true, "Authorize the listed tools");
+  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"]);
+  const row = database.records.get(created.id)!;
+  row.document = { ...row.document, authorization: { ...row.document.authorization!, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] } };
+  const before = structuredClone(row);
+  const input: ClaimActionRequest = { investigationId: created.id, claimId: "claim", claimedAt: "2025-03-01T00:01:00Z", auditEvent: auditEvent("claim", "action_claimed") };
+  assert.equal(await store.claimNextAction(input), undefined);
+  assert.deepEqual(database.records.get(created.id), before);
+  await service.authorize(created.id, true, "Renew the authorization for Maigret");
+  assert.equal((await store.claimNextAction(input))?.action.spec.catalogId, "maigret.username.v1");
 });
 
 test("catalog executor evidence records the tool that produced it", async () => {
