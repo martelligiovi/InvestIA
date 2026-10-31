@@ -8,6 +8,8 @@ import {
   type CompleteActionInput,
   type Investigation,
   type InvestigationExecutor,
+  type ScopedCatalogId,
+  SCOPED_CATALOG_IDS,
 } from "@investia/core";
 import {
   InvestigationClaimConflictError,
@@ -118,7 +120,8 @@ class FakeClient implements PgClientLike {
   }
 }
 
-function makeStoreHarness() {
+/** Older workflow tests pin a user-scanner-only queue; Gravatar tests pass the full catalog. */
+function makeStoreHarness(seedCatalog: readonly ScopedCatalogId[] = ["user-scanner.email.v1"]) {
   const database = new FakePostgres();
   const store = new PostgresInvestigationStore(database);
   let sequence = 0;
@@ -129,6 +132,7 @@ function makeStoreHarness() {
     executor,
     clock: () => `2025-03-01T00:00:${String(ticks++).padStart(2, "0")}.000Z`,
     createId: (kind) => `${kind}-${++sequence}`,
+    seedCatalog,
   });
   return { database, store, service };
 }
@@ -267,8 +271,8 @@ test("per-tool consent scopes round-trip, unknown scopes never write and empty s
   const created = await service.createInvestigation();
   await service.addEmailSeed(created.id, "seed@example.org");
   const granted = await service.authorize(created.id, true, "Authorize the listed tools");
-  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1"]);
-  assert.deepEqual((await store.get(created.id))?.authorization?.catalogScopes, ["user-scanner.email.v1"]);
+  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  assert.deepEqual((await store.get(created.id))?.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1"]);
 
   const before = structuredClone(database.records.get(created.id));
   for (const catalogScopes of [["unknown.tool.v1"], ["user-scanner.email.v1", "user-scanner.email.v1"], "user-scanner.email.v1"]) {
@@ -284,6 +288,32 @@ test("per-tool consent scopes round-trip, unknown scopes never write and empty s
   const input: ClaimActionRequest = { investigationId: created.id, claimId: "claim", claimedAt: "2025-03-01T00:01:00Z", auditEvent: auditEvent("claim", "action_claimed") };
   assert.equal(await store.claimNextAction(input), undefined);
   assert.deepEqual(database.records.get(created.id), unscoped);
+});
+
+test("each email seed queues user-scanner then Gravatar, and a user-scanner-only grant never claims Gravatar", async () => {
+  const { database, store, service } = makeStoreHarness(SCOPED_CATALOG_IDS);
+  const created = await service.createInvestigation();
+  const seeded = await service.addEmailSeed(created.id, "seed@example.org");
+  assert.deepEqual(seeded.actions.map((action) => [action.spec.catalogId, action.spec.provider, action.status, action.queuedByCatalog]), [
+    ["user-scanner.email.v1", "user-scanner", "queued", true],
+    ["gravatar.email.v1", "gravatar", "queued", true],
+  ]);
+  assert.deepEqual(await store.get(created.id), seeded, "the Gravatar spec round-trips");
+  const granted = await service.authorize(created.id, true, "Authorize the listed tools");
+  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1"]);
+
+  const row = database.records.get(created.id)!;
+  row.document = { ...row.document, authorization: { ...row.document.authorization!, catalogScopes: ["user-scanner.email.v1"] } };
+  const input: ClaimActionRequest = { investigationId: created.id, claimId: "claim-1", claimedAt: "2025-03-01T00:01:00Z", auditEvent: auditEvent("claim", "action_claimed") };
+  assert.equal((await store.claimNextAction(input))?.action.spec.catalogId, "user-scanner.email.v1");
+  const afterFirst = structuredClone(database.records.get(created.id));
+  assert.equal(await store.claimNextAction({ ...input, claimId: "claim-2" }), undefined);
+  assert.deepEqual(database.records.get(created.id), afterFirst);
+
+  const corrupt = { ...seeded, revision: (await store.get(created.id))!.revision + 1, actions: seeded.actions.map((action) =>
+    action.spec.catalogId === "gravatar.email.v1" ? { ...action, spec: { ...action.spec, provider: "user-scanner" } } : action) } as unknown as Investigation;
+  await assert.rejects(store.transact(created.id, () => ({ next: corrupt, result: undefined })), InvestigationSchemaError);
+  assert.deepEqual(database.records.get(created.id), afterFirst);
 });
 
 test("catalog executor evidence records the tool that produced it", async () => {
@@ -302,6 +332,15 @@ test("catalog executor evidence records the tool that produced it", async () => 
           } }];
         },
       },
+      "gravatar.email.v1": {
+        id: "gravatar:email", inputKind: "email",
+        async execute(seed) {
+          return [{ kind: "scanner_finding", seed, provider: "Gravatar", status: "registered", finding: {
+            target: { kind: "email", value: seed.value }, upstreamStatus: "Found", url: "https://gravatar.com/seed",
+            category: "Profile", reason: "", extra: { display_name: "Seed Person" }, media: {},
+          } }];
+        },
+      },
     }),
     clock: () => "2025-03-01T00:00:00.000Z",
     createId: (kind) => `${kind}-${++sequence}`,
@@ -310,9 +349,13 @@ test("catalog executor evidence records the tool that produced it", async () => 
   await service.addEmailSeed(created.id, "seed@example.org");
   await service.authorize(created.id, true, "Authorize the listed tools");
   assert.equal((await service.executeNextAction(created.id))?.status, "succeeded");
+  assert.equal((await service.executeNextAction(created.id))?.status, "succeeded");
+  assert.equal(await service.executeNextAction(created.id), undefined);
   const evidence = (await store.get(created.id))?.evidence;
-  assert.equal(evidence?.length, 1);
-  assert.equal(evidence?.[0]?.sourceId, "user-scanner:email");
+  assert.deepEqual(evidence?.map((record) => [record.provider, record.sourceId]), [
+    ["Example", "user-scanner:email"],
+    ["Gravatar", "gravatar:email"],
+  ]);
 });
 
 test("creation metadata round-trips while legacy snapshots stay manual", async () => {

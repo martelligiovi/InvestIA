@@ -8,6 +8,8 @@ export interface BackendConfig {
   readonly neo4jUsername: string;
   readonly neo4jPassword: string;
   readonly neo4jDatabase: string;
+  /** Optional Gravatar key; public profile lookups work without it at a lower rate limit. */
+  readonly gravatarApiKey?: string;
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1"]);
@@ -68,9 +70,11 @@ export function loadBackendConfig(
   }
   const neo4jDatabase = env.NEO4J_DATABASE?.trim() ?? "neo4j";
   if (neo4jDatabase.length === 0) throw new Error("NEO4J_DATABASE must not be empty.");
+  const gravatarApiKey = env.GRAVATAR_API_KEY?.trim();
 
   return {
     databaseUrl, host, port, neo4jUri, neo4jUsername, neo4jPassword, neo4jDatabase,
     ...(containerNetworking ? { containerNetworking: true } : {}),
+    ...(gravatarApiKey ? { gravatarApiKey } : {}),
   };
 }

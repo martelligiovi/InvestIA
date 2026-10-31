@@ -54,8 +54,8 @@ export interface ActionApproval {
 }
 
 /** Catalog tools that run only under an explicit, per-tool consent scope. */
-export type ScopedCatalogId = "user-scanner.email.v1";
-export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1"]);
+export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1";
+export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1", "gravatar.email.v1"]);
 const LEGACY_CATALOG_ID = "github.email-registration.v1";
 
 export function isScopedCatalogId(value: unknown): value is ScopedCatalogId {
@@ -96,10 +96,16 @@ export interface UserScannerActionSpec {
   readonly seed: EmailSeed;
 }
 
-/** Historical export name retained for consumers; new actions use UserScannerActionSpec. */
+export interface GravatarActionSpec {
+  readonly catalogId: "gravatar.email.v1";
+  readonly provider: "gravatar";
+  readonly seed: EmailSeed;
+}
+
+/** Historical export name retained for consumers; it covers every catalog action spec. */
 export interface GitHubCatalogAction {
   readonly id: InvestigationActionId;
-  readonly spec: GitHubActionSpec | UserScannerActionSpec;
+  readonly spec: GitHubActionSpec | UserScannerActionSpec | GravatarActionSpec;
   /**
    * Explicit input seed reference (see seed-graph.ts). Absent on historical actions and on
    * actions whose input is the operator email embedded in their spec.

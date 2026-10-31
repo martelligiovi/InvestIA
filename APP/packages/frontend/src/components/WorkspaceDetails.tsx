@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react";
 import type { Investigation, ValidationStatus } from "@investia/core";
-import { GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
+import { actionTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 
 export interface WorkspaceDetailsProps {
@@ -116,14 +116,14 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
                   <dt>Estado</dt><dd>Dato aportado al expediente</dd>
                 </dl>
               </section>
-              <p className="detail-note">Las semillas nuevas incorporan su búsqueda con user-scanner a la cola del expediente. Incluye plataformas, enlaces y emails descubiertos; las consultas loud pueden enviar correos o notificaciones.</p>
+              <p className="detail-note">Las semillas nuevas incorporan su búsqueda con user-scanner y la consulta de su perfil público de Gravatar a la cola del expediente. Incluye plataformas, enlaces y emails descubiertos; las consultas loud pueden enviar correos o notificaciones.</p>
             </>
           )}
 
           {node.kind === "action" && node.action !== undefined && (
             <>
               <section className="detail-fact" aria-labelledby="selected-action-heading">
-                <h3 id="selected-action-heading">{node.action.spec.provider === "user-scanner" ? "Búsqueda con user-scanner" : "Comprobación de registro en GitHub"}</h3>
+                <h3 id="selected-action-heading">{actionTitle(node.action)}</h3>
                 <dl className="fact-list">
                   <dt>Proveedor</dt><dd>{node.action.spec.provider}</dd>
                   <dt>Semilla</dt><dd className="break-value">{node.action.spec.seed.value}</dd>
@@ -176,7 +176,7 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
           {node.kind === "evidence" && node.evidence !== undefined && (
             <>
               <section className="detail-fact" aria-labelledby="selected-evidence-heading">
-                <h3 id="selected-evidence-heading">{node.evidence.finding ? "Hallazgo de user-scanner" : "Observación de registro"}</h3>
+                <h3 id="selected-evidence-heading">{evidenceHeading(node.evidence)}</h3>
                 <dl className="fact-list">
                   <dt>Identificador de evidencia</dt><dd><TechnicalValue label="Identificador de evidencia" value={node.evidence.id} /></dd>
                   <dt>Resultado</dt><dd><StateValue value={node.evidence.status} /></dd>

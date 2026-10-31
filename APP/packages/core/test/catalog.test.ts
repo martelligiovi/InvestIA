@@ -35,10 +35,13 @@ test("authorization covers a tool only through an explicit scope", () => {
   assert.equal(authorizationCovers(undefined, "user-scanner.email.v1"), false);
   assert.equal(authorizationCovers(unscoped, "github.email-registration.v1"), true, "historical actions keep their gate");
   assert.equal(authorizationCovers(current, "unknown.tool.v1"), false);
+  assert.equal(authorizationCovers(current, "gravatar.email.v1"), false, "a user-scanner grant never covers Gravatar");
+  assert.equal(authorizationCovers(singleScope, "gravatar.email.v1"), false);
+  assert.equal(authorizationCovers({ ...current, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] }, "gravatar.email.v1"), true);
 });
 
 test("the scoped catalog lists every consentable tool", () => {
-  assert.deepEqual(SCOPED_CATALOG_IDS, ["user-scanner.email.v1"]);
+  assert.deepEqual(SCOPED_CATALOG_IDS, ["user-scanner.email.v1", "gravatar.email.v1"]);
 });
 
 test("catalog executor dispatches each action to the box registered for its catalog id", async () => {

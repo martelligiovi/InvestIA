@@ -32,6 +32,7 @@ export {
   type EvidenceId,
   type EvidenceRecord,
   type GitHubActionSpec,
+  type GravatarActionSpec,
   type UserScannerActionSpec,
   type GitHubCatalogAction,
   type Investigation,

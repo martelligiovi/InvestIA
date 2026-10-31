@@ -13,6 +13,7 @@ import {
   type InvestigationStore,
   type InvestigationTransaction,
   type Observation,
+  type ScopedCatalogId,
 } from "../src/index.ts";
 
 class MemoryInvestigationStore implements InvestigationStore {
@@ -104,7 +105,11 @@ class MemoryInvestigationStore implements InvestigationStore {
   }
 }
 
-function makeHarness(executor?: InvestigationExecutor) {
+/**
+ * These workflow tests pin the single-tool queue they were written for; the default catalog that
+ * also queues Gravatar is covered by "the default seed catalog queues every scoped tool".
+ */
+function makeHarness(executor?: InvestigationExecutor, seedCatalog: readonly ScopedCatalogId[] = ["user-scanner.email.v1"]) {
   const store = new MemoryInvestigationStore();
   let id = 0;
   let tick = 0;
@@ -124,9 +129,36 @@ function makeHarness(executor?: InvestigationExecutor) {
     executor: defaultExecutor,
     clock: () => `2025-01-01T00:00:${String(tick++).padStart(2, "0")}.000Z`,
     createId: (kind) => `${kind}-${++id}`,
+    seedCatalog,
   });
   return { store, service };
 }
+
+test("the default seed catalog queues every scoped tool in order", async () => {
+  const store = new MemoryInvestigationStore();
+  let id = 0;
+  const service = createInvestigationService({
+    store, executor: { id: "unused", async execute() { return []; } },
+    clock: () => "2025-01-01T00:00:00.000Z", createId: (kind) => `${kind}-${++id}`,
+  });
+  const created = await service.createInvestigation();
+  const seeded = await service.addEmailSeed(created.id, "ana@example.test");
+  assert.deepEqual(seeded.actions.map((action) => [action.spec.catalogId, action.status, action.queuedByCatalog]), [
+    ["user-scanner.email.v1", "queued", true],
+    ["gravatar.email.v1", "queued", true],
+  ]);
+  assert.deepEqual(seeded.audit.filter((event) => event.kind === "action_queued").map((event) => event.actionId), seeded.actions.map((action) => action.id));
+});
+
+test("a seed catalog must list known scoped tools exactly once", () => {
+  const base = {
+    store: new MemoryInvestigationStore(), executor: { id: "unused", async execute() { return []; } },
+    clock: () => "2025-01-01T00:00:00.000Z", createId: () => "id",
+  };
+  for (const seedCatalog of [[], ["user-scanner.email.v1", "user-scanner.email.v1"], ["github.email-registration.v1"]]) {
+    assert.throws(() => createInvestigationService({ ...base, seedCatalog: seedCatalog as ScopedCatalogId[] }), /seed catalog/i);
+  }
+});
 
 async function approvedAction(
   service: ReturnType<typeof createInvestigationService>,

@@ -37,7 +37,15 @@ export interface InvestigationServiceDependencies {
   readonly executor: InvestigationExecutor;
   readonly clock: () => string;
   readonly createId: (kind: InvestigationIdKind) => string;
+  /** Tools queued for every new email seed, in order; defaults to every scoped catalog tool. */
+  readonly seedCatalog?: readonly ScopedCatalogId[];
 }
+
+const SEED_QUEUE_REASONS: Readonly<Record<ScopedCatalogId, string>> = {
+  "user-scanner.email.v1": "Catalog policy queued a user-scanner email and cross-scan check, including loud modules, for the recorded email seed.",
+  "gravatar.email.v1": "Catalog policy queued a Gravatar public profile lookup for the recorded email seed.",
+};
+const SEED_PROVIDERS = { "user-scanner.email.v1": "user-scanner", "gravatar.email.v1": "gravatar" } as const;
 
 const CATALOG_ID = "user-scanner.email.v1" as const;
 const LEGACY_CATALOG_ID = "github.email-registration.v1" as const;
@@ -131,10 +139,16 @@ function getAction(investigation: Investigation, actionId: InvestigationActionId
 
 export class InvestigationService {
   private readonly dependencies: InvestigationServiceDependencies;
+  private readonly seedCatalog: readonly ScopedCatalogId[];
 
   constructor(dependencies: InvestigationServiceDependencies) {
     if (dependencies.executor.id.trim().length === 0) throw new Error("Executor id must not be empty");
+    const seedCatalog = dependencies.seedCatalog ?? SCOPED_CATALOG_IDS;
+    if (seedCatalog.length === 0 || !seedCatalog.every(isScopedCatalogId) || new Set(seedCatalog).size !== seedCatalog.length) {
+      throw new Error("The seed catalog must list known scoped tools exactly once");
+    }
     this.dependencies = dependencies;
+    this.seedCatalog = [...seedCatalog];
   }
 
   async createInvestigation(name?: string, intention?: string, advancementMode?: AdvancementMode): Promise<Investigation> {
@@ -171,23 +185,24 @@ export class InvestigationService {
     const why = reasonText(reason);
     const at = timestamp(this.dependencies.clock);
     const event = auditEvent(this.dependencies.createId, at, "operator", "email_seed_added", why);
-    const action: GitHubCatalogAction = {
+    const queuedActions = this.seedCatalog.map((catalogId): GitHubCatalogAction => ({
       id: newId(this.dependencies.createId, "action"),
-      spec: { catalogId: CATALOG_ID, provider: "user-scanner", seed: { ...seed } },
+      spec: { catalogId, provider: SEED_PROVIDERS[catalogId], seed: { ...seed } } as GitHubCatalogAction["spec"],
       status: "queued",
       queuedByCatalog: true,
       proposedAt: at,
-      proposalReason: "Catalog policy queued a user-scanner email and cross-scan check, including loud modules, for the recorded email seed.",
-    };
-    const queued = auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id });
+      proposalReason: SEED_QUEUE_REASONS[catalogId],
+    }));
+    const queued = queuedActions.map((entry) =>
+      auditEvent(this.dependencies.createId, at, "system", "action_queued", entry.proposalReason, { actionId: entry.id }));
     return this.dependencies.store.transact(id, (current) => {
       if (current.emailSeeds.some((existing) => existing.value === seed.value)) {
         throw new Error("Email seed already exists in this investigation");
       }
       const next = withRevision(current, at, {
         emailSeeds: [...current.emailSeeds, seed],
-        actions: [...current.actions, action],
-        audit: [...current.audit, event, queued],
+        actions: [...current.actions, ...queuedActions],
+        audit: [...current.audit, event, ...queued],
       });
       return { next, result: next };
     });
@@ -485,7 +500,7 @@ export function createSeedBoxExecutor(box: SeedBox<EmailSeed, Observation>): Inv
     id: box.id,
     async execute(action: GitHubCatalogAction, permit: ExecutionPermit): Promise<readonly Observation[]> {
       assertClaimedAction(action);
-      if (box.id === "user-scanner:email" && action.spec.catalogId !== CATALOG_ID) {
+      if (box.id === "user-scanner:email" && action.spec.catalogId === LEGACY_CATALOG_ID) {
         throw new Error(RETIRED_ACTION_MESSAGE);
       }
       return executeSeedBox(box, action.spec.seed, permit as ExecutionState);

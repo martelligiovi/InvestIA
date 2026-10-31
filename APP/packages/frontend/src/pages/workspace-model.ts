@@ -43,6 +43,24 @@ function seedNodeId(value: string): string {
   return `seed:${encodeURIComponent(value)}`;
 }
 
+const ACTION_TITLES: Readonly<Record<string, string>> = {
+  "user-scanner": "Búsqueda de email y enlaces con user-scanner",
+  gravatar: "Perfil público de Gravatar",
+};
+const SOURCE_TOOLS: Readonly<Record<string, string>> = {
+  "user-scanner:email": "user-scanner",
+  "gravatar:email": "Gravatar",
+};
+
+export function actionTitle(action: GitHubCatalogAction): string {
+  return ACTION_TITLES[action.spec.provider] ?? "Comprobación de registro en GitHub";
+}
+
+export function evidenceHeading(evidence: EvidenceRecord): string {
+  if (evidence.finding === undefined) return "Observación de registro";
+  return `Hallazgo de ${SOURCE_TOOLS[evidence.sourceId] ?? "user-scanner"}`;
+}
+
 function nodeLabel(kind: WorkspaceNodeKind, title: string, state: string): string {
   const noun = kind === "seed" ? "Semilla" : kind === "action" ? "Acción" : kind === "result" ? "Resultado" : "Evidencia";
   return `${noun}: ${title}. Estado: ${workspaceStatusLabel(state)}.`;
@@ -72,7 +90,7 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
   });
 
   investigation.actions.forEach((action, index) => {
-    const title = action.spec.provider === "user-scanner" ? "Búsqueda de email y enlaces con user-scanner" : "Comprobación de registro en GitHub";
+    const title = actionTitle(action);
     const state = actionDisplayState(investigation, action);
     nodes.push({
       id: `action:${action.id}`,

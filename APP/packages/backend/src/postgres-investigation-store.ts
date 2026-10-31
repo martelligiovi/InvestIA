@@ -147,7 +147,8 @@ function isStoredAction(value: unknown): boolean {
   const seed = value.spec.seed;
   if (
     !((value.spec.catalogId === "github.email-registration.v1" && value.spec.provider === "github") ||
-      (value.spec.catalogId === "user-scanner.email.v1" && value.spec.provider === "user-scanner")) ||
+      (value.spec.catalogId === "user-scanner.email.v1" && value.spec.provider === "user-scanner") ||
+      (value.spec.catalogId === "gravatar.email.v1" && value.spec.provider === "gravatar")) ||
     !isRecord(seed) || seed.kind !== "email" || !isNonEmptyString(seed.value) ||
     !["proposed", "queued", "claimed", "succeeded", "failed"].includes(String(value.status)) ||
     !isTimestamp(value.proposedAt) || !isNonEmptyString(value.proposalReason)
