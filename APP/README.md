@@ -59,7 +59,7 @@ The API binds to `127.0.0.1:4317` by default. It does not authenticate requests;
 
 Every email seed also queues a [Gravatar](packages/adapter-gravatar/README.md) public profile lookup. Each tool runs only when the case authorization names it: grants recorded before a tool was added never extend to it, so renew the authorization to enable new tools. Gravatar needs no key; set the optional `GRAVATAR_API_KEY` to raise its rate limit.
 
-Accepted username seeds queue a [Maigret](packages/adapter-maigret/README.md) search of about 500 sites, without recursion and without runtime site-database updates. Maigret needs its own venv; point `MAIGRET_PYTHON` at it.
+Accepted username seeds queue a [Maigret](packages/adapter-maigret/README.md) search of about 500 sites, without recursion and without runtime site-database updates. Maigret needs its own venv; point `MAIGRET_PYTHON` at it. Usernames that findings reveal (username targets and Maigret's discovered usernames) appear in the workspace **Usernames** panel as proposals; none runs until the operator accepts it with a reason, and rejected ones stay recorded.
 
 ## Frontend quick path
 

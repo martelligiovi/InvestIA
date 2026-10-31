@@ -50,6 +50,7 @@ const CreateInvestigationBody = z.object({
 }).strict().optional();
 const EmailBody = ReasonBody.extend({ email: z.string().email().max(320) }).strict();
 const UsernameBody = ReasonBody.extend({ username: z.string().trim().regex(USERNAME_SEED_PATTERN) }).strict();
+const UsernameDecisionBody = UsernameBody.extend({ decision: z.enum(["accepted", "rejected"]) }).strict();
 const AuthorizationBody = ReasonBody.extend({ granted: z.boolean() }).strict();
 const ValidationBody = ReasonBody.extend({ status: z.enum(["accepted", "rejected", "inconclusive"]) }).strict();
 const EmptyBody = z.object({}).strict().optional();
@@ -118,6 +119,7 @@ function publicError(error: unknown): unknown {
     if ([
       "Email seed already exists in this investigation",
       "Username seed already exists in this investigation",
+      "Username proposal not found",
       "GitHub actions require an email seed already recorded in this investigation",
       "A GitHub catalog action already exists for this email seed",
       "Scanner actions require an email seed already recorded in this investigation",
@@ -248,6 +250,14 @@ export function createBackendApp(
     const { id } = input(InvestigationParams, request.params);
     const body = input(UsernameBody, request.body);
     const investigation = await serviceCall(() => service.addUsernameSeed(id, body.username, body.reason));
+    await projectPersistedState(id);
+    return reply.code(201).send(publicInvestigation(investigation));
+  });
+
+  app.post<{ Params: { id: string } }>("/investigations/:id/usernames/decisions", async (request, reply) => {
+    const { id } = input(InvestigationParams, request.params);
+    const body = input(UsernameDecisionBody, request.body);
+    const investigation = await serviceCall(() => service.decideUsernameProposal(id, body.username, body.decision, body.reason));
     await projectPersistedState(id);
     return reply.code(201).send(publicInvestigation(investigation));
   });

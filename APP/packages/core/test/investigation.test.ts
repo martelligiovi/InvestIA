@@ -14,7 +14,10 @@ import {
   type InvestigationTransaction,
   type Observation,
   type ScopedCatalogId,
+  createInitialInvestigation,
+  findingSeedNodeId,
   investigationSeedGraph,
+  usernameProposals,
   usernameSeedNodeId,
 } from "../src/index.ts";
 
@@ -216,6 +219,73 @@ test("a Maigret run keeps only findings for its own username seed", async () => 
   assert.deepEqual(stored.evidence.map((record) => [record.provider, record.seed, record.sourceId]), [
     ["GitHub", { kind: "username", value: "anaexample" }, "maigret:username"],
   ]);
+});
+
+function scannerFinding(provider: string, target: { kind: "email" | "username"; value: string }, extra: Record<string, string> = {}): Observation {
+  return {
+    kind: "scanner_finding", seed: { kind: "email", value: "ana@example.test" }, provider, status: "registered",
+    finding: { target, upstreamStatus: "Found", url: "", category: "", reason: "", extra, media: {} },
+  };
+}
+
+async function caseWithFindings(observations: Observation[]) {
+  const harness = makeHarness({ id: "user-scanner:email", async execute() { return observations; } });
+  const created = await harness.service.createInvestigation();
+  await harness.service.addEmailSeed(created.id, "ana@example.test");
+  await harness.service.authorize(created.id, true, "Authorize the listed tools.");
+  await harness.service.executeNextAction(created.id);
+  return { ...harness, id: created.id, investigation: (await harness.service.loadInvestigation(created.id))! };
+}
+
+test("username proposals come from username findings and discovered usernames, deduplicated and validated", async () => {
+  const { investigation } = await caseWithFindings([
+    scannerFinding("GitHub", { kind: "username", value: "anaexample" }),
+    scannerFinding("Reddit", { kind: "username", value: "anaexample" }),
+    scannerFinding("Spotify", { kind: "email", value: "ana@example.test" }, { discovered_usernames: "ana-alt, --help, ana_dev, anaexample" }),
+    scannerFinding("Bad", { kind: "username", value: "two words" }),
+  ]);
+  const [github, , spotify] = investigation.evidence;
+  assert.deepEqual(usernameProposals(investigation), [
+    { value: "anaexample", evidenceId: github!.id, provider: "GitHub" },
+    { value: "ana-alt", evidenceId: spotify!.id, provider: "Spotify" },
+    { value: "ana_dev", evidenceId: spotify!.id, provider: "Spotify" },
+  ]);
+  assert.deepEqual(usernameProposals(createInitialInvestigation("empty", "2025-01-01T00:00:00.000Z")), []);
+});
+
+test("accepting a proposal records the decision and queues Maigret fed by the finding", async () => {
+  const { service, id, investigation } = await caseWithFindings([scannerFinding("GitHub", { kind: "username", value: "anaexample" })]);
+  const evidenceId = investigation.evidence[0]!.id;
+  const decided = await service.decideUsernameProposal(id, "anaexample", "accepted", "Same person, worth a search.");
+  assert.deepEqual(decided.usernameSeeds, [{
+    kind: "username", value: "anaexample", origin: { kind: "evidence", evidenceId }, status: "accepted",
+    at: decided.updatedAt, reason: "Proposed from a GitHub finding.",
+    decision: { at: decided.updatedAt, reason: "Same person, worth a search.", operator: "local-operator" },
+  }]);
+  const maigret = decided.actions.at(-1)!;
+  assert.deepEqual(maigret.spec, { catalogId: "maigret.username.v1", provider: "maigret", seed: { kind: "username", value: "anaexample" } });
+  assert.equal(maigret.status, "queued");
+  assert.equal(maigret.sourceSeedId, findingSeedNodeId(evidenceId));
+  assert.equal(investigationSeedGraph(decided).actionInputs.get(maigret.id), findingSeedNodeId(evidenceId));
+  assert.deepEqual(decided.audit.slice(-2).map((event) => [event.kind, event.evidenceId ?? event.actionId]), [
+    ["username_proposal_accepted", evidenceId], ["action_queued", maigret.id],
+  ]);
+  assert.deepEqual(usernameProposals(decided), [], "a decided username is no longer proposed");
+});
+
+test("rejecting a proposal records the decision without queuing work, and unknown or decided proposals fail unchanged", async () => {
+  const { service, store, id } = await caseWithFindings([scannerFinding("GitHub", { kind: "username", value: "anaexample" })]);
+  const before = await store.get(id);
+  const rejected = await service.decideUsernameProposal(id, "anaexample", "rejected", "Different person.");
+  assert.equal(rejected.usernameSeeds?.[0]?.status, "rejected");
+  assert.equal(rejected.actions.length, before!.actions.length);
+  assert.equal(rejected.audit.at(-1)?.kind, "username_proposal_rejected");
+  const after = await store.get(id);
+  for (const [value, decision] of [["anaexample", "accepted"], ["nobody", "accepted"], ["--help", "rejected"]] as const) {
+    await assert.rejects(service.decideUsernameProposal(id, value, decision, "Try."), /Username proposal not found|A valid username seed is required/);
+  }
+  await assert.rejects(service.decideUsernameProposal(id, "anaexample", "maybe" as "accepted", "Try."), /decision/i);
+  assert.deepEqual(await store.get(id), after);
 });
 
 async function approvedAction(

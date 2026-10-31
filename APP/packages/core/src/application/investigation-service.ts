@@ -1,6 +1,7 @@
 import { isScannerFinding, type Observation, type RegistrationObservation, type RegistrationStatus, type ScannerObservation } from "../domain/observation.ts";
 import { USERNAME_SEED_PATTERN, type EmailSeed, type UsernameSeed } from "../domain/seed.ts";
-import { usernameSeedNodeId } from "../domain/seed-graph.ts";
+import { findingSeedNodeId, usernameSeedNodeId } from "../domain/seed-graph.ts";
+import { usernameProposals } from "../domain/username-proposals.ts";
 import type { SeedBox } from "../domain/seed-box.ts";
 import {
   CATALOG_INPUT_KINDS,
@@ -226,7 +227,7 @@ export class InvestigationService {
     const at = timestamp(this.dependencies.clock);
     const record: UsernameSeedRecord = { kind: "username", value: seed.value, origin: { kind: "operator" }, status: "accepted", at, reason: why };
     const event = auditEvent(this.dependencies.createId, at, "operator", "username_seed_added", why);
-    const action = this.usernameAction(seed, at);
+    const action = this.usernameAction(seed, at, usernameSeedNodeId(seed.value));
     const queued = auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id });
     return this.dependencies.store.transact(id, (current) => {
       if ((current.usernameSeeds ?? []).some((existing) => existing.value === seed.value)) {
@@ -241,11 +242,44 @@ export class InvestigationService {
     });
   }
 
-  private usernameAction(seed: UsernameSeed, at: string): GitHubCatalogAction {
+  /**
+   * Records the operator decision on a username proposal derived from current evidence. Accepting
+   * queues Maigret fed by the finding seed; it still runs only under a grant naming Maigret.
+   */
+  async decideUsernameProposal(id: string, value: string, decision: "accepted" | "rejected", reason: string): Promise<Investigation> {
+    const seed = usernameSeed(value);
+    if (decision !== "accepted" && decision !== "rejected") throw new Error("Unsupported username proposal decision");
+    const why = reasonText(reason);
+    const at = timestamp(this.dependencies.clock);
+    const decisionEvent = auditEvent(this.dependencies.createId, at, "operator",
+      decision === "accepted" ? "username_proposal_accepted" : "username_proposal_rejected", why);
+    return this.dependencies.store.transact(id, (current) => {
+      const proposal = usernameProposals(current).find((candidate) => candidate.value === seed.value);
+      if (proposal === undefined) throw new Error("Username proposal not found");
+      const record: UsernameSeedRecord = {
+        kind: "username", value: seed.value, origin: { kind: "evidence", evidenceId: proposal.evidenceId },
+        status: decision, at, reason: `Proposed from a ${proposal.provider} finding.`,
+        decision: { at, reason: why, operator: "local-operator" },
+      };
+      const action = decision === "accepted" ? this.usernameAction(seed, at, findingSeedNodeId(proposal.evidenceId)) : undefined;
+      const events: AuditEvent[] = [{ ...decisionEvent, evidenceId: proposal.evidenceId }];
+      if (action !== undefined) {
+        events.push(auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id }));
+      }
+      const next = withRevision(current, at, {
+        usernameSeeds: [...(current.usernameSeeds ?? []), record],
+        actions: action === undefined ? current.actions : [...current.actions, action],
+        audit: [...current.audit, ...events],
+      });
+      return { next, result: next };
+    });
+  }
+
+  private usernameAction(seed: UsernameSeed, at: string, sourceSeedId: string): GitHubCatalogAction {
     return {
       id: newId(this.dependencies.createId, "action"),
       spec: { catalogId: "maigret.username.v1", provider: "maigret", seed: { ...seed } },
-      sourceSeedId: usernameSeedNodeId(seed.value),
+      sourceSeedId,
       status: "queued",
       queuedByCatalog: true,
       proposedAt: at,

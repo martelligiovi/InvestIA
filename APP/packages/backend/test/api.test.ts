@@ -156,6 +156,42 @@ test("HTTP username seeds queue Maigret and reject invalid or duplicate input wi
   assert.equal(harness.executions, 0);
 });
 
+test("HTTP username proposal decisions accept or reject derived proposals and refuse anything else unchanged", async (t) => {
+  const harness = makeHarness();
+  t.after(() => harness.app.close());
+  const { app, store } = harness;
+  const id = (await app.inject({ method: "POST", url: "/investigations" })).json<{ id: string }>().id;
+  await app.inject({ method: "POST", url: `/investigations/${id}/emails`, payload: { email: "person@example.org", reason: "Seed." } });
+  const current = (await store.get(id))!;
+  const finding = { target: { kind: "username" as const, value: "anaexample" }, upstreamStatus: "Found" as const, url: "", category: "", reason: "", extra: { discovered_usernames: "ana-alt" }, media: {} };
+  await store.transact(id, () => ({ next: { ...current, revision: current.revision + 1, evidence: [{
+    id: "evidence-x", actionId: current.actions[0]!.id, seed: current.emailSeeds[0]!, provider: "GitHub", status: "registered",
+    sourceId: "user-scanner:email", recordedAt: current.updatedAt, finding,
+  }] }, result: undefined }));
+
+  const accepted = await app.inject({ method: "POST", url: `/investigations/${id}/usernames/decisions`, payload: { username: "anaexample", decision: "accepted", reason: "Same person." } });
+  assert.equal(accepted.statusCode, 201);
+  const body = accepted.json<Investigation>();
+  assert.deepEqual(body.usernameSeeds?.map((seed) => [seed.value, seed.status]), [["anaexample", "accepted"]]);
+  assert.equal(body.actions.at(-1)?.spec.catalogId, "maigret.username.v1");
+  const rejected = await app.inject({ method: "POST", url: `/investigations/${id}/usernames/decisions`, payload: { username: "ana-alt", decision: "rejected", reason: "Not them." } });
+  assert.equal(rejected.statusCode, 201);
+
+  const before = await store.get(id);
+  for (const [payload, status] of [
+    [{ username: "anaexample", decision: "accepted", reason: "Again." }, 409],
+    [{ username: "nobody", decision: "accepted", reason: "Unknown." }, 409],
+    [{ username: "anaexample", decision: "maybe", reason: "Bad." }, 400],
+    [{ username: "--help", decision: "accepted", reason: "Bad." }, 400],
+    [{ username: "anaexample", decision: "accepted" }, 400],
+  ] as const) {
+    const response = await app.inject({ method: "POST", url: `/investigations/${id}/usernames/decisions`, payload });
+    assert.equal(response.statusCode, status, JSON.stringify(payload));
+  }
+  assert.deepEqual(await store.get(id), before);
+  assert.equal(harness.executions, 0);
+});
+
 test("HTTP creation accepts intention and mode without executing work", async (t) => {
   const harness = makeHarness();
   t.after(() => harness.app.close());

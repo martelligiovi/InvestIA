@@ -16,7 +16,7 @@ export interface EmailSeedNode {
   readonly origin: { readonly kind: "operator" };
 }
 
-/** Username accepted as a seed, by the operator or from a confirmed proposal. */
+/** Username the operator added as a seed. Accepted proposals feed Maigret from their finding seed. */
 export interface UsernameSeedNode {
   readonly kind: "username";
   readonly id: InvestigationSeedId;
@@ -75,8 +75,8 @@ export function investigationSeedGraph(investigation: Investigation): Investigat
   }
 
   for (const record of investigation.usernameSeeds ?? []) {
-    // Proposed and rejected usernames are not seeds; only accepted ones feed actions.
-    if (record.status !== "accepted") continue;
+    // Rejected usernames are not seeds; accepted proposals are represented by their finding seed.
+    if (record.status !== "accepted" || record.origin.kind !== "operator") continue;
     const id = usernameSeedNodeId(record.value);
     if (seedIds.has(id)) continue;
     seedIds.add(id);

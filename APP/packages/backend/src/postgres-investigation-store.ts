@@ -159,9 +159,11 @@ function isStoredUsernameSeeds(value: unknown): boolean {
     if (!isUsernameSeed(record) || values.has(record.value)) return false;
     values.add(record.value);
     const origin = record.origin;
-    return isRecord(origin) && (origin.kind === "operator" || (origin.kind === "evidence" && isNonEmptyString(origin.evidenceId))) &&
-      ["proposed", "accepted", "rejected"].includes(String(record.status)) && isTimestamp(record.at) &&
-      isNonEmptyString(record.reason) && (record.decision === undefined || isApproval(record.decision));
+    // Operator seeds are accepted on entry; evidence proposals exist here only once decided.
+    const decided = isRecord(origin) && ((origin.kind === "operator" && record.status === "accepted" && record.decision === undefined) ||
+      (origin.kind === "evidence" && isNonEmptyString(origin.evidenceId) && ["accepted", "rejected"].includes(String(record.status)) &&
+        isApproval(record.decision)));
+    return decided && isTimestamp(record.at) && isNonEmptyString(record.reason);
   });
 }
 

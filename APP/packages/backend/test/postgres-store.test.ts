@@ -343,6 +343,9 @@ test("username seeds, Maigret actions and username evidence round-trip while leg
     { usernameSeeds: [{ ...record, value: "--help" }] },
     { usernameSeeds: [{ ...record, kind: "email" }] },
     { usernameSeeds: [{ ...record, status: "maybe" }] },
+    { usernameSeeds: [{ ...record, status: "proposed" }] },
+    { usernameSeeds: [{ ...record, decision: { at: record.at, reason: "Operator seeds carry no decision", operator: "local-operator" } }] },
+    { usernameSeeds: [{ ...record, origin: { kind: "evidence", evidenceId: "evidence" } }] },
     { usernameSeeds: [{ ...record, origin: { kind: "evidence" } }] },
     { usernameSeeds: [record, record] },
     { usernameSeeds: "anaexample" },
@@ -355,6 +358,34 @@ test("username seeds, Maigret actions and username evidence round-trip while leg
     await assert.rejects(store.transact(created.id, () => ({ next: corrupt, result: undefined })), InvestigationSchemaError);
     assert.deepEqual(database.records.get(created.id), before);
   }
+});
+
+test("accepted and rejected username proposals round-trip with their decisions", async () => {
+  const database = new FakePostgres();
+  const store = new PostgresInvestigationStore(database);
+  let sequence = 0;
+  const finding = (value: string) => ({ kind: "scanner_finding" as const, seed: { kind: "email" as const, value: "seed@example.org" }, provider: "GitHub", status: "registered" as const, finding: {
+    target: { kind: "username" as const, value }, upstreamStatus: "Found" as const, url: "", category: "", reason: "", extra: {}, media: {},
+  } });
+  const service = createInvestigationService({
+    store, seedCatalog: ["user-scanner.email.v1"],
+    executor: createCatalogExecutor({ "user-scanner.email.v1": { id: "user-scanner:email", inputKind: "email", async execute() { return [finding("keep-me"), finding("drop-me")]; } } }),
+    clock: () => "2025-03-01T00:00:00.000Z", createId: (kind) => `${kind}-${++sequence}`,
+  });
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "seed@example.org");
+  await service.authorize(created.id, true, "Authorize the listed tools");
+  await service.executeNextAction(created.id);
+  await service.decideUsernameProposal(created.id, "keep-me", "accepted", "Same person");
+  const decided = await service.decideUsernameProposal(created.id, "drop-me", "rejected", "Different person");
+  assert.deepEqual(await store.get(created.id), decided);
+  assert.deepEqual(decided.usernameSeeds?.map((seed) => [seed.value, seed.status, seed.origin.kind, seed.decision?.reason]), [
+    ["keep-me", "accepted", "evidence", "Same person"], ["drop-me", "rejected", "evidence", "Different person"],
+  ]);
+  const before = structuredClone(database.records.get(created.id));
+  const undecided = { ...decided, revision: decided.revision + 1, usernameSeeds: decided.usernameSeeds!.map(({ decision: _decision, ...rest }) => rest) } as Investigation;
+  await assert.rejects(store.transact(created.id, () => ({ next: undecided, result: undefined })), InvestigationSchemaError);
+  assert.deepEqual(database.records.get(created.id), before);
 });
 
 test("a grant recorded before Maigret was added never claims a Maigret action", async () => {

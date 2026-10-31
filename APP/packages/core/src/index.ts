@@ -70,6 +70,7 @@ export {
   type InvestigationIdKind,
   type InvestigationServiceDependencies,
 } from "./application/investigation-service.ts";
+export { usernameProposals, type UsernameProposal } from "./domain/username-proposals.ts";
 export { compileInvestigationReport } from "./application/compile-report.ts";
 export {
   AI_MAX_TOKENS_RANGE,

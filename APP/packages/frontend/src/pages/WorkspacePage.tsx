@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import type { ValidationStatus } from "@investia/core";
+import { usernameProposals, type ValidationStatus } from "@investia/core";
 import { AsciiArt } from "../components/AsciiArt";
 import { InvestigationGraph } from "../components/InvestigationGraph";
+import { UsernameSeedsPanel } from "../components/UsernameSeedsPanel";
 import { WorkspaceDetails } from "../components/WorkspaceDetails";
 import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
@@ -122,6 +123,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const claimedActions = investigation.actions.filter((action) => action.status === "claimed");
   const dispatchEligible = !automatic && !investigation.paused && authorizationGranted && queuedActions.length > 0 && !controller.stale && !controller.busy;
   const controlsDisabled = controller.busy || controller.stale;
+  const usernameProposalCount = usernameProposals(investigation).length;
   const investigationPaused = investigation.paused;
   const reportIsFresh = controller.report !== null && controller.reportRevision === investigation.revision && !controller.stale;
   const aiReport = controller.reportKind === "ai";
@@ -189,6 +191,14 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     return controller.mutate((api, investigationId) => api.validateEvidence(investigationId, evidenceId, status, reason));
   }
 
+  async function addUsername(username: string, reason: string): Promise<boolean> {
+    return controller.mutate((api, investigationId) => api.addUsernameSeed(investigationId, username, reason));
+  }
+
+  async function decideUsername(username: string, decision: "accepted" | "rejected", reason: string): Promise<boolean> {
+    return controller.mutate((api, investigationId) => api.decideUsernameProposal(investigationId, username, decision, reason));
+  }
+
   async function runNextAction() {
     if (!dispatchEligible) return;
     await controller.mutate((api, investigationId) => api.runNextAction(investigationId), true);
@@ -244,6 +254,12 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
                 <li>Catálogo: {queuedActions.length > 0 ? "acción disponible" : "sin acción en cola"}</li>
                 <li>Vista: {controller.stale ? "desactualizada" : "snapshot leído"}</li>
               </ul>
+            </div>
+          </details>
+          <details className="workspace-usernames-disclosure workspace-disclosure">
+            <summary>Usernames{usernameProposalCount > 0 ? ` (${usernameProposalCount})` : ""}</summary>
+            <div className="workspace-popover workspace-usernames-panel">
+              <UsernameSeedsPanel investigation={investigation} disabled={controlsDisabled} onAdd={addUsername} onDecide={decideUsername} />
             </div>
           </details>
           <details className="workspace-pause-disclosure workspace-disclosure">

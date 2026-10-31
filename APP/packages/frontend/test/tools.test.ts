@@ -34,13 +34,14 @@ describe("tool-aware workspace labels", () => {
 });
 
 describe("username seeds in the workspace graph", () => {
-  it("renders an accepted username seed linked to its Maigret action and skips proposals", () => {
+  it("renders an operator username seed linked to its Maigret action and no node for decided proposals", () => {
     const maigret = { ...action({ catalogId: "maigret.username.v1", provider: "maigret", seed: { kind: "username", value: "anaexample" } }), sourceSeedId: "seed:username:anaexample" };
     const investigation: Investigation = {
       ...createInitialInvestigation("case", at),
       usernameSeeds: [
         { kind: "username", value: "anaexample", origin: { kind: "operator" }, status: "accepted", at, reason: "Operator" },
-        { kind: "username", value: "pending-one", origin: { kind: "evidence", evidenceId: "e1" }, status: "proposed", at, reason: "Discovered" },
+        { kind: "username", value: "rejected-one", origin: { kind: "evidence", evidenceId: "e1" }, status: "rejected", at, reason: "Discovered", decision: { at, reason: "No", operator: "local-operator" } },
+        { kind: "username", value: "accepted-one", origin: { kind: "evidence", evidenceId: "e1" }, status: "accepted", at, reason: "Discovered", decision: { at, reason: "Sí", operator: "local-operator" } },
       ],
       actions: [maigret],
     };

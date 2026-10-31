@@ -37,6 +37,8 @@ export type AuditActor = "operator" | "system";
 export type AuditKind =
   | "email_seed_added"
   | "username_seed_added"
+  | "username_proposal_accepted"
+  | "username_proposal_rejected"
   | "action_proposed"
   | "action_queued"
   | "authorization_changed"
@@ -149,18 +151,22 @@ export interface EvidenceRecord {
   readonly recordedAt: string;
 }
 
-export type UsernameSeedStatus = "proposed" | "accepted" | "rejected";
+export type UsernameSeedStatus = "accepted" | "rejected";
 
-/** Username seed: added by the operator, or proposed from a finding and confirmed by the operator. */
+/**
+ * Username decided by the operator: added directly, or a proposal derived from a finding that the
+ * operator accepted or rejected. Undecided proposals are derived from evidence, never stored.
+ */
 export interface UsernameSeedRecord {
   readonly kind: "username";
   readonly value: string;
   readonly origin: { readonly kind: "operator" } | { readonly kind: "evidence"; readonly evidenceId: EvidenceId };
   readonly status: UsernameSeedStatus;
-  /** When the seed was added or proposed. */
+  /** When the operator added it or decided on its proposal. */
   readonly at: string;
+  /** Why it was added, or which finding proposed it. */
   readonly reason: string;
-  /** Operator decision on a proposed seed; absent on operator-added seeds. */
+  /** Operator decision on a proposal; absent on operator-added seeds. */
   readonly decision?: { readonly at: string; readonly reason: string; readonly operator: "local-operator" };
 }
 
