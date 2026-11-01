@@ -135,7 +135,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     // The opening drawer narrows the canvas; once it settles, bring the chosen node back into view.
     const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     window.setTimeout(() => {
-      document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(node.groupId ?? node.id)}"]`)
+      document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(node.groupId ?? node.relatedParentId ?? node.id)}"]`)
         ?.scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: reducedMotion ? "auto" : "smooth" });
     }, reducedMotion ? 0 : DRAWER_SETTLE_MS);
   }
@@ -144,7 +144,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     setDetailOpen(false);
     if (selectedNodeId === null) return;
     // Return focus to the node that opened the drawer so keyboard users keep their place in the graph.
-    document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(selectedNode?.groupId ?? selectedNodeId)}"]`)?.focus();
+    document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(selectedNode?.groupId ?? selectedNode?.relatedParentId ?? selectedNodeId)}"]`)?.focus();
   }
 
   function handleMobileTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {

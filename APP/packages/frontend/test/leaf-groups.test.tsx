@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { findingSeedNodeId, type Investigation } from "@investia/core";
-import { buildWorkspaceGraph, workspaceGraphPage } from "../src/pages/workspace-model";
+import { buildWorkspaceGraph, findWorkspaceNode, workspaceGraphPage } from "../src/pages/workspace-model";
 import { InvestigationGraph } from "../src/components/InvestigationGraph";
 import { WorkspaceDetails } from "../src/components/WorkspaceDetails";
 
@@ -65,6 +65,35 @@ it("keeps explicit branches separate and lays out downstream actions after their
   expect(graph.width).toBeGreaterThan(action.x + action.width);
   expect(graph.edges).toContainEqual(expect.objectContaining({ from: branch.id, to: action.id }));
   expect(graph.nodes.find((node) => node.id === "leaf-group:scan")?.members).toHaveLength(6);
+});
+
+it("keeps related observations of a linked Gravatar profile out of the leaf group", () => {
+  const base = snapshot(35);
+  const url = "https://gravatar.com/example";
+  const finding = (kind: "email" | "username", value: string, upstreamStatus: "Registered" | "Found") => ({
+    target: { kind, value }, upstreamStatus, url, category: "", reason: "", extra: {}, media: {},
+  });
+  const confirmed = { ...base.evidence[0]!, id: "gravatar-email", provider: "Gravatar", sourceId: "user-scanner:email", finding: finding("email", email.value, "Registered") };
+  const pivot = { ...confirmed, id: "gravatar-username", finding: finding("username", "example", "Found") };
+  const investigation = { ...base, evidence: [...base.evidence, confirmed, pivot], actions: [...base.actions, {
+    id: "profile", spec: { catalogId: "gravatar.email.v1" as const, provider: "gravatar" as const, seed: email },
+    status: "queued" as const, queuedByCatalog: true as const, proposedAt: at, proposalReason: "Linked lookup",
+    sourceSeedId: findingSeedNodeId(confirmed.id),
+  }] };
+  const before = JSON.stringify(investigation);
+  const graph = buildWorkspaceGraph(investigation);
+  const group = graph.nodes.find((node) => node.id === "leaf-group:scan")!;
+  const branch = graph.nodes.find((node) => node.id === "evidence:gravatar-email")!;
+  expect(group.members).toHaveLength(35);
+  expect(group.members?.some((node) => node.evidence?.provider === "Gravatar")).toBe(false);
+  expect(graph.edges).toContainEqual(expect.objectContaining({ from: branch.id, to: "action:profile" }));
+  expect(graph.nodes.some((node) => node.id === "evidence:gravatar-username")).toBe(false);
+  expect(findWorkspaceNode(graph, "evidence:gravatar-username")?.evidence?.id).toBe("gravatar-username");
+  const select = vi.fn();
+  render(<WorkspaceDetails investigation={investigation} node={branch} disabled={false} onValidate={vi.fn()} onSelectNode={select} />);
+  fireEvent.click(screen.getByRole("button", { name: /Ver observación relacionada/ }));
+  expect(select).toHaveBeenCalledWith("evidence:gravatar-username");
+  expect(JSON.stringify(investigation)).toBe(before);
 });
 
 it.each([2, 2722])("draws exactly two decorative sheets for %i results, with keyboard selection", (count) => {

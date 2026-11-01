@@ -108,6 +108,8 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
           {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} onSelectNode={onSelectNode} />}
           {node.groupId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
             onClick={() => onSelectNode(node.groupId!)}>Volver al grupo</button>}
+          {node.relatedParentId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
+            onClick={() => onSelectNode(node.relatedParentId!)}>Volver a la semilla vinculada</button>}
           {node.kind === "seed" && node.seedValue !== undefined && (
             <>
               <section className="detail-fact" aria-labelledby="selected-seed-heading">
@@ -186,6 +188,12 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
 
           {node.kind === "evidence" && node.evidence !== undefined && (
             <>
+              {node.relatedNodes !== undefined && onSelectNode !== undefined && <section className="detail-fact" aria-labelledby="related-observations-heading">
+                <h3 id="related-observations-heading">Observaciones del mismo perfil</h3>
+                <p className="detail-note">Comparten el enlace del perfil; esto no confirma identidad ni titularidad. Cada observación conserva su validación independiente.</p>
+                {node.relatedNodes.map((related) => <button key={related.id} type="button" className="workspace-button"
+                  onClick={() => onSelectNode(related.id)}>Ver observación relacionada · {related.evidence?.finding?.upstreamStatus}</button>)}
+              </section>}
               {node.profileSeed && <section className="detail-fact" aria-labelledby="profile-seed-heading">
                 <h3 id="profile-seed-heading">{node.profileSeed.label}</h3>
                 <p className="break-value">{node.profileSeed.isUrl

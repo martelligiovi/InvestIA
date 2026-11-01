@@ -15,6 +15,9 @@ export interface WorkspaceNode {
   readonly evidence?: EvidenceRecord;
   readonly profileSeed?: ProfileSeed;
   readonly members?: readonly WorkspaceNode[];
+  /** Distinct observations displayed under the same linked Gravatar profile seed. */
+  readonly relatedNodes?: readonly WorkspaceNode[];
+  readonly relatedParentId?: string;
   readonly groupId?: string;
   readonly x: number;
   readonly y: number;
@@ -180,10 +183,48 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
     });
   }
 
+  // One scanner can report the same Gravatar profile by email and username. When one
+  // observation feeds an action, retain the other under that seed rather than as a leaf.
+  // Exact profile URL and producer matching are display grouping only, not identity proof.
+  function gravatarProfileKey(node: WorkspaceNode): string | undefined {
+    const record = node.evidence;
+    const finding = record?.finding;
+    if (node.profileSeed !== undefined || record?.sourceId !== "user-scanner:email" ||
+      record.provider.trim().toLowerCase() !== "gravatar" || !finding) return undefined;
+    try {
+      const url = new URL(finding.url);
+      if (url.protocol !== "https:" || !["gravatar.com", "www.gravatar.com"].includes(url.hostname.toLowerCase()) ||
+        url.pathname === "/" || url.username || url.password) return undefined;
+      return JSON.stringify([record.actionId, finding.url]);
+    } catch { return undefined; }
+  }
+  const linkedProfiles = new Map<string, WorkspaceNode[]>();
+  for (const node of nodes) {
+    const key = gravatarProfileKey(node);
+    if (key === undefined || !node.evidence || !seedHasActions(seedGraph, findingSeedNodeId(node.evidence.id))) continue;
+    linkedProfiles.set(key, [...(linkedProfiles.get(key) ?? []), node]);
+  }
+  const relatedByParent = new Map<string, WorkspaceNode[]>();
+  const relatedIds = new Set<string>();
+  for (const node of nodes) {
+    const key = gravatarProfileKey(node);
+    if (key === undefined || !node.evidence || seedHasActions(seedGraph, findingSeedNodeId(node.evidence.id))) continue;
+    const parents = linkedProfiles.get(key) ?? [];
+    if (parents.length !== 1 || parents[0]!.evidence?.finding?.target.kind === node.evidence.finding?.target.kind) continue;
+    const parent = parents[0]!;
+    const related = { ...node, relatedParentId: parent.id };
+    relatedByParent.set(parent.id, [...(relatedByParent.get(parent.id) ?? []), related]);
+    relatedIds.add(node.id);
+  }
+  for (let index = 0; index < nodes.length; index++) {
+    const relatedNodes = relatedByParent.get(nodes[index]!.id);
+    if (relatedNodes !== undefined) nodes[index] = { ...nodes[index]!, relatedNodes };
+  }
+
   // Only sibling leaves collapse; seeds which feed another action remain visible.
   const leavesByAction = new Map<string, WorkspaceNode[]>();
   for (const node of nodes) {
-    if (node.evidence === undefined || !actionIds.has(node.evidence.actionId) ||
+    if (node.evidence === undefined || relatedIds.has(node.id) || !actionIds.has(node.evidence.actionId) ||
       seedHasActions(seedGraph, findingSeedNodeId(node.evidence.id))) continue;
     const leaves = leavesByAction.get(node.evidence.actionId) ?? [];
     leaves.push(node);
@@ -204,7 +245,7 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
       accessibleLabel: `Grupo de semillas: ${title}.`,
       x: 836, y: TOP, width: NODE_WIDTH, height: NODE_HEIGHT });
   }
-  const visibleNodes = nodes.filter((node) => !groupedIds.has(node.id));
+  const visibleNodes = nodes.filter((node) => !groupedIds.has(node.id) && !relatedIds.has(node.id));
 
   // Follow recorded provenance, not discovered-value equality, to lay out branches.
   const seedsById = new Map(seedGraph.seeds.map((seed) => [seed.id, seed]));
@@ -280,11 +321,12 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
 
 export function findWorkspaceNode(graph: WorkspaceGraph, id: string | null): WorkspaceNode | undefined {
   return graph.nodes.find((node) => node.id === id) ??
-    graph.nodes.flatMap((node) => node.members ?? []).find((node) => node.id === id);
+    graph.nodes.flatMap((node) => [...(node.members ?? []), ...(node.relatedNodes ?? [])]).find((node) => node.id === id);
 }
 
 export function workspaceNodeSelected(node: WorkspaceNode, id: string | null): boolean {
-  return node.id === id || node.members?.some((member) => member.id === id) === true;
+  return node.id === id || node.members?.some((member) => member.id === id) === true ||
+    node.relatedNodes?.some((related) => related.id === id) === true;
 }
 
 export const GRAPH_PAGE_SIZE = 50;
