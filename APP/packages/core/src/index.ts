@@ -65,6 +65,7 @@ export {
   createCatalogExecutor,
   createInvestigationService,
   createSeedBoxExecutor,
+  gravatarFindingTargetsEmail,
   type CatalogBoxes,
   InvestigationService,
   type InvestigationIdKind,

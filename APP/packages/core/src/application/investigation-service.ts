@@ -1,4 +1,4 @@
-import { isScannerFinding, type Observation, type RegistrationObservation, type RegistrationStatus, type ScannerObservation } from "../domain/observation.ts";
+import { isScannerFinding, type Observation, type RegistrationObservation, type RegistrationStatus, type ScannerFinding, type ScannerObservation } from "../domain/observation.ts";
 import { USERNAME_SEED_PATTERN, type EmailSeed, type UsernameSeed } from "../domain/seed.ts";
 import { findingSeedNodeId, usernameSeedNodeId } from "../domain/seed-graph.ts";
 import { usernameProposals } from "../domain/username-proposals.ts";
@@ -60,6 +60,16 @@ const REGISTRATION_STATUSES: readonly RegistrationStatus[] = [
 ];
 const VALIDATION_STATUSES: readonly ValidationStatus[] = ["accepted", "rejected", "inconclusive"];
 const EMAIL_PATTERN = /^(?!\.)(?!.*\.\.)([A-Z0-9_'+.\-]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9-]*\.)+[A-Z]{2,}$/i;
+
+/**
+ * Whether a scanner's Gravatar finding belongs to the scanned email: it reports that email (in any
+ * letter case), only a username, or an address a lookup cannot use. Findings for another
+ * discovered email belong to that email and must not trigger the scanned email's lookup.
+ */
+export function gravatarFindingTargetsEmail(target: ScannerFinding["target"], scannedEmail: string): boolean {
+  if (target.kind !== "email" || !EMAIL_PATTERN.test(target.value.trim())) return true;
+  return target.value.trim().toLowerCase() === scannedEmail.trim().toLowerCase();
+}
 
 function timestamp(clock: () => string): string {
   const value = clock();
@@ -500,10 +510,9 @@ export class InvestigationService {
     const followUps: Array<NonNullable<CompleteActionInput["followUps"]>[number]> = chainsGravatar
       ? evidence.filter((record) => record.provider.trim().toLowerCase() === "gravatar" && record.finding !== undefined).map((record) => {
         const target = record.finding!.target;
-        // Usernames and email targets the lookup cannot use fall back to the scanned email seed.
-        const reported = target.kind === "email" && EMAIL_PATTERN.test(target.value.trim()) ? emailSeed(target.value) : scanned;
         // Only the scanned email runs automatically; another discovered email waits for operator approval.
-        const own = reported.value.toLowerCase() === scanned.value.toLowerCase();
+        const own = gravatarFindingTargetsEmail(target, scanned.value);
+        const reported = own ? scanned : emailSeed(target.value);
         if (own) gravatarFound = true;
         const action: GitHubCatalogAction = {
           id: newId(this.dependencies.createId, "action"),

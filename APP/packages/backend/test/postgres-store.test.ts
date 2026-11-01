@@ -358,6 +358,32 @@ test("scanner completion converts an unclaimed legacy Gravatar queue to a propos
   assert.equal(await service.executeNextAction(created.id), undefined);
 });
 
+test("a legacy Gravatar queue is proposed, not linked, when the only finding reports another discovered email", async () => {
+  const database = new FakePostgres();
+  const store = new PostgresInvestigationStore(database);
+  let sequence = 0;
+  const service = createInvestigationService({ store, seedCatalog: ["user-scanner.email.v1"],
+    executor: createCatalogExecutor({ "user-scanner.email.v1": { id: "user-scanner:email", inputKind: "email", async execute(seed) {
+      return [{ kind: "scanner_finding", seed, provider: "Gravatar", status: "registered", finding: {
+        target: { kind: "email", value: "other@example.org" }, upstreamStatus: "Registered", url: "", category: "", reason: "", extra: {}, media: {},
+      } }];
+    } } }),
+    clock: () => "2025-03-01T00:00:00.000Z", createId: (kind) => `${kind}-${++sequence}`,
+  });
+  const created = await service.createInvestigation();
+  const seeded = await service.addEmailSeed(created.id, "seed@example.org");
+  await service.authorize(created.id, true, "Authorize the listed tools");
+  await service.executeNextAction(created.id);
+  await store.transact(created.id, (current) => ({ next: { ...current, revision: current.revision + 1, actions: [...current.actions, {
+    id: "legacy-gravatar", spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: seeded.emailSeeds[0]! },
+    status: "queued", queuedByCatalog: true, proposedAt: current.updatedAt, proposalReason: "Historical catalog queue",
+  }] }, result: undefined }));
+  assert.equal(await store.claimNextAction({ investigationId: created.id, claimId: "claim", claimedAt: "2025-03-01T00:01:00Z", auditEvent: auditEvent("claim", "action_claimed") }), undefined);
+  const legacy = (await store.get(created.id))!.actions.find((action) => action.id === "legacy-gravatar")!;
+  assert.equal(legacy.status, "proposed");
+  assert.equal(legacy.sourceSeedId, undefined);
+});
+
 test("a confirmed scanner finding links an unclaimed legacy Gravatar action", async () => {
   const database = new FakePostgres();
   const store = new PostgresInvestigationStore(database);

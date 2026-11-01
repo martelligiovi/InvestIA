@@ -3,6 +3,7 @@ import {
   authorizationCovers,
   DEFAULT_INVESTIGATION_NAME,
   findingSeedNodeId,
+  gravatarFindingTargetsEmail,
   isScannerFinding,
   isScopedCatalogId,
   USERNAME_SEED_PATTERN,
@@ -363,7 +364,8 @@ export class PostgresInvestigationStore implements InvestigationStore {
           scanner.spec.seed.value === candidate.spec.seed.value && scanner.status === "succeeded").map((scanner) => scanner.id));
         if (scannerIds.size === 0) return candidate;
         const finding = current.evidence.find((record) => scannerIds.has(record.actionId) && record.status === "registered" &&
-          record.provider.trim().toLowerCase() === "gravatar" && record.finding !== undefined);
+          record.provider.trim().toLowerCase() === "gravatar" && record.finding !== undefined &&
+          gravatarFindingTargetsEmail(record.finding.target, candidate.spec.seed.value));
         if (finding !== undefined) return { ...candidate, sourceSeedId: findingSeedNodeId(finding.id) };
         const { queuedByCatalog: _legacyEligibility, ...legacy } = candidate;
         proposedEvents.push({ ...input.auditEvent, id: `${input.auditEvent.id}:proposal:${candidate.id}`,
