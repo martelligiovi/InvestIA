@@ -13,6 +13,8 @@
 
 Requests time out after 10 seconds.
 
+The workspace derives a distinct discovered seed for each nonempty collected profile field, profile URL, avatar/media URL and linked-account URL. Each seed retains its original evidence and producing action; branches stay aligned with that action. Existing saved profiles work without another lookup or a data migration. Selecting a seed does not run a search. Evidence validation applies to the complete original observation, not an individual field. A username is shown only if it is present in saved metadata; it is not inferred from a profile URL.
+
 ## Configuration and limits
 
 - No key is required. Gravatar documents 100 profile requests per hour without a key and 1,000 with one.

@@ -28,6 +28,7 @@ const WORKSPACE_STATUS_LABELS: Readonly<Record<string, string>> = {
   not_executable: "En cola · no ejecutable",
   no_information: "Sin información",
   leaf_group: "Sin acciones asociadas",
+  discovered: "Semilla descubierta",
   proposed: "Propuesta",
   queued: "En cola",
   claimed: "Reclamada",

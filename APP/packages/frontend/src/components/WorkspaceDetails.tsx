@@ -175,6 +175,13 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
 
           {node.kind === "evidence" && node.evidence !== undefined && (
             <>
+              {node.profileSeed && <section className="detail-fact" aria-labelledby="profile-seed-heading">
+                <h3 id="profile-seed-heading">{node.profileSeed.label}</h3>
+                <p className="break-value">{node.profileSeed.isUrl
+                  ? <SafeLink value={node.profileSeed.value} /> : node.profileSeed.value}</p>
+                <p className="detail-note">Semilla descubierta en {node.evidence.provider}. Seleccionarla no ejecuta nuevas búsquedas. No confirma identidad ni titularidad.</p>
+                <p className="detail-note">La validación de abajo corresponde a la observación original completa, no a este campo por separado.</p>
+              </section>}
               <section className="detail-fact" aria-labelledby="selected-evidence-heading">
                 <h3 id="selected-evidence-heading">{evidenceHeading(node.evidence)}</h3>
                 <dl className="fact-list">
