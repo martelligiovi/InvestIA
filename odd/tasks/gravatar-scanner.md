@@ -9,6 +9,7 @@ S4. “Usar el email inicial”
 S5. “Respetar el modo manual”
 S6. “quiero que vos realices el testeo de esto que funcione con [owner test email, redacted], y ajustes si no funciona”
 S8. “Entonces que deje de ser temporal porque para mí está bien una vez que todo eso continúa hasta tirar PR a main porque lo último que vi funciona bien.” / “si, Cuando tengan la imagen lista, yo la pruebo.”
+S9. “Proponer, no ejecutar (Recomendado)” — a Gravatar finding for a different discovered email: “Se ejecuta solo para tu email; para el email descubierto se crea una propuesta que aprobás vos.”
 S7. “La lógica es la siguiente: se agobran todas las semillas de un resultado cuando no desemboca en otra acción. Este caso sí desemboca en otra acción, solo la de la existencia de la semilla de Gravata. Es decir que no debería salir en la acumulación de arriba, en las 36, porque serían 35 semillas que no tienen la acción, más una que sí tiene una acción.”
 
 ## Tasks
@@ -19,7 +20,8 @@ T4 [S1-S7] Verificar riesgos, pruebas y cambios; independent verifier and inline
 T5 [S6] done — Ejecutar prueba real autorizada en entorno aislado; inline; commit pending.
 T6 [S7] done — Corregir agrupación de observaciones del mismo perfil con acción; inline; commit pending.
 T7 [S1,S3] done — Resolver hallazgos de validación de email y propuestas históricas con pruebas; inline; commit pending.
-T8 [S1-S7] in_progress — Verificación independiente en Docker aislado y PostgreSQL de prueba; verifier; commit pending.
+T10 [S9] done — Proponer (no ejecutar) Gravatar para emails descubiertos distintos; inline.
+T8 [S1-S9] in_progress — Verificación independiente en Docker aislado y PostgreSQL de prueba; verifier; commit pending.
 T9 [S8] pending — Commit, imagen candidata desde el commit exacto, push y PR a main; inline.
 
 ## Log
@@ -52,3 +54,6 @@ L20. Entonces que deje de ser temporal porque para mí está bien una vez que to
 L21. si, Cuando tengan la imagen lista, yo la pruebo. — Owner approved running all steps; owner will personally test the candidate image. Merge still requires owner acceptance of that exact image and green CI.
 L22. Both review findings reproduced RED (core unusable email target produced no lookup and no proposal; backend legacy conversion returned no claim; frontend showed legacy unlinked queue as runnable). Fixed: unusable email targets fall back to the scanned email; one claim transaction resolves every legacy unlinked Gravatar queue and still claims other eligible work; UI shows "En espera de user-scanner". GREEN focused tests; full build, workspace test, typecheck and diff check passed (job-18). Docs corrected: lookup uses the email the finding reports, else the scanned email. Temporary Vite preview stopped.
 L23. The owner test email is redacted in this committed record to avoid publishing it; the verbatim requests are kept in the local session memory.
+L24. Delivery strategy: Un solo PR con recorrido ordenado (Recomendado) — owner chose one PR for the whole branch (11+ commits, ~3.2k authored lines) with an ordered review path, one candidate image, squash merge. Slice boundary: whole branch since origin/main e4d642a.
+L25. Docker verifier on 7a35c76 did not execute: its policy forbids networked dependency installs. Scratch left at investia-gravatar-verify/probe-43gdblSU. It flagged S4: a Gravatar finding whose target is a different valid email queues the lookup for that discovered email, not the initial email; owner decision requested.
+L26. Proponer, no ejecutar (Recomendado) — owner decision for a Gravatar finding on another discovered email. RED observed (lookup ran for the discovered email; mixed-case own email kept the reported casing). Fixed: only the scanned email (case-insensitive match, username or unusable address) queues automatically; another discovered email gets a linked proposal; the scanned email still gets its own proposal when no finding is its own. Core+backend 55/55, core typecheck pass. Docs updated.

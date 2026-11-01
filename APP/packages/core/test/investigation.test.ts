@@ -196,6 +196,38 @@ test("a Gravatar finding with an unusable email target still queues a linked loo
   assert.equal(lookups[0]!.sourceSeedId, findingSeedNodeId(finding.id));
 });
 
+test("a Gravatar finding for another discovered email is only proposed, and the scanned email gets its own proposal", async () => {
+  const { service } = makeHarness({
+    id: "user-scanner:email",
+    async execute() { return [scannerFinding("Gravatar", { kind: "email", value: "other@example.test" })]; },
+  }, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@example.test");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  await service.executeNextAction(created.id);
+  const stored = (await service.loadInvestigation(created.id))!;
+  const finding = stored.evidence.find((record) => record.provider === "Gravatar")!;
+  const lookups = stored.actions.filter((action) => action.spec.catalogId === "gravatar.email.v1");
+  assert.deepEqual(lookups.map((action) => [action.spec.seed.value, action.status, action.queuedByCatalog, action.sourceSeedId]), [
+    ["other@example.test", "proposed", undefined, findingSeedNodeId(finding.id)],
+    ["ana@example.test", "proposed", undefined, undefined],
+  ]);
+  assert.equal(await service.executeNextAction(created.id), undefined, "no Gravatar lookup runs without approval");
+});
+
+test("a Gravatar finding for the scanned email in another letter case queues the lookup for the scanned seed", async () => {
+  const { service } = makeHarness({
+    id: "user-scanner:email",
+    async execute() { return [scannerFinding("Gravatar", { kind: "email", value: "Ana@Example.test" })]; },
+  }, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@example.test");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  await service.executeNextAction(created.id);
+  const lookups = (await service.loadInvestigation(created.id))!.actions.filter((action) => action.spec.catalogId === "gravatar.email.v1");
+  assert.deepEqual(lookups.map((action) => [action.spec.seed.value, action.status]), [["ana@example.test", "queued"]]);
+});
+
 test("a completed scanner without Gravatar proposes a lookup requiring approval", async () => {
   const { service } = makeHarness({
     id: "user-scanner:email",

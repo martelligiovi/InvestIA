@@ -494,22 +494,33 @@ export class InvestigationService {
         ...(scanner ? { finding: structuredClone((accepted as ScannerObservation).finding) } : {}),
       });
     }
-    const followUps: Array<NonNullable<CompleteActionInput["followUps"]>[number]> = claim.action.spec.catalogId === CATALOG_ID && this.seedCatalog.includes("gravatar.email.v1")
+    const scanned = claim.action.spec.seed as EmailSeed;
+    const chainsGravatar = claim.action.spec.catalogId === CATALOG_ID && this.seedCatalog.includes("gravatar.email.v1");
+    let gravatarFound = false;
+    const followUps: Array<NonNullable<CompleteActionInput["followUps"]>[number]> = chainsGravatar
       ? evidence.filter((record) => record.provider.trim().toLowerCase() === "gravatar" && record.finding !== undefined).map((record) => {
         const target = record.finding!.target;
         // Usernames and email targets the lookup cannot use fall back to the scanned email seed.
-        const seed = target.kind === "email" && EMAIL_PATTERN.test(target.value.trim())
-          ? emailSeed(target.value) : claim.action.spec.seed as EmailSeed;
+        const reported = target.kind === "email" && EMAIL_PATTERN.test(target.value.trim()) ? emailSeed(target.value) : scanned;
+        // Only the scanned email runs automatically; another discovered email waits for operator approval.
+        const own = reported.value.toLowerCase() === scanned.value.toLowerCase();
+        if (own) gravatarFound = true;
         const action: GitHubCatalogAction = {
           id: newId(this.dependencies.createId, "action"),
-          spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed },
-          sourceSeedId: findingSeedNodeId(record.id), status: "queued", queuedByCatalog: true,
-          proposedAt: completedAt, proposalReason: "User Scanner found a Gravatar profile; queued a public profile lookup without identity attribution.",
+          spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: own ? { ...scanned } : reported },
+          sourceSeedId: findingSeedNodeId(record.id), proposedAt: completedAt,
+          ...(own ? {
+            status: "queued" as const, queuedByCatalog: true as const,
+            proposalReason: "User Scanner found a Gravatar profile; queued a public profile lookup without identity attribution.",
+          } : {
+            status: "proposed" as const,
+            proposalReason: "User Scanner found a Gravatar profile for another discovered email; the operator may approve its public profile lookup.",
+          }),
         };
-        return { action, auditEvent: auditEvent(this.dependencies.createId, completedAt, "system", "action_queued", action.proposalReason, { actionId: action.id }) };
+        return { action, auditEvent: auditEvent(this.dependencies.createId, completedAt, "system",
+          own ? "action_queued" : "action_proposed", action.proposalReason, { actionId: action.id }) };
       }) : [];
-    const gravatarFound = evidence.some((record) => record.provider.trim().toLowerCase() === "gravatar" && record.finding !== undefined);
-    if (claim.action.spec.catalogId === CATALOG_ID && this.seedCatalog.includes("gravatar.email.v1") && !gravatarFound) {
+    if (chainsGravatar && !gravatarFound) {
       const action: GitHubCatalogAction = {
         id: newId(this.dependencies.createId, "action"),
         spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: claim.action.spec.seed },

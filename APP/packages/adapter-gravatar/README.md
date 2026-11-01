@@ -20,7 +20,7 @@ The workspace derives a distinct discovered seed for each nonempty collected pro
 - No key is required. Gravatar documents 100 profile requests per hour without a key and 1,000 with one.
 - Set `GRAVATAR_API_KEY` (free at gravatar.com/developers) to send it as a bearer token. Without a key, Gravatar returns at most four verified accounts and omits links and contact details.
 - Observations echo the seed exactly as sent (trimmed); only the hash uses the lowercased email.
-- After a successful User Scanner scan, a positive Gravatar finding queues a lookup linked to that finding, for the email it reports (or the scanned email when it reports only a username or an unusable address); a negative scan creates a proposed action, which the operator can select and approve with a reason. A failed scan does not create a proposal.
+- After a successful User Scanner scan, a Gravatar finding for the scanned email (or one reporting only a username or an unusable address) queues a lookup linked to that finding. A finding for another discovered email only creates a proposed lookup for that email, and a scan without a finding for the scanned email creates a proposed action for it. The operator can select a proposal and approve it with a reason. A failed scan does not create a proposal.
 - The tool runs only under a case authorization that names `gravatar.email.v1` and when the case is unpaused. Automatic mode processes eligible queued actions; manual mode requires the case-level run-next control.
 
 ## Checks
