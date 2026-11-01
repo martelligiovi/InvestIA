@@ -97,13 +97,18 @@ class MemoryInvestigationStore implements InvestigationStore {
         unsupportedObservationCount: input.result.unsupportedObservationCount,
       }),
     };
+    const followUps = input.result.kind === "success" ? (input.followUps ?? []).filter(({ action: followUp }, index, all) =>
+      !current.actions.some((existing) => existing.spec.catalogId === followUp.spec.catalogId &&
+        existing.spec.seed.kind === followUp.spec.seed.kind && existing.spec.seed.value === followUp.spec.seed.value) &&
+      all.findIndex(({ action: other }) => other.spec.catalogId === followUp.spec.catalogId &&
+        other.spec.seed.kind === followUp.spec.seed.kind && other.spec.seed.value === followUp.spec.seed.value) === index) : [];
     const next: Investigation = {
       ...current,
       revision: current.revision + 1,
       updatedAt: input.completedAt,
-      actions: current.actions.map((candidate) => candidate.id === action.id ? completed : candidate),
+      actions: [...current.actions.map((candidate) => candidate.id === action.id ? completed : candidate), ...followUps.map(({ action }) => action)],
       evidence: input.result.kind === "success" ? [...current.evidence, ...input.result.evidence] : current.evidence,
-      audit: [...current.audit, input.auditEvent],
+      audit: [...current.audit, input.auditEvent, ...followUps.map(({ auditEvent }) => auditEvent)],
     };
     this.#items.set(input.investigationId, structuredClone(next));
     return structuredClone(next);
@@ -139,7 +144,7 @@ function makeHarness(executor?: InvestigationExecutor, seedCatalog: readonly Sco
   return { store, service };
 }
 
-test("the default seed catalog queues every scoped tool in order", async () => {
+test("a new email queues User Scanner without independently running Gravatar", async () => {
   const store = new MemoryInvestigationStore();
   let id = 0;
   const service = createInvestigationService({
@@ -150,9 +155,74 @@ test("the default seed catalog queues every scoped tool in order", async () => {
   const seeded = await service.addEmailSeed(created.id, "ana@example.test");
   assert.deepEqual(seeded.actions.map((action) => [action.spec.catalogId, action.status, action.queuedByCatalog]), [
     ["user-scanner.email.v1", "queued", true],
-    ["gravatar.email.v1", "queued", true],
   ]);
   assert.deepEqual(seeded.audit.filter((event) => event.kind === "action_queued").map((event) => event.actionId), seeded.actions.map((action) => action.id));
+});
+
+test("a confirmed Gravatar finding queues its profile lookup as a child of that finding", async () => {
+  const { service } = makeHarness({
+    id: "user-scanner:email",
+    async execute() { return [scannerFinding("Gravatar", { kind: "username", value: "ana" })]; },
+  }, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@example.test");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  await service.executeNextAction(created.id);
+  const stored = (await service.loadInvestigation(created.id))!;
+  const finding = stored.evidence.find((record) => record.provider === "Gravatar")!;
+  const profile = stored.actions.find((action) => action.spec.catalogId === "gravatar.email.v1")!;
+  assert.ok(finding);
+  assert.ok(profile);
+  assert.equal(profile.sourceSeedId, findingSeedNodeId(finding.id));
+  assert.equal(profile.spec.seed.value, "ana@example.test");
+  assert.equal(profile.status, "queued");
+});
+
+test("a Gravatar finding with an unusable email target still queues a linked lookup for the initial email", async () => {
+  const { service } = makeHarness({
+    id: "user-scanner:email",
+    async execute() { return [scannerFinding("Gravatar", { kind: "email", value: "a@b.c" })]; },
+  }, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@example.test");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  await service.executeNextAction(created.id);
+  const stored = (await service.loadInvestigation(created.id))!;
+  const finding = stored.evidence.find((record) => record.provider === "Gravatar")!;
+  const lookups = stored.actions.filter((action) => action.spec.catalogId === "gravatar.email.v1");
+  assert.equal(lookups.length, 1);
+  assert.equal(lookups[0]!.status, "queued");
+  assert.equal(lookups[0]!.spec.seed.value, "ana@example.test");
+  assert.equal(lookups[0]!.sourceSeedId, findingSeedNodeId(finding.id));
+});
+
+test("a completed scanner without Gravatar proposes a lookup requiring approval", async () => {
+  const { service } = makeHarness({
+    id: "user-scanner:email",
+    async execute() { return [scannerFinding("Other", { kind: "email", value: "ana@example.test" })]; },
+  }, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  const seeded = await service.addEmailSeed(created.id, "ana@example.test");
+  assert.equal(seeded.actions.some((action) => action.spec.catalogId === "gravatar.email.v1"), false);
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  await service.executeNextAction(created.id);
+  const result = (await service.loadInvestigation(created.id))!;
+  const proposal = result.actions.find((action) => action.spec.catalogId === "gravatar.email.v1")!;
+  assert.equal(proposal.status, "proposed");
+  assert.equal(await service.executeNextAction(created.id), undefined);
+  const approved = await service.approveAction(created.id, proposal.id, "Operator chose the lookup.");
+  assert.equal(approved.status, "queued");
+  assert.equal(approved.approval?.reason, "Operator chose the lookup.");
+});
+
+test("a failed scanner does not propose a Gravatar lookup", async () => {
+  const { service } = makeHarness({ id: "user-scanner:email", async execute() { throw new Error("Scanner failed"); } },
+    ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@example.test");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  assert.equal((await service.executeNextAction(created.id))?.status, "failed");
+  assert.equal((await service.loadInvestigation(created.id))!.actions.some((action) => action.spec.catalogId === "gravatar.email.v1"), false);
 });
 
 test("a seed catalog must list known scoped tools exactly once", () => {

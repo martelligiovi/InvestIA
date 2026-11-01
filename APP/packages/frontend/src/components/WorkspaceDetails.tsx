@@ -9,6 +9,7 @@ export interface WorkspaceDetailsProps {
   readonly disabled: boolean;
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
+  readonly onApproveGravatar?: (actionId: string, reason: string) => Promise<boolean>;
 }
 
 function formatDate(value: string): string {
@@ -72,8 +73,9 @@ function LeafGroupDetails({ node, onSelectNode }: { readonly node: WorkspaceNode
   );
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, onValidate, onSelectNode }: WorkspaceDetailsProps) {
+export function WorkspaceDetails({ investigation, node, disabled, onValidate, onSelectNode, onApproveGravatar }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
+  const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
 
   async function validate(evidenceId: string, status: ValidationStatus) {
@@ -116,7 +118,7 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
                   <dt>Estado</dt><dd>Dato aportado al expediente</dd>
                 </dl>
               </section>
-              <p className="detail-note">Las semillas nuevas incorporan su búsqueda con user-scanner y la consulta de su perfil público de Gravatar a la cola del expediente. Incluye plataformas, enlaces y emails descubiertos; las consultas loud pueden enviar correos o notificaciones.</p>
+              {investigation.emailSeeds.some((seed) => seed.value === node.seedValue) && <p className="detail-note">User Scanner se encola al agregar el correo; al finalizar, si encuentra Gravatar se encola la consulta y, si no, se propone para tu aprobación. Las consultas loud pueden enviar correos o notificaciones. La ejecución requiere autorización y respeta el modo de avance.</p>}
             </>
           )}
 
@@ -153,7 +155,16 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
                   <p className="detail-warning" role="note">Acción reclamada: efecto externo incierto o aún en curso. Esta interfaz no la vuelve a ejecutar.</p>
                 )}
               </section>
-              {node.action.status === "proposed" && <p className="detail-note">Propuesta histórica conservada; no forma parte de la cola ejecutable.</p>}
+              {node.action.status === "proposed" && (node.action.spec.catalogId === "gravatar.email.v1" && onApproveGravatar !== undefined ? (
+                <section className="detail-control" aria-labelledby="approval-heading">
+                  <h3 id="approval-heading">¿Querés buscarlo por Gravatar?</h3>
+                  <p className="detail-note">Aprobar agrega la acción a la cola; su ejecución requiere autorización, ausencia de pausa y respeta el modo de avance.</p>
+                  <label className="form-field"><span>Motivo de aprobación</span>
+                    <textarea value={approvalReason} maxLength={2_000} rows={3} disabled={disabled} onChange={(event) => setApprovalReason(event.currentTarget.value)} />
+                  </label>
+                  <button className="workspace-button" type="button" disabled={disabled || approvalReason.trim() === ""} onClick={() => void onApproveGravatar(node.action!.id, approvalReason)}>Aprobar búsqueda de Gravatar</button>
+                </section>
+              ) : <p className="detail-note">Propuesta histórica conservada; no forma parte de la cola ejecutable.</p>)}
             </>
           )}
 

@@ -51,6 +51,8 @@ export interface CompleteActionInput {
   readonly completedAt: string;
   readonly result: ActionCompletion;
   readonly auditEvent: AuditEvent;
+  /** Follow-up candidates, committed with the producing evidence and deduplicated under the same lock. */
+  readonly followUps?: readonly { readonly action: GitHubCatalogAction; readonly auditEvent: AuditEvent }[];
 }
 
 /**

@@ -245,7 +245,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
               ) : (
                 <>
                   <button className="workspace-button" type="button" disabled={!dispatchEligible} onClick={() => void runNextAction()}>Ejecutar siguiente acción en cola</button>
-                  <p className="dispatch-note">Avance manual: cola del expediente, no del nodo seleccionado. Solo se ejecuta al presionar este control, sin aprobación por nodo.</p>
+                  <p className="dispatch-note">Avance manual: cola del expediente, no del nodo seleccionado. Solo se ejecuta al presionar este control; las propuestas requieren aprobación previa.</p>
                 </>
               )}
               <ul className="dispatch-gates" aria-label="Condiciones para ejecutar">
@@ -359,6 +359,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             onSelectNode={(id) => { const node = findWorkspaceNode(graph, id); if (node) selectNode(node); }}
             disabled={controlsDisabled}
             onValidate={validate}
+            onApproveGravatar={(actionId, reason) => controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason))}
           />
         </div>
       </div>

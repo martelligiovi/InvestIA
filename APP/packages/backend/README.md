@@ -99,7 +99,7 @@ After `pnpm --dir APP build`, the backend serves the built frontend at `/` and i
 ## API and execution safety
 
 - `POST /investigations`, `GET /investigations`, `GET /investigations/:id`
-- `POST /investigations/:id/emails` (queues user-scanner and Gravatar)
+- `POST /investigations/:id/emails` (queues user-scanner)
 - `POST /investigations/:id/usernames` with `username` and `reason` (accepted operator seed; queues Maigret)
 - `POST /investigations/:id/usernames/decisions` with `username`, `decision` (`accepted` or `rejected`) and `reason`, for a username proposed by current evidence; accepting queues Maigret
 - `POST /investigations/:id/actions/proposals`
@@ -114,15 +114,19 @@ After `pnpm --dir APP build`, the backend serves the built frontend at `/` and i
 
 New investigations default to `advancementMode: "automatic"`; choose `"manual"` at creation to require case-level run-next. Intention is persisted once at creation, never reused as an action reason. Recording an email seed atomically adds its User Scanner catalog action to the queue with `queuedByCatalog: true` and a system `action_queued` event, not a human approval. PostgreSQL checks case authorization, pause state, and catalog eligibility (or a genuine historical approval) inside the claim transaction. Automatic claims additionally recheck persisted automatic mode; missing legacy mode is manual.
 
+After a successful User Scanner scan, a positive Gravatar finding queues a profile lookup linked to that finding (`sourceSeedId`), for the email it reports or the scanned email when it reports only a username or an unusable address; a negative scan creates a proposed Gravatar action. Both are written in the same transaction that records the scan result. Approve a proposal with a reason through the existing approval endpoint to queue it. A failed scan creates no proposal. Neither path bypasses scoped authorization or pause. In manual mode the operator must still run the next action; in automatic mode the worker handles eligible queued work.
+
+Earlier preview builds queued Gravatar beside User Scanner without a link. Such unclaimed entries never run before their scanner succeeds; the next claim transaction links them to the scanner's Gravatar finding or turns them into proposals, without rewriting claimed, completed or approved work.
+
 The worker enumerates persisted investigations immediately at startup and then waits one second after each completed sweep. Sweeps are single-flight and capped at 16 claim attempts, with a rotating case cursor. Errors end that case's sweep and are reported without immediate retries. Queued actions resume after restart; claimed actions remain fenced because their external outcome is uncertain. Terminal failures are retained, never automatically retried. Multiple workers and manual requests rely on the same atomic PostgreSQL claim gate to avoid claiming an action twice. Neo4j projection is downstream and cannot trigger a repeat execution.
 
 Historical snapshots, events and approvals remain readable. The proposals endpoint now creates explicit User Scanner proposals, requiring approval. Stored GitHub-only actions are not reinterpreted: the production scanner executor rejects them before provider dispatch, retaining a terminal failure. An explicit new scanner proposal for that seed is required. Claimed and terminal entries are never rewritten or retried. API and integration workflow tests inject a fake executor; they never query live accounts. The API has no authentication system, so its loopback-only bind is the local security boundary.
 
 ## Scanner findings and compatibility
 
-The active catalog is `user-scanner.email.v1`. Its email SeedBox runs the requested loud/cross-scan command and retains every valid JSON result with observed email/username, platform, URL, upstream status, category, reason, metadata, media and provenance/confidence. Original email seeds stay separate; discoveries do not enqueue new actions. PostgreSQL stores the additive `finding` payload, Neo4j projects both its full JSON and key target/provenance properties, and reports include those fields. Confidence is not identity attribution.
+The active catalog is `user-scanner.email.v1`. Its email SeedBox runs the requested loud/cross-scan command and retains every valid JSON result with observed email/username, platform, URL, upstream status, category, reason, metadata, media and provenance/confidence. Original email seeds stay separate; a positive Gravatar finding can queue its profile lookup, while other discoveries do not automatically enqueue new actions. PostgreSQL stores the additive `finding` payload, Neo4j projects both its full JSON and key target/provenance properties, and reports include those fields. Confidence is not identity attribution.
 
-Fresh grants carry `catalogScope: "user-scanner.email.v1"`. Legacy authorization without that scope never permits a broader scanner claim; grant authorization again after reviewing the UI warning. Old GitHub-only records remain readable, but the scanner refuses their execution before contacting providers. Missing legacy advancement mode remains manual. No data/volume reset or automatic replay is needed.
+Fresh grants carry a catalog scope naming the currently authorized tools, including `user-scanner.email.v1` and `gravatar.email.v1`. Legacy authorization without that scope never permits a broader scanner claim; grant authorization again after reviewing the UI warning. Old GitHub-only records remain readable, but the scanner refuses their execution before contacting providers. Missing legacy advancement mode remains manual. No data/volume reset or automatic replay is needed.
 
 See [the adapter guide](../adapter-user-scanner/README.md) for pinned installation and target-free CLI checks.
 

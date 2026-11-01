@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createInitialInvestigation, type GitHubCatalogAction, type Investigation } from "@investia/core";
 import { actionTitle, buildWorkspaceGraph, evidenceHeading } from "../src/pages/workspace-model";
-import { actionDisplayState, hasCatalogAuthorization } from "../src/pages/workspace-status";
+import { actionDisplayState, hasCatalogAuthorization, workspaceStatusLabel } from "../src/pages/workspace-status";
 
 const seed = { kind: "email", value: "ana@example.test" } as const;
 const at = "2025-01-01T00:00:00.000Z";
@@ -68,9 +68,16 @@ describe("per-tool consent in the workspace", () => {
     expect(hasCatalogAuthorization(investigation)).toBe(false);
   });
 
-  it("a grant naming both tools enables the whole queue", () => {
+  it("a grant naming both tools enables a linked Gravatar lookup", () => {
     const investigation = withGrant({ ...grant, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] });
-    expect(actionDisplayState(investigation, gravatar)).toBe("queued");
+    expect(actionDisplayState(investigation, { ...gravatar, sourceSeedId: "seed:evidence:e" })).toBe("queued");
+    expect(actionDisplayState(investigation, { ...gravatar, approval: { at, reason: "Approved", operator: "local-operator" } })).toBe("queued");
     expect(hasCatalogAuthorization(investigation)).toBe(true);
+  });
+
+  it("an unlinked historical Gravatar queue waits for user-scanner", () => {
+    const investigation = withGrant({ ...grant, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] });
+    expect(actionDisplayState(investigation, gravatar)).toBe("waiting_scanner");
+    expect(workspaceStatusLabel("waiting_scanner")).toBe("En espera de user-scanner");
   });
 });

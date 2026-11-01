@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import {
   authorizationCovers,
   DEFAULT_INVESTIGATION_NAME,
+  findingSeedNodeId,
   isScannerFinding,
   isScopedCatalogId,
   USERNAME_SEED_PATTERN,
@@ -350,18 +351,43 @@ export class PostgresInvestigationStore implements InvestigationStore {
     return this.mutate(input.investigationId, (current) => {
       if (current.paused || current.authorization?.granted !== true ||
         (input.automaticOnly === true && current.advancementMode !== "automatic")) return { result: undefined };
-      const action = current.actions.find((candidate) => candidate.status === "queued" &&
+      // Historical cases queued Gravatar beside User Scanner. Once that scanner has succeeded,
+      // resolve every such unlinked catalog queue inside this transaction: link it to the
+      // scanner's Gravatar finding, or turn it into a proposal that needs operator approval.
+      const proposalReason = "User Scanner did not find Gravatar; the operator may approve a public profile lookup.";
+      const proposedEvents: (typeof input.auditEvent)[] = [];
+      const actions = current.actions.map((candidate) => {
+        if (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.status !== "queued" ||
+          candidate.queuedByCatalog !== true || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) return candidate;
+        const scannerIds = new Set(current.actions.filter((scanner) => scanner.spec.catalogId === "user-scanner.email.v1" &&
+          scanner.spec.seed.value === candidate.spec.seed.value && scanner.status === "succeeded").map((scanner) => scanner.id));
+        if (scannerIds.size === 0) return candidate;
+        const finding = current.evidence.find((record) => scannerIds.has(record.actionId) && record.status === "registered" &&
+          record.provider.trim().toLowerCase() === "gravatar" && record.finding !== undefined);
+        if (finding !== undefined) return { ...candidate, sourceSeedId: findingSeedNodeId(finding.id) };
+        const { queuedByCatalog: _legacyEligibility, ...legacy } = candidate;
+        proposedEvents.push({ ...input.auditEvent, id: `${input.auditEvent.id}:proposal:${candidate.id}`,
+          kind: "action_proposed", actionId: candidate.id, reason: proposalReason });
+        return { ...legacy, status: "proposed" as const, proposalReason };
+      });
+      const changed = actions.some((candidate, index) => candidate !== current.actions[index]);
+      // Unlinked catalog Gravatar entries still waiting for their scanner are never dispatched.
+      const action = actions.find((candidate) => candidate.status === "queued" &&
         (candidate.queuedByCatalog === true || candidate.approval !== undefined) &&
+        (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) &&
         authorizationCovers(current.authorization, candidate.spec.catalogId));
-      if (action === undefined) return { result: undefined };
+      if (action === undefined) {
+        return changed ? { next: revise(current, input.claimedAt, { actions, audit: [...current.audit, ...proposedEvents] }), result: undefined }
+          : { result: undefined };
+      }
       const claimedAction = {
         ...action,
         status: "claimed" as const,
         claim: { id: input.claimId, claimedAt: input.claimedAt },
       };
       const next = revise(current, input.claimedAt, {
-        actions: current.actions.map((candidate) => candidate.id === action.id ? claimedAction : candidate),
-        audit: [...current.audit, { ...input.auditEvent, actionId: action.id }],
+        actions: actions.map((candidate) => candidate.id === action.id ? claimedAction : candidate),
+        audit: [...current.audit, ...proposedEvents, { ...input.auditEvent, actionId: action.id }],
       });
       return {
         next,
@@ -387,12 +413,35 @@ export class PostgresInvestigationStore implements InvestigationStore {
           unsupportedObservationCount: input.result.unsupportedObservationCount,
         }),
       };
+      const followUps = input.result.kind === "success" ? (input.followUps ?? []).filter(({ action: followUp }, index, all) =>
+        all.findIndex(({ action: other }) => other.spec.catalogId === followUp.spec.catalogId &&
+          other.spec.seed.kind === followUp.spec.seed.kind && other.spec.seed.value === followUp.spec.seed.value) === index) : [];
+      const actions = current.actions.map((candidate) => candidate.id === input.actionId ? completed : candidate);
+      const followUpEvents: typeof input.auditEvent[] = [];
+      for (const followUp of followUps) {
+        const existingIndex = actions.findIndex((existing) => existing.spec.catalogId === followUp.action.spec.catalogId &&
+          existing.spec.seed.kind === followUp.action.spec.seed.kind && existing.spec.seed.value === followUp.action.spec.seed.value);
+        if (existingIndex < 0) {
+          actions.push(followUp.action);
+          followUpEvents.push(followUp.auditEvent);
+          continue;
+        }
+        const existing = actions[existingIndex]!;
+        // Convert only an unclaimed legacy catalog sibling; never rewrite completed or human-approved work.
+        if (existing.spec.catalogId !== "gravatar.email.v1" || existing.status !== "queued" ||
+          existing.queuedByCatalog !== true || existing.sourceSeedId !== undefined || existing.approval !== undefined) continue;
+        const { queuedByCatalog: _legacyEligibility, ...legacy } = existing;
+        actions[existingIndex] = { ...legacy, status: followUp.action.status, proposalReason: followUp.action.proposalReason,
+          ...(followUp.action.sourceSeedId === undefined ? {} : { sourceSeedId: followUp.action.sourceSeedId }),
+          ...(followUp.action.queuedByCatalog === true ? { queuedByCatalog: true as const } : {}) };
+        followUpEvents.push({ ...followUp.auditEvent, actionId: existing.id });
+      }
       const next = revise(current, input.completedAt, {
-        actions: current.actions.map((candidate) => candidate.id === input.actionId ? completed : candidate),
+        actions,
         evidence: input.result.kind === "success"
           ? [...current.evidence, ...input.result.evidence]
           : current.evidence,
-        audit: [...current.audit, { ...input.auditEvent, actionId: input.actionId }],
+        audit: [...current.audit, { ...input.auditEvent, actionId: input.actionId }, ...followUpEvents],
       });
       return { next, result: next };
     });

@@ -10,6 +10,10 @@ export function actionDisplayState(investigation: Investigation, action: GitHubC
   if (!authorizationCovers(investigation.authorization, action.spec.catalogId)) return "waiting_authorization";
   if (investigation.paused) return "paused_queue";
   if (!action.queuedByCatalog && action.approval === undefined) return "not_executable";
+  // Historical unlinked Gravatar queues run only after their user-scanner result links them.
+  if (action.spec.catalogId === "gravatar.email.v1" && action.sourceSeedId === undefined && action.approval === undefined) {
+    return "waiting_scanner";
+  }
   return "queued";
 }
 
@@ -26,6 +30,7 @@ const WORKSPACE_STATUS_LABELS: Readonly<Record<string, string>> = {
   waiting_authorization: "Esperando autorización",
   paused_queue: "En cola · pausada",
   not_executable: "En cola · no ejecutable",
+  waiting_scanner: "En espera de user-scanner",
   no_information: "Sin información",
   leaf_group: "Sin acciones asociadas",
   discovered: "Semilla descubierta",

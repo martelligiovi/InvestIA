@@ -119,6 +119,53 @@ describe("espacio de investigación factual", () => {
     expect(screen.queryByRole("button", { name: /proponer comprobación/i })).not.toBeInTheDocument();
     expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
   });
+  it("aprueba solo la propuesta Gravatar seleccionada con motivo sin despachar en modo manual", async () => {
+    const proposed: GitHubCatalogAction = { id: "grav-1", spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed }, status: "proposed", proposedAt: createdAt, proposalReason: "No encontrado" };
+    let current = snapshot({ advancementMode: "manual", actions: [proposed] });
+    const pending = deferred<Response>();
+    const { calls } = installFetch(async (call) => {
+      if (pathOf(call) === "/investigations/case-1") return json(current);
+      if (pathOf(call) === "/investigations/case-1/actions/grav-1/approval") return pending.promise;
+      throw new Error(`Ruta inesperada: ${pathOf(call)}`);
+    });
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const list = await screen.findByText(/Lista accesible de nodos/i).then((summary) => summary.closest("details")!);
+    await user.click(list.querySelector("summary")!);
+    await user.click(within(list).getByRole("button", { name: /Acción: grav-1/i }));
+    const approve = screen.getByRole("button", { name: /aprobar búsqueda de gravatar/i });
+    expect(approve).toBeDisabled();
+    await user.type(screen.getByLabelText(/motivo de aprobación/i), "   ");
+    expect(approve).toBeDisabled();
+    await user.type(screen.getByLabelText(/motivo de aprobación/i), "Consultar perfil");
+    await user.click(approve);
+    expect(approve).toBeDisabled();
+    expect(calls.filter((call) => pathOf(call).endsWith("/approval")).map(bodyOf)).toEqual([{ reason: "   Consultar perfil" }]);
+    current = { ...current, revision: 2, actions: [{ ...proposed, status: "queued", approval }] };
+    pending.resolve(json(current.actions[0]));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /aprobar búsqueda de gravatar/i })).not.toBeInTheDocument());
+    expect(calls.some((call) => /actions\/(run|gravatar)$/.test(pathOf(call)))).toBe(false);
+  });
+
+  it("bloquea la aprobación de Gravatar cuando el estado es desconocido", async () => {
+    const proposed: GitHubCatalogAction = { id: "grav-1", spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed }, status: "proposed", proposedAt: createdAt, proposalReason: "No encontrado" };
+    let loads = 0;
+    installFetch(async (call) => {
+      if (pathOf(call) === "/investigations/case-1") return ++loads === 1 ? json(snapshot({ actions: [proposed] })) : json({ message: "lectura no disponible" }, 503);
+      return json({ message: "respuesta perdida" }, 503);
+    });
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const list = await screen.findByText(/Lista accesible de nodos/i).then((summary) => summary.closest("details")!);
+    await user.click(list.querySelector("summary")!);
+    await user.click(within(list).getByRole("button", { name: /Acción: grav-1/i }));
+    await user.type(screen.getByLabelText(/motivo de aprobación/i), "Consultar perfil");
+    await user.click(screen.getByRole("button", { name: /aprobar búsqueda de gravatar/i }));
+    await screen.findByText(/no se pudo confirmar la operación/i);
+    expect(screen.getByRole("button", { name: /aprobar búsqueda de gravatar/i })).toBeDisabled();
+    expect(screen.getByLabelText(/motivo de aprobación/i)).toBeDisabled();
+  });
+
   it("prioriza grafo y detalle sin barras operativas, con controles secundarios cerrados", async () => {
     const { calls } = installFetch(async () => json(snapshot()));
     const user = userEvent.setup();
