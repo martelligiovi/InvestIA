@@ -84,6 +84,13 @@
   animation: popover-in 220ms var(--ease) both;
 }
 .workspace-case-panel { width: min(400px, calc(100vw - 32px)); }
+.workspace-usernames-panel { width: min(420px, calc(100vw - 32px)); }
+.username-seeds-panel { display: grid; gap: var(--space-3); }
+.username-seeds-panel h3 { margin: 0; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+.username-seeds-panel ul { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.username-seeds-panel li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.username-proposal-actions { display: inline-flex; gap: var(--space-2); margin-left: auto; }
+.username-seeds-panel input { width: 100%; min-width: 0; min-height: 40px; padding: 8px 10px; }
 .workspace-popover p { margin: 0; line-height: 1.4; }
 @keyframes popover-in { from { opacity: 0; transform: translateY(-6px); } }
 .workspace-header-reason { display: grid; gap: var(--space-2); font-family: var(--font-mono); font-size: 12px; }

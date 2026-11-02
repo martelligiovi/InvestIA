@@ -80,6 +80,8 @@ function openRuntime(config: TestConfig, namespace: string, executions: Executio
         executor,
         clock: () => new Date(Date.now() + ticks++).toISOString(),
         createId: (kind) => `${kind}-${namespace}-${randomUUID()}`,
+        // Pins the single-tool queue this legacy GitHub workflow was written for.
+        seedCatalog: ["user-scanner.email.v1"],
       });
       const app = createBackendApp(service, {
         actionRunner: createInvestigationRunGraph(service, checkpointer),

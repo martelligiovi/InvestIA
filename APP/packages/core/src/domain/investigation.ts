@@ -1,4 +1,4 @@
-import type { EmailSeed } from "./seed.ts";
+import type { EmailSeed, UsernameSeed } from "./seed.ts";
 import type { RegistrationStatus, ScannerFinding } from "./observation.ts";
 export type { RegistrationStatus } from "./observation.ts";
 
@@ -36,6 +36,9 @@ export type InvestigationActionStatus = "proposed" | "queued" | "claimed" | "suc
 export type AuditActor = "operator" | "system";
 export type AuditKind =
   | "email_seed_added"
+  | "username_seed_added"
+  | "username_proposal_accepted"
+  | "username_proposal_rejected"
   | "action_proposed"
   | "action_queued"
   | "authorization_changed"
@@ -53,13 +56,41 @@ export interface ActionApproval {
   readonly operator: "local-operator";
 }
 
+/** Catalog tools that run only under an explicit, per-tool consent scope. */
+export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1" | "maigret.username.v1";
+export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"]);
+/** Seed kind each scoped tool accepts. */
+export const CATALOG_INPUT_KINDS: Readonly<Record<ScopedCatalogId, "email" | "username">> = Object.freeze({
+  "user-scanner.email.v1": "email",
+  "gravatar.email.v1": "email",
+  "maigret.username.v1": "username",
+});
+const LEGACY_CATALOG_ID = "github.email-registration.v1";
+
+export function isScopedCatalogId(value: unknown): value is ScopedCatalogId {
+  return (SCOPED_CATALOG_IDS as readonly unknown[]).includes(value);
+}
+
 export interface AuthorizationRecord {
   /** Missing on legacy grants; those never authorize the broader scanner command. */
   readonly catalogScope?: "user-scanner.email.v1";
+  /** Every tool this grant consents to; missing on single-scope and legacy grants. */
+  readonly catalogScopes?: readonly ScopedCatalogId[];
   readonly granted: boolean;
   readonly at: string;
   readonly reason: string;
   readonly operator: "local-operator";
+}
+
+/**
+ * A grant authorizes a scoped tool only when it names that tool; grants never broaden to tools
+ * added later. Historical GitHub actions keep their original unscoped gate.
+ */
+export function authorizationCovers(authorization: AuthorizationRecord | undefined, catalogId: string): boolean {
+  if (authorization?.granted !== true) return false;
+  if (catalogId === LEGACY_CATALOG_ID) return true;
+  if (!isScopedCatalogId(catalogId)) return false;
+  return authorization.catalogScopes?.includes(catalogId) === true || authorization.catalogScope === catalogId;
 }
 
 export interface GitHubActionSpec {
@@ -74,10 +105,22 @@ export interface UserScannerActionSpec {
   readonly seed: EmailSeed;
 }
 
-/** Historical export name retained for consumers; new actions use UserScannerActionSpec. */
+export interface GravatarActionSpec {
+  readonly catalogId: "gravatar.email.v1";
+  readonly provider: "gravatar";
+  readonly seed: EmailSeed;
+}
+
+export interface MaigretActionSpec {
+  readonly catalogId: "maigret.username.v1";
+  readonly provider: "maigret";
+  readonly seed: UsernameSeed;
+}
+
+/** Historical export name retained for consumers; it covers every catalog action spec. */
 export interface GitHubCatalogAction {
   readonly id: InvestigationActionId;
-  readonly spec: GitHubActionSpec | UserScannerActionSpec;
+  readonly spec: GitHubActionSpec | UserScannerActionSpec | GravatarActionSpec | MaigretActionSpec;
   /**
    * Explicit input seed reference (see seed-graph.ts). Absent on historical actions and on
    * actions whose input is the operator email embedded in their spec.
@@ -98,13 +141,33 @@ export interface GitHubCatalogAction {
 export interface EvidenceRecord {
   readonly id: EvidenceId;
   readonly actionId: InvestigationActionId;
-  readonly seed: EmailSeed;
+  /** Seed of the action that produced it: an email or a confirmed username. */
+  readonly seed: EmailSeed | UsernameSeed;
   readonly provider: string;
   readonly status: RegistrationStatus;
   /** Absent on historical registration observations. */
   readonly finding?: ScannerFinding;
   readonly sourceId: string;
   readonly recordedAt: string;
+}
+
+export type UsernameSeedStatus = "accepted" | "rejected";
+
+/**
+ * Username decided by the operator: added directly, or a proposal derived from a finding that the
+ * operator accepted or rejected. Undecided proposals are derived from evidence, never stored.
+ */
+export interface UsernameSeedRecord {
+  readonly kind: "username";
+  readonly value: string;
+  readonly origin: { readonly kind: "operator" } | { readonly kind: "evidence"; readonly evidenceId: EvidenceId };
+  readonly status: UsernameSeedStatus;
+  /** When the operator added it or decided on its proposal. */
+  readonly at: string;
+  /** Why it was added, or which finding proposed it. */
+  readonly reason: string;
+  /** Operator decision on a proposal; absent on operator-added seeds. */
+  readonly decision?: { readonly at: string; readonly reason: string; readonly operator: "local-operator" };
 }
 
 export interface ValidationDecision {
@@ -143,6 +206,8 @@ export interface Investigation {
   readonly paused: boolean;
   readonly authorization?: AuthorizationRecord;
   readonly emailSeeds: readonly EmailSeed[];
+  /** Missing on snapshots created before username seeds existed; read as empty. */
+  readonly usernameSeeds?: readonly UsernameSeedRecord[];
   readonly actions: readonly GitHubCatalogAction[];
   readonly evidence: readonly EvidenceRecord[];
   readonly validations: readonly ValidationDecision[];

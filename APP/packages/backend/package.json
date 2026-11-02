@@ -10,6 +10,8 @@
     }
   },
   "dependencies": {
+    "@investia/adapter-gravatar": "workspace:*",
+    "@investia/adapter-maigret": "workspace:*",
     "@investia/adapter-user-scanner": "workspace:*",
     "@investia/core": "workspace:*",
     "@langchain/langgraph": "^1.4.19",

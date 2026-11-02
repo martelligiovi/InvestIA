@@ -1,9 +1,16 @@
-import { isScannerFinding, type Observation, type RegistrationObservation, type RegistrationStatus, type ScannerObservation } from "../domain/observation.ts";
-import type { EmailSeed } from "../domain/seed.ts";
+import { isScannerFinding, type Observation, type RegistrationObservation, type RegistrationStatus, type ScannerFinding, type ScannerObservation } from "../domain/observation.ts";
+import { USERNAME_SEED_PATTERN, type EmailSeed, type UsernameSeed } from "../domain/seed.ts";
+import { findingSeedNodeId, usernameSeedNodeId } from "../domain/seed-graph.ts";
+import { usernameProposals } from "../domain/username-proposals.ts";
 import type { SeedBox } from "../domain/seed-box.ts";
 import {
+  CATALOG_INPUT_KINDS,
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
+  isScopedCatalogId,
+  SCOPED_CATALOG_IDS,
+  type ScopedCatalogId,
+  type UsernameSeedRecord,
   type AdvancementMode,
   type AuditEvent,
   type AuditKind,
@@ -34,7 +41,17 @@ export interface InvestigationServiceDependencies {
   readonly executor: InvestigationExecutor;
   readonly clock: () => string;
   readonly createId: (kind: InvestigationIdKind) => string;
+  /** Enabled email tools; User Scanner queues on entry, Gravatar follows confirmed findings. */
+  readonly seedCatalog?: readonly ScopedCatalogId[];
 }
+
+const QUEUE_REASONS: Readonly<Record<ScopedCatalogId, string>> = {
+  "user-scanner.email.v1": "Catalog policy queued a user-scanner email and cross-scan check, including loud modules, for the recorded email seed.",
+  "gravatar.email.v1": "Catalog policy queued a Gravatar public profile lookup for the recorded email seed.",
+  "maigret.username.v1": "Catalog policy queued a Maigret username search with page extraction, without recursion, for the accepted username seed.",
+};
+const CATALOG_PROVIDERS = { "user-scanner.email.v1": "user-scanner", "gravatar.email.v1": "gravatar", "maigret.username.v1": "maigret" } as const;
+const EMAIL_CATALOG_IDS = SCOPED_CATALOG_IDS.filter((catalogId) => CATALOG_INPUT_KINDS[catalogId] === "email");
 
 const CATALOG_ID = "user-scanner.email.v1" as const;
 const LEGACY_CATALOG_ID = "github.email-registration.v1" as const;
@@ -43,6 +60,16 @@ const REGISTRATION_STATUSES: readonly RegistrationStatus[] = [
 ];
 const VALIDATION_STATUSES: readonly ValidationStatus[] = ["accepted", "rejected", "inconclusive"];
 const EMAIL_PATTERN = /^(?!\.)(?!.*\.\.)([A-Z0-9_'+.\-]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9-]*\.)+[A-Z]{2,}$/i;
+
+/**
+ * Whether a scanner's Gravatar finding belongs to the scanned email: it reports that email (in any
+ * letter case), only a username, or an address a lookup cannot use. Findings for another
+ * discovered email belong to that email and must not trigger the scanned email's lookup.
+ */
+export function gravatarFindingTargetsEmail(target: ScannerFinding["target"], scannedEmail: string): boolean {
+  if (target.kind !== "email" || !EMAIL_PATTERN.test(target.value.trim())) return true;
+  return target.value.trim().toLowerCase() === scannedEmail.trim().toLowerCase();
+}
 
 function timestamp(clock: () => string): string {
   const value = clock();
@@ -60,6 +87,12 @@ function newId(createId: InvestigationServiceDependencies["createId"], kind: Inv
 function reasonText(value: string): string {
   if (typeof value !== "string" || value.trim().length === 0) throw new Error("A non-empty reason is required");
   return value.trim();
+}
+
+function usernameSeed(value: string): UsernameSeed {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!USERNAME_SEED_PATTERN.test(normalized)) throw new Error("A valid username seed is required");
+  return { kind: "username", value: normalized };
 }
 
 function emailSeed(value: string): EmailSeed {
@@ -106,7 +139,7 @@ function isRegistrationObservation(
 function isScannerObservation(value: unknown): value is ScannerObservation {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<ScannerObservation>;
-  return candidate.kind === "scanner_finding" && candidate.seed?.kind === "email" &&
+  return candidate.kind === "scanner_finding" && (candidate.seed?.kind === "email" || candidate.seed?.kind === "username") &&
     typeof candidate.seed.value === "string" && typeof candidate.provider === "string" &&
     candidate.provider.trim().length > 0 && REGISTRATION_STATUSES.includes(candidate.status as RegistrationStatus) &&
     isScannerFinding(candidate.finding);
@@ -128,10 +161,17 @@ function getAction(investigation: Investigation, actionId: InvestigationActionId
 
 export class InvestigationService {
   private readonly dependencies: InvestigationServiceDependencies;
+  private readonly seedCatalog: readonly ScopedCatalogId[];
 
   constructor(dependencies: InvestigationServiceDependencies) {
     if (dependencies.executor.id.trim().length === 0) throw new Error("Executor id must not be empty");
+    const seedCatalog = dependencies.seedCatalog ?? EMAIL_CATALOG_IDS;
+    if (seedCatalog.length === 0 || new Set(seedCatalog).size !== seedCatalog.length ||
+      !seedCatalog.every((catalogId) => isScopedCatalogId(catalogId) && CATALOG_INPUT_KINDS[catalogId] === "email")) {
+      throw new Error("The seed catalog must list known scoped tools exactly once");
+    }
     this.dependencies = dependencies;
+    this.seedCatalog = [...seedCatalog];
   }
 
   async createInvestigation(name?: string, intention?: string, advancementMode?: AdvancementMode): Promise<Investigation> {
@@ -168,26 +208,93 @@ export class InvestigationService {
     const why = reasonText(reason);
     const at = timestamp(this.dependencies.clock);
     const event = auditEvent(this.dependencies.createId, at, "operator", "email_seed_added", why);
-    const action: GitHubCatalogAction = {
+    const queuedActions = this.seedCatalog.filter((catalogId) => catalogId !== "gravatar.email.v1").map((catalogId): GitHubCatalogAction => ({
       id: newId(this.dependencies.createId, "action"),
-      spec: { catalogId: CATALOG_ID, provider: "user-scanner", seed: { ...seed } },
+      spec: { catalogId, provider: CATALOG_PROVIDERS[catalogId], seed: { ...seed } } as GitHubCatalogAction["spec"],
       status: "queued",
       queuedByCatalog: true,
       proposedAt: at,
-      proposalReason: "Catalog policy queued a user-scanner email and cross-scan check, including loud modules, for the recorded email seed.",
-    };
-    const queued = auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id });
+      proposalReason: QUEUE_REASONS[catalogId],
+    }));
+    const queued = queuedActions.map((entry) =>
+      auditEvent(this.dependencies.createId, at, "system", "action_queued", entry.proposalReason, { actionId: entry.id }));
     return this.dependencies.store.transact(id, (current) => {
       if (current.emailSeeds.some((existing) => existing.value === seed.value)) {
         throw new Error("Email seed already exists in this investigation");
       }
       const next = withRevision(current, at, {
         emailSeeds: [...current.emailSeeds, seed],
+        actions: [...current.actions, ...queuedActions],
+        audit: [...current.audit, event, ...queued],
+      });
+      return { next, result: next };
+    });
+  }
+
+  async addUsernameSeed(id: string, value: string, reason: string): Promise<Investigation> {
+    const seed = usernameSeed(value);
+    const why = reasonText(reason);
+    const at = timestamp(this.dependencies.clock);
+    const record: UsernameSeedRecord = { kind: "username", value: seed.value, origin: { kind: "operator" }, status: "accepted", at, reason: why };
+    const event = auditEvent(this.dependencies.createId, at, "operator", "username_seed_added", why);
+    const action = this.usernameAction(seed, at, usernameSeedNodeId(seed.value));
+    const queued = auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id });
+    return this.dependencies.store.transact(id, (current) => {
+      if ((current.usernameSeeds ?? []).some((existing) => existing.value === seed.value)) {
+        throw new Error("Username seed already exists in this investigation");
+      }
+      const next = withRevision(current, at, {
+        usernameSeeds: [...(current.usernameSeeds ?? []), record],
         actions: [...current.actions, action],
         audit: [...current.audit, event, queued],
       });
       return { next, result: next };
     });
+  }
+
+  /**
+   * Records the operator decision on a username proposal derived from current evidence. Accepting
+   * queues Maigret fed by the finding seed; it still runs only under a grant naming Maigret.
+   */
+  async decideUsernameProposal(id: string, value: string, decision: "accepted" | "rejected", reason: string): Promise<Investigation> {
+    const seed = usernameSeed(value);
+    if (decision !== "accepted" && decision !== "rejected") throw new Error("Unsupported username proposal decision");
+    const why = reasonText(reason);
+    const at = timestamp(this.dependencies.clock);
+    const decisionEvent = auditEvent(this.dependencies.createId, at, "operator",
+      decision === "accepted" ? "username_proposal_accepted" : "username_proposal_rejected", why);
+    return this.dependencies.store.transact(id, (current) => {
+      const proposal = usernameProposals(current).find((candidate) => candidate.value === seed.value);
+      if (proposal === undefined) throw new Error("Username proposal not found");
+      const record: UsernameSeedRecord = {
+        kind: "username", value: seed.value, origin: { kind: "evidence", evidenceId: proposal.evidenceId },
+        status: decision, at, reason: `Proposed from a ${proposal.provider} finding.`,
+        decision: { at, reason: why, operator: "local-operator" },
+      };
+      const action = decision === "accepted" ? this.usernameAction(seed, at, findingSeedNodeId(proposal.evidenceId)) : undefined;
+      const events: AuditEvent[] = [{ ...decisionEvent, evidenceId: proposal.evidenceId }];
+      if (action !== undefined) {
+        events.push(auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id }));
+      }
+      const next = withRevision(current, at, {
+        usernameSeeds: [...(current.usernameSeeds ?? []), record],
+        actions: action === undefined ? current.actions : [...current.actions, action],
+        audit: [...current.audit, ...events],
+      });
+      return { next, result: next };
+    });
+  }
+
+  private usernameAction(seed: UsernameSeed, at: string, sourceSeedId: string): GitHubCatalogAction {
+    return {
+      id: newId(this.dependencies.createId, "action"),
+      spec: { catalogId: "maigret.username.v1", provider: "maigret", seed: { ...seed } },
+      sourceSeedId,
+      status: "queued",
+      queuedByCatalog: true,
+      proposedAt: at,
+      proposalReason: QUEUE_REASONS["maigret.username.v1"],
+    };
   }
 
   async proposeGitHubAction(id: string, email: string, reason: string): Promise<GitHubCatalogAction> {
@@ -252,7 +359,10 @@ export class InvestigationService {
     if (typeof granted !== "boolean") throw new Error("Authorization must be explicitly granted or denied");
     const why = reasonText(reason);
     const at = timestamp(this.dependencies.clock);
-    const authorization = { granted, at, reason: why, operator: "local-operator" as const, catalogScope: CATALOG_ID };
+    const authorization = {
+      granted, at, reason: why, operator: "local-operator" as const,
+      catalogScope: CATALOG_ID, catalogScopes: [...SCOPED_CATALOG_IDS],
+    };
     const event = auditEvent(this.dependencies.createId, at, "operator", "authorization_changed", why, { granted });
     return this.dependencies.store.transact(id, (current) => {
       const next = withRevision(current, at, { authorization, audit: [...current.audit, event] });
@@ -361,6 +471,7 @@ export class InvestigationService {
     }
 
     const completedAt = timestamp(this.dependencies.clock);
+    const sourceId = this.dependencies.executor.sourceIdFor?.(claim.action) ?? this.dependencies.executor.id;
     const evidence: EvidenceRecord[] = [];
     let unsupportedObservationCount = 0;
     for (const observation of observations as readonly unknown[]) {
@@ -368,8 +479,9 @@ export class InvestigationService {
       const registration = isRegistrationObservation(observation) && observation.provider === "github";
       if (
         (!scanner && !registration) ||
-        (observation as { seed: EmailSeed }).seed.value !== claim.action.spec.seed.value ||
-        (scanner && claim.action.spec.catalogId !== CATALOG_ID)
+        (observation as { seed: EmailSeed | UsernameSeed }).seed.kind !== claim.action.spec.seed.kind ||
+        (observation as { seed: EmailSeed | UsernameSeed }).seed.value !== claim.action.spec.seed.value ||
+        (scanner && !isScopedCatalogId(claim.action.spec.catalogId))
       ) {
         unsupportedObservationCount++;
         continue;
@@ -387,18 +499,52 @@ export class InvestigationService {
         seed: { ...claim.action.spec.seed },
         provider: accepted.provider,
         status: accepted.status,
-        sourceId: this.dependencies.executor.id,
+        sourceId,
         recordedAt: completedAt,
         ...(scanner ? { finding: structuredClone((accepted as ScannerObservation).finding) } : {}),
       });
     }
-    const completed = await this.dependencies.store.completeAction(this.completion(
+    const scanned = claim.action.spec.seed as EmailSeed;
+    const chainsGravatar = claim.action.spec.catalogId === CATALOG_ID && this.seedCatalog.includes("gravatar.email.v1");
+    let gravatarFound = false;
+    const followUps: Array<NonNullable<CompleteActionInput["followUps"]>[number]> = chainsGravatar
+      ? evidence.filter((record) => record.provider.trim().toLowerCase() === "gravatar" && record.finding !== undefined).map((record) => {
+        const target = record.finding!.target;
+        // Only the scanned email runs automatically; another discovered email waits for operator approval.
+        const own = gravatarFindingTargetsEmail(target, scanned.value);
+        const reported = own ? scanned : emailSeed(target.value);
+        if (own) gravatarFound = true;
+        const action: GitHubCatalogAction = {
+          id: newId(this.dependencies.createId, "action"),
+          spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: own ? { ...scanned } : reported },
+          sourceSeedId: findingSeedNodeId(record.id), proposedAt: completedAt,
+          ...(own ? {
+            status: "queued" as const, queuedByCatalog: true as const,
+            proposalReason: "User Scanner found a Gravatar profile; queued a public profile lookup without identity attribution.",
+          } : {
+            status: "proposed" as const,
+            proposalReason: "User Scanner found a Gravatar profile for another discovered email; the operator may approve its public profile lookup.",
+          }),
+        };
+        return { action, auditEvent: auditEvent(this.dependencies.createId, completedAt, "system",
+          own ? "action_queued" : "action_proposed", action.proposalReason, { actionId: action.id }) };
+      }) : [];
+    if (chainsGravatar && !gravatarFound) {
+      const action: GitHubCatalogAction = {
+        id: newId(this.dependencies.createId, "action"),
+        spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: claim.action.spec.seed },
+        status: "proposed", proposedAt: completedAt,
+        proposalReason: "User Scanner did not find Gravatar; the operator may approve a public profile lookup.",
+      };
+      followUps.push({ action, auditEvent: auditEvent(this.dependencies.createId, completedAt, "system", "action_proposed", action.proposalReason, { actionId: action.id }) });
+    }
+    const completed = await this.dependencies.store.completeAction({ ...this.completion(
       claim,
       id,
       completedAt,
       { kind: "success", evidence, unsupportedObservationCount },
       "Execution completed; only positive tool-reported findings were retained without identity attribution.",
-    ));
+    ), followUps });
     return getAction(completed, claim.action.id);
   }
 
@@ -434,20 +580,60 @@ export function createInvestigationService(dependencies: InvestigationServiceDep
   return new InvestigationService(dependencies);
 }
 
+function assertClaimedAction(action: GitHubCatalogAction): void {
+  if (
+    typeof action !== "object" || action === null || action.status !== "claimed" ||
+    typeof action.claim !== "object" || action.claim === null ||
+    typeof action.claim.id !== "string" || action.claim.id.trim().length === 0 ||
+    typeof action.claim.claimedAt !== "string" || action.claim.claimedAt.length === 0
+  ) throw new Error("SeedBox executor requires a claimed action");
+}
+
+const RETIRED_ACTION_MESSAGE = "Historical GitHub-only action is retired; create an explicit scanner proposal instead.";
+
+export interface CatalogBoxes {
+  readonly "user-scanner.email.v1"?: SeedBox<EmailSeed, Observation>;
+  readonly "gravatar.email.v1"?: SeedBox<EmailSeed, Observation>;
+  readonly "maigret.username.v1"?: SeedBox<UsernameSeed, Observation>;
+}
+type AnySeedBox = SeedBox<EmailSeed | UsernameSeed, Observation>;
+
+/** Routes each claimed action to the tool registered for its catalog id. */
+export function createCatalogExecutor(boxes: CatalogBoxes): InvestigationExecutor {
+  const registry = new Map<string, AnySeedBox>();
+  for (const [catalogId, box] of Object.entries(boxes) as [string, AnySeedBox | undefined][]) {
+    if (!isScopedCatalogId(catalogId)) throw new Error(`Unknown catalog id: ${catalogId}`);
+    if (box === undefined) continue;
+    const kind = CATALOG_INPUT_KINDS[catalogId];
+    if (box.inputKind !== kind) throw new Error(`Catalog ${catalogId} requires ${kind === "email" ? "an email" : "a username"} SeedBox`);
+    registry.set(catalogId, box);
+  }
+  const boxFor = (action: GitHubCatalogAction) => {
+    if (action.spec.catalogId === LEGACY_CATALOG_ID) throw new Error(RETIRED_ACTION_MESSAGE);
+    const box = registry.get(action.spec.catalogId);
+    if (box === undefined) throw new Error(`No tool is registered for catalog ${String(action.spec.catalogId)}`);
+    return box;
+  };
+  return {
+    id: "catalog",
+    async execute(action: GitHubCatalogAction, permit: ExecutionPermit): Promise<readonly Observation[]> {
+      assertClaimedAction(action);
+      return executeSeedBox(boxFor(action), action.spec.seed, permit as ExecutionState);
+    },
+    sourceIdFor: (action) => boxFor(action).id,
+  };
+}
+
 export function createSeedBoxExecutor(box: SeedBox<EmailSeed, Observation>): InvestigationExecutor {
   if (box.inputKind !== "email") throw new Error("GitHub catalog execution requires an email SeedBox");
   return {
     id: box.id,
     async execute(action: GitHubCatalogAction, permit: ExecutionPermit): Promise<readonly Observation[]> {
-      if (
-        typeof action !== "object" || action === null || action.status !== "claimed" ||
-        typeof action.claim !== "object" || action.claim === null ||
-        typeof action.claim.id !== "string" || action.claim.id.trim().length === 0 ||
-        typeof action.claim.claimedAt !== "string" || action.claim.claimedAt.length === 0
-      ) throw new Error("SeedBox executor requires a claimed action");
-      if (box.id === "user-scanner:email" && action.spec.catalogId !== CATALOG_ID) {
-        throw new Error("Historical GitHub-only action is retired; create an explicit scanner proposal instead.");
+      assertClaimedAction(action);
+      if (box.id === "user-scanner:email" && action.spec.catalogId === LEGACY_CATALOG_ID) {
+        throw new Error(RETIRED_ACTION_MESSAGE);
       }
+      if (action.spec.seed.kind !== "email") throw new Error("An email SeedBox requires an email action");
       return executeSeedBox(box, action.spec.seed, permit as ExecutionState);
     },
   };

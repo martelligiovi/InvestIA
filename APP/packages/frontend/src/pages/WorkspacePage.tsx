@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import type { ValidationStatus } from "@investia/core";
+import { usernameProposals, type ValidationStatus } from "@investia/core";
 import { AsciiArt } from "../components/AsciiArt";
 import { InvestigationGraph } from "../components/InvestigationGraph";
+import { UsernameSeedsPanel } from "../components/UsernameSeedsPanel";
 import { WorkspaceDetails } from "../components/WorkspaceDetails";
 import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
@@ -122,6 +123,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const claimedActions = investigation.actions.filter((action) => action.status === "claimed");
   const dispatchEligible = !automatic && !investigation.paused && authorizationGranted && queuedActions.length > 0 && !controller.stale && !controller.busy;
   const controlsDisabled = controller.busy || controller.stale;
+  const usernameProposalCount = usernameProposals(investigation).length;
   const investigationPaused = investigation.paused;
   const reportIsFresh = controller.report !== null && controller.reportRevision === investigation.revision && !controller.stale;
   const aiReport = controller.reportKind === "ai";
@@ -133,7 +135,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     // The opening drawer narrows the canvas; once it settles, bring the chosen node back into view.
     const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     window.setTimeout(() => {
-      document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(node.groupId ?? node.id)}"]`)
+      document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(node.groupId ?? node.relatedParentId ?? node.id)}"]`)
         ?.scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: reducedMotion ? "auto" : "smooth" });
     }, reducedMotion ? 0 : DRAWER_SETTLE_MS);
   }
@@ -142,7 +144,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     setDetailOpen(false);
     if (selectedNodeId === null) return;
     // Return focus to the node that opened the drawer so keyboard users keep their place in the graph.
-    document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(selectedNode?.groupId ?? selectedNodeId)}"]`)?.focus();
+    document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(selectedNode?.groupId ?? selectedNode?.relatedParentId ?? selectedNodeId)}"]`)?.focus();
   }
 
   function handleMobileTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
@@ -189,6 +191,14 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     return controller.mutate((api, investigationId) => api.validateEvidence(investigationId, evidenceId, status, reason));
   }
 
+  async function addUsername(username: string, reason: string): Promise<boolean> {
+    return controller.mutate((api, investigationId) => api.addUsernameSeed(investigationId, username, reason));
+  }
+
+  async function decideUsername(username: string, decision: "accepted" | "rejected", reason: string): Promise<boolean> {
+    return controller.mutate((api, investigationId) => api.decideUsernameProposal(investigationId, username, decision, reason));
+  }
+
   async function runNextAction() {
     if (!dispatchEligible) return;
     await controller.mutate((api, investigationId) => api.runNextAction(investigationId), true);
@@ -219,8 +229,8 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
               <button className="workspace-button workspace-button--quiet" type="button" disabled={controller.busy} onClick={() => void controller.refresh()}>
                 {controller.busy ? "Actualizando…" : "Actualizar expediente"}
               </button>
-              <p>{investigation.authorization === undefined ? "Sin autorización registrada" : authorizationGranted ? "Autorización otorgada" : investigation.authorization.granted ? "Autorización histórica: requiere consentimiento para user-scanner" : "Autorización revocada"}</p>
-              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos. Revocar o pausar no cancela una ejecución en curso.</p>
+              <p>{investigation.authorization === undefined ? "Sin autorización registrada" : authorizationGranted ? "Autorización otorgada" : investigation.authorization.granted ? "Autorización previa: requiere consentimiento para las herramientas nuevas del catálogo" : "Autorización revocada"}</p>
+              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, la consulta del perfil público de Gravatar y la búsqueda de usernames aceptados con Maigret en unos 500 sitios. Revocar o pausar no cancela una ejecución en curso.</p>
               <label className="form-field">
                 <span>Motivo de autorización</span>
                 <textarea value={authorizationReason} maxLength={2_000} onChange={(event) => { setAuthorizationReason(event.currentTarget.value); setFormError(""); }} disabled={controlsDisabled} rows={2} />
@@ -235,7 +245,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
               ) : (
                 <>
                   <button className="workspace-button" type="button" disabled={!dispatchEligible} onClick={() => void runNextAction()}>Ejecutar siguiente acción en cola</button>
-                  <p className="dispatch-note">Avance manual: cola del expediente, no del nodo seleccionado. Solo se ejecuta al presionar este control, sin aprobación por nodo.</p>
+                  <p className="dispatch-note">Avance manual: cola del expediente, no del nodo seleccionado. Solo se ejecuta al presionar este control; las propuestas requieren aprobación previa.</p>
                 </>
               )}
               <ul className="dispatch-gates" aria-label="Condiciones para ejecutar">
@@ -244,6 +254,12 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
                 <li>Catálogo: {queuedActions.length > 0 ? "acción disponible" : "sin acción en cola"}</li>
                 <li>Vista: {controller.stale ? "desactualizada" : "snapshot leído"}</li>
               </ul>
+            </div>
+          </details>
+          <details className="workspace-usernames-disclosure workspace-disclosure">
+            <summary>Usernames{usernameProposalCount > 0 ? ` (${usernameProposalCount})` : ""}</summary>
+            <div className="workspace-popover workspace-usernames-panel">
+              <UsernameSeedsPanel investigation={investigation} disabled={controlsDisabled} onAdd={addUsername} onDecide={decideUsername} />
             </div>
           </details>
           <details className="workspace-pause-disclosure workspace-disclosure">
@@ -343,6 +359,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             onSelectNode={(id) => { const node = findWorkspaceNode(graph, id); if (node) selectNode(node); }}
             disabled={controlsDisabled}
             onValidate={validate}
+            onApproveGravatar={(actionId, reason) => controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason))}
           />
         </div>
       </div>

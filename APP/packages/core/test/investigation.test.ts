@@ -13,6 +13,12 @@ import {
   type InvestigationStore,
   type InvestigationTransaction,
   type Observation,
+  type ScopedCatalogId,
+  createInitialInvestigation,
+  findingSeedNodeId,
+  investigationSeedGraph,
+  usernameProposals,
+  usernameSeedNodeId,
 } from "../src/index.ts";
 
 class MemoryInvestigationStore implements InvestigationStore {
@@ -91,20 +97,29 @@ class MemoryInvestigationStore implements InvestigationStore {
         unsupportedObservationCount: input.result.unsupportedObservationCount,
       }),
     };
+    const followUps = input.result.kind === "success" ? (input.followUps ?? []).filter(({ action: followUp }, index, all) =>
+      !current.actions.some((existing) => existing.spec.catalogId === followUp.spec.catalogId &&
+        existing.spec.seed.kind === followUp.spec.seed.kind && existing.spec.seed.value === followUp.spec.seed.value) &&
+      all.findIndex(({ action: other }) => other.spec.catalogId === followUp.spec.catalogId &&
+        other.spec.seed.kind === followUp.spec.seed.kind && other.spec.seed.value === followUp.spec.seed.value) === index) : [];
     const next: Investigation = {
       ...current,
       revision: current.revision + 1,
       updatedAt: input.completedAt,
-      actions: current.actions.map((candidate) => candidate.id === action.id ? completed : candidate),
+      actions: [...current.actions.map((candidate) => candidate.id === action.id ? completed : candidate), ...followUps.map(({ action }) => action)],
       evidence: input.result.kind === "success" ? [...current.evidence, ...input.result.evidence] : current.evidence,
-      audit: [...current.audit, input.auditEvent],
+      audit: [...current.audit, input.auditEvent, ...followUps.map(({ auditEvent }) => auditEvent)],
     };
     this.#items.set(input.investigationId, structuredClone(next));
     return structuredClone(next);
   }
 }
 
-function makeHarness(executor?: InvestigationExecutor) {
+/**
+ * These workflow tests pin the single-tool queue they were written for; the default catalog that
+ * also queues Gravatar is covered by "the default seed catalog queues every scoped tool".
+ */
+function makeHarness(executor?: InvestigationExecutor, seedCatalog: readonly ScopedCatalogId[] = ["user-scanner.email.v1"]) {
   const store = new MemoryInvestigationStore();
   let id = 0;
   let tick = 0;
@@ -124,9 +139,256 @@ function makeHarness(executor?: InvestigationExecutor) {
     executor: defaultExecutor,
     clock: () => `2025-01-01T00:00:${String(tick++).padStart(2, "0")}.000Z`,
     createId: (kind) => `${kind}-${++id}`,
+    seedCatalog,
   });
   return { store, service };
 }
+
+test("a new email queues User Scanner without independently running Gravatar", async () => {
+  const store = new MemoryInvestigationStore();
+  let id = 0;
+  const service = createInvestigationService({
+    store, executor: { id: "unused", async execute() { return []; } },
+    clock: () => "2025-01-01T00:00:00.000Z", createId: (kind) => `${kind}-${++id}`,
+  });
+  const created = await service.createInvestigation();
+  const seeded = await service.addEmailSeed(created.id, "ana@example.test");
+  assert.deepEqual(seeded.actions.map((action) => [action.spec.catalogId, action.status, action.queuedByCatalog]), [
+    ["user-scanner.email.v1", "queued", true],
+  ]);
+  assert.deepEqual(seeded.audit.filter((event) => event.kind === "action_queued").map((event) => event.actionId), seeded.actions.map((action) => action.id));
+});
+
+test("a confirmed Gravatar finding queues its profile lookup as a child of that finding", async () => {
+  const { service } = makeHarness({
+    id: "user-scanner:email",
+    async execute() { return [scannerFinding("Gravatar", { kind: "username", value: "ana" })]; },
+  }, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@example.test");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  await service.executeNextAction(created.id);
+  const stored = (await service.loadInvestigation(created.id))!;
+  const finding = stored.evidence.find((record) => record.provider === "Gravatar")!;
+  const profile = stored.actions.find((action) => action.spec.catalogId === "gravatar.email.v1")!;
+  assert.ok(finding);
+  assert.ok(profile);
+  assert.equal(profile.sourceSeedId, findingSeedNodeId(finding.id));
+  assert.equal(profile.spec.seed.value, "ana@example.test");
+  assert.equal(profile.status, "queued");
+});
+
+test("a Gravatar finding with an unusable email target still queues a linked lookup for the initial email", async () => {
+  const { service } = makeHarness({
+    id: "user-scanner:email",
+    async execute() { return [scannerFinding("Gravatar", { kind: "email", value: "a@b.c" })]; },
+  }, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@example.test");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  await service.executeNextAction(created.id);
+  const stored = (await service.loadInvestigation(created.id))!;
+  const finding = stored.evidence.find((record) => record.provider === "Gravatar")!;
+  const lookups = stored.actions.filter((action) => action.spec.catalogId === "gravatar.email.v1");
+  assert.equal(lookups.length, 1);
+  assert.equal(lookups[0]!.status, "queued");
+  assert.equal(lookups[0]!.spec.seed.value, "ana@example.test");
+  assert.equal(lookups[0]!.sourceSeedId, findingSeedNodeId(finding.id));
+});
+
+test("a Gravatar finding for another discovered email is only proposed, and the scanned email gets its own proposal", async () => {
+  const { service } = makeHarness({
+    id: "user-scanner:email",
+    async execute() { return [scannerFinding("Gravatar", { kind: "email", value: "other@example.test" })]; },
+  }, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@example.test");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  await service.executeNextAction(created.id);
+  const stored = (await service.loadInvestigation(created.id))!;
+  const finding = stored.evidence.find((record) => record.provider === "Gravatar")!;
+  const lookups = stored.actions.filter((action) => action.spec.catalogId === "gravatar.email.v1");
+  assert.deepEqual(lookups.map((action) => [action.spec.seed.value, action.status, action.queuedByCatalog, action.sourceSeedId]), [
+    ["other@example.test", "proposed", undefined, findingSeedNodeId(finding.id)],
+    ["ana@example.test", "proposed", undefined, undefined],
+  ]);
+  assert.equal(await service.executeNextAction(created.id), undefined, "no Gravatar lookup runs without approval");
+});
+
+test("a Gravatar finding for the scanned email in another letter case queues the lookup for the scanned seed", async () => {
+  const { service } = makeHarness({
+    id: "user-scanner:email",
+    async execute() { return [scannerFinding("Gravatar", { kind: "email", value: "Ana@Example.test" })]; },
+  }, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@example.test");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  await service.executeNextAction(created.id);
+  const lookups = (await service.loadInvestigation(created.id))!.actions.filter((action) => action.spec.catalogId === "gravatar.email.v1");
+  assert.deepEqual(lookups.map((action) => [action.spec.seed.value, action.status]), [["ana@example.test", "queued"]]);
+});
+
+test("a completed scanner without Gravatar proposes a lookup requiring approval", async () => {
+  const { service } = makeHarness({
+    id: "user-scanner:email",
+    async execute() { return [scannerFinding("Other", { kind: "email", value: "ana@example.test" })]; },
+  }, ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  const seeded = await service.addEmailSeed(created.id, "ana@example.test");
+  assert.equal(seeded.actions.some((action) => action.spec.catalogId === "gravatar.email.v1"), false);
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  await service.executeNextAction(created.id);
+  const result = (await service.loadInvestigation(created.id))!;
+  const proposal = result.actions.find((action) => action.spec.catalogId === "gravatar.email.v1")!;
+  assert.equal(proposal.status, "proposed");
+  assert.equal(await service.executeNextAction(created.id), undefined);
+  const approved = await service.approveAction(created.id, proposal.id, "Operator chose the lookup.");
+  assert.equal(approved.status, "queued");
+  assert.equal(approved.approval?.reason, "Operator chose the lookup.");
+});
+
+test("a failed scanner does not propose a Gravatar lookup", async () => {
+  const { service } = makeHarness({ id: "user-scanner:email", async execute() { throw new Error("Scanner failed"); } },
+    ["user-scanner.email.v1", "gravatar.email.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@example.test");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  assert.equal((await service.executeNextAction(created.id))?.status, "failed");
+  assert.equal((await service.loadInvestigation(created.id))!.actions.some((action) => action.spec.catalogId === "gravatar.email.v1"), false);
+});
+
+test("a seed catalog must list known scoped tools exactly once", () => {
+  const base = {
+    store: new MemoryInvestigationStore(), executor: { id: "unused", async execute() { return []; } },
+    clock: () => "2025-01-01T00:00:00.000Z", createId: () => "id",
+  };
+  for (const seedCatalog of [[], ["user-scanner.email.v1", "user-scanner.email.v1"], ["github.email-registration.v1"], ["maigret.username.v1"]]) {
+    assert.throws(() => createInvestigationService({ ...base, seedCatalog: seedCatalog as ScopedCatalogId[] }), /seed catalog/i);
+  }
+});
+
+test("an operator username seed is recorded once and queues one Maigret action linked to it", async () => {
+  const { store, service } = makeHarness();
+  const created = await service.createInvestigation();
+  const seeded = await service.addUsernameSeed(created.id, "  anaexample ", "Username supplied by the operator.");
+  assert.deepEqual(seeded.usernameSeeds, [{
+    kind: "username", value: "anaexample", origin: { kind: "operator" }, status: "accepted",
+    at: seeded.updatedAt, reason: "Username supplied by the operator.",
+  }]);
+  assert.equal(seeded.actions.length, 1);
+  const [action] = seeded.actions;
+  assert.deepEqual(action!.spec, { catalogId: "maigret.username.v1", provider: "maigret", seed: { kind: "username", value: "anaexample" } });
+  assert.equal(action!.status, "queued");
+  assert.equal(action!.queuedByCatalog, true);
+  assert.equal(action!.sourceSeedId, usernameSeedNodeId("anaexample"));
+  assert.deepEqual(seeded.audit.map((event) => event.kind), ["username_seed_added", "action_queued"]);
+
+  const graph = investigationSeedGraph(seeded);
+  assert.deepEqual(graph.seeds.map((seed) => [seed.kind, seed.id]), [["username", usernameSeedNodeId("anaexample")]]);
+  assert.equal(graph.actionInputs.get(action!.id), usernameSeedNodeId("anaexample"));
+
+  const before = await store.get(created.id);
+  for (const value of ["--help", "-a", "two words", "", "a".repeat(65), "slash/name"]) {
+    await assert.rejects(service.addUsernameSeed(created.id, value, "Bad username."), /A valid username seed is required/);
+  }
+  await assert.rejects(service.addUsernameSeed(created.id, "anaexample", "Again."), /Username seed already exists in this investigation/);
+  await assert.rejects(service.addUsernameSeed(created.id, "other", " "), /reason/);
+  assert.deepEqual(await store.get(created.id), before, "rejected input leaves the case unchanged");
+});
+
+test("a Maigret run keeps only findings for its own username seed", async () => {
+  const finding = (value: string) => ({
+    target: { kind: "username" as const, value }, upstreamStatus: "Found" as const, url: `https://example.org/${value}`,
+    category: "", reason: "", extra: { source: "maigret" }, media: {},
+  });
+  const { service } = makeHarness({
+    id: "maigret:username",
+    async execute(action) {
+      return [
+        { kind: "scanner_finding", seed: action.spec.seed, provider: "GitHub", status: "registered", finding: finding("anaexample") },
+        { kind: "scanner_finding", seed: { kind: "username", value: "someone-else" }, provider: "Reddit", status: "registered", finding: finding("someone-else") },
+        { kind: "scanner_finding", seed: { kind: "email", value: "anaexample@example.org" }, provider: "X", status: "registered", finding: finding("anaexample") },
+      ] as Observation[];
+    },
+  });
+  const created = await service.createInvestigation();
+  await service.addUsernameSeed(created.id, "anaexample", "Username supplied by the operator.");
+  await service.authorize(created.id, true, "Authorize the listed tools.");
+  const completed = await service.executeNextAction(created.id);
+  assert.equal(completed?.status, "succeeded");
+  assert.equal(completed?.unsupportedObservationCount, 2);
+  const stored = (await service.loadInvestigation(created.id))!;
+  assert.deepEqual(stored.evidence.map((record) => [record.provider, record.seed, record.sourceId]), [
+    ["GitHub", { kind: "username", value: "anaexample" }, "maigret:username"],
+  ]);
+});
+
+function scannerFinding(provider: string, target: { kind: "email" | "username"; value: string }, extra: Record<string, string> = {}): Observation {
+  return {
+    kind: "scanner_finding", seed: { kind: "email", value: "ana@example.test" }, provider, status: "registered",
+    finding: { target, upstreamStatus: "Found", url: "", category: "", reason: "", extra, media: {} },
+  };
+}
+
+async function caseWithFindings(observations: Observation[]) {
+  const harness = makeHarness({ id: "user-scanner:email", async execute() { return observations; } });
+  const created = await harness.service.createInvestigation();
+  await harness.service.addEmailSeed(created.id, "ana@example.test");
+  await harness.service.authorize(created.id, true, "Authorize the listed tools.");
+  await harness.service.executeNextAction(created.id);
+  return { ...harness, id: created.id, investigation: (await harness.service.loadInvestigation(created.id))! };
+}
+
+test("username proposals come from username findings and discovered usernames, deduplicated and validated", async () => {
+  const { investigation } = await caseWithFindings([
+    scannerFinding("GitHub", { kind: "username", value: "anaexample" }),
+    scannerFinding("Reddit", { kind: "username", value: "anaexample" }),
+    scannerFinding("Spotify", { kind: "email", value: "ana@example.test" }, { discovered_usernames: "ana-alt, --help, ana_dev, anaexample" }),
+    scannerFinding("Bad", { kind: "username", value: "two words" }),
+  ]);
+  const [github, , spotify] = investigation.evidence;
+  assert.deepEqual(usernameProposals(investigation), [
+    { value: "anaexample", evidenceId: github!.id, provider: "GitHub" },
+    { value: "ana-alt", evidenceId: spotify!.id, provider: "Spotify" },
+    { value: "ana_dev", evidenceId: spotify!.id, provider: "Spotify" },
+  ]);
+  assert.deepEqual(usernameProposals(createInitialInvestigation("empty", "2025-01-01T00:00:00.000Z")), []);
+});
+
+test("accepting a proposal records the decision and queues Maigret fed by the finding", async () => {
+  const { service, id, investigation } = await caseWithFindings([scannerFinding("GitHub", { kind: "username", value: "anaexample" })]);
+  const evidenceId = investigation.evidence[0]!.id;
+  const decided = await service.decideUsernameProposal(id, "anaexample", "accepted", "Same person, worth a search.");
+  assert.deepEqual(decided.usernameSeeds, [{
+    kind: "username", value: "anaexample", origin: { kind: "evidence", evidenceId }, status: "accepted",
+    at: decided.updatedAt, reason: "Proposed from a GitHub finding.",
+    decision: { at: decided.updatedAt, reason: "Same person, worth a search.", operator: "local-operator" },
+  }]);
+  const maigret = decided.actions.at(-1)!;
+  assert.deepEqual(maigret.spec, { catalogId: "maigret.username.v1", provider: "maigret", seed: { kind: "username", value: "anaexample" } });
+  assert.equal(maigret.status, "queued");
+  assert.equal(maigret.sourceSeedId, findingSeedNodeId(evidenceId));
+  assert.equal(investigationSeedGraph(decided).actionInputs.get(maigret.id), findingSeedNodeId(evidenceId));
+  assert.deepEqual(decided.audit.slice(-2).map((event) => [event.kind, event.evidenceId ?? event.actionId]), [
+    ["username_proposal_accepted", evidenceId], ["action_queued", maigret.id],
+  ]);
+  assert.deepEqual(usernameProposals(decided), [], "a decided username is no longer proposed");
+});
+
+test("rejecting a proposal records the decision without queuing work, and unknown or decided proposals fail unchanged", async () => {
+  const { service, store, id } = await caseWithFindings([scannerFinding("GitHub", { kind: "username", value: "anaexample" })]);
+  const before = await store.get(id);
+  const rejected = await service.decideUsernameProposal(id, "anaexample", "rejected", "Different person.");
+  assert.equal(rejected.usernameSeeds?.[0]?.status, "rejected");
+  assert.equal(rejected.actions.length, before!.actions.length);
+  assert.equal(rejected.audit.at(-1)?.kind, "username_proposal_rejected");
+  const after = await store.get(id);
+  for (const [value, decision] of [["anaexample", "accepted"], ["nobody", "accepted"], ["--help", "rejected"]] as const) {
+    await assert.rejects(service.decideUsernameProposal(id, value, decision, "Try."), /Username proposal not found|A valid username seed is required/);
+  }
+  await assert.rejects(service.decideUsernameProposal(id, "anaexample", "maybe" as "accepted", "Try."), /decision/i);
+  assert.deepEqual(await store.get(id), after);
+});
 
 async function approvedAction(
   service: ReturnType<typeof createInvestigationService>,

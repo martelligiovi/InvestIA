@@ -64,3 +64,14 @@ test("backend configuration rejects wildcard and non-loopback binds", () => {
   assert.throws(() => loadBackendConfig({ ...validNeo4j, NEO4J_URI: "neo4j://user:pass@127.0.0.1:7687" }), /credentials/i);
   assert.throws(() => loadBackendConfig({ ...validNeo4j, NEO4J_PASSWORD: "" }), /NEO4J_PASSWORD/i);
 });
+
+test("an optional Gravatar API key is trimmed and blank values are omitted", () => {
+  const env = {
+    DATABASE_URL: "postgres://local/db",
+    NEO4J_URI: "neo4j://127.0.0.1:7687",
+    NEO4J_USERNAME: "neo4j",
+    NEO4J_PASSWORD: "development-only-password",
+  };
+  assert.equal(loadBackendConfig({ ...env, GRAVATAR_API_KEY: "  key-123 " }).gravatarApiKey, "key-123");
+  assert.ok(!Object.prototype.hasOwnProperty.call(loadBackendConfig({ ...env, GRAVATAR_API_KEY: "   " }), "gravatarApiKey"));
+});

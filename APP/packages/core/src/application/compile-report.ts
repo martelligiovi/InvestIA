@@ -1,4 +1,6 @@
 import { DEFAULT_INVESTIGATION_NAME, type Investigation } from "../domain/investigation.ts";
+import type { EmailSeed, UsernameSeed } from "../domain/seed.ts";
+import { usernameProposals } from "../domain/username-proposals.ts";
 
 function markdownText(value: string): string {
   return value
@@ -7,6 +9,10 @@ function markdownText(value: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/[\\`*_{}\[\]()#+.!|~>-]/g, (character) => `\\${character}`);
+}
+
+function seedText(seed: EmailSeed | UsernameSeed): string {
+  return markdownText(`${seed.kind}: ${seed.value}`);
 }
 
 function table(rows: readonly (readonly string[])[]): string {
@@ -24,11 +30,11 @@ export function compileInvestigationReport(investigation: Investigation): string
     ? "unknown or unrecorded"
     : investigation.authorization.granted ? "granted" : "denied";
   const actionRows: string[][] = [
-    ["Action", "Catalog", "Email seed", "Status", "Approval", "Unsupported observations", "Failure"],
+    ["Action", "Catalog", "Seed", "Status", "Approval", "Unsupported observations", "Failure"],
     ...investigation.actions.map((action) => [
       markdownText(action.id),
       markdownText(action.spec.catalogId),
-      markdownText(action.spec.seed.value),
+      seedText(action.spec.seed),
       markdownText(action.status),
       action.approval === undefined ? "not recorded" : markdownText(`${action.approval.at}: ${action.approval.reason}`),
       action.unsupportedObservationCount === undefined ? "not recorded" : String(action.unsupportedObservationCount),
@@ -36,11 +42,11 @@ export function compileInvestigationReport(investigation: Investigation): string
     ]),
   ];
   const evidenceRows: string[][] = [
-    ["Evidence", "Action", "Email seed", "Provider", "Registration status", "Source", "Recorded at", "Target kind", "Observed target", "Upstream status", "URL", "Category", "Reason", "Metadata", "Media"],
+    ["Evidence", "Action", "Seed", "Provider", "Registration status", "Source", "Recorded at", "Target kind", "Observed target", "Upstream status", "URL", "Category", "Reason", "Metadata", "Media"],
     ...investigation.evidence.map((evidence) => [
       markdownText(evidence.id),
       markdownText(evidence.actionId),
-      markdownText(evidence.seed.value),
+      seedText(evidence.seed),
       markdownText(evidence.provider),
       markdownText(evidence.status),
       markdownText(evidence.sourceId),
@@ -53,6 +59,22 @@ export function compileInvestigationReport(investigation: Investigation): string
       markdownText(evidence.finding?.reason ?? ""),
       markdownText(JSON.stringify(evidence.finding?.extra ?? {})),
       markdownText(JSON.stringify(evidence.finding?.media ?? {})),
+    ]),
+  ];
+  const usernameRows: string[][] = [
+    ["Username", "Origin", "Status", "Reason", "Decision"],
+    ...(investigation.usernameSeeds ?? []).map((record) => [
+      markdownText(record.value),
+      markdownText(record.origin.kind === "operator" ? "operator" : `evidence ${record.origin.evidenceId}`),
+      markdownText(record.status),
+      markdownText(record.reason),
+      record.decision === undefined ? "not recorded" : markdownText(`${record.decision.at}: ${record.decision.reason}`),
+    ]),
+  ];
+  const proposalRows: string[][] = [
+    ["Username", "Evidence", "Provider"],
+    ...usernameProposals(investigation).map((proposal) => [
+      markdownText(proposal.value), markdownText(proposal.evidenceId), markdownText(proposal.provider),
     ]),
   ];
   const validationRows: string[][] = [
@@ -94,6 +116,12 @@ export function compileInvestigationReport(investigation: Investigation): string
     investigation.emailSeeds.length === 0
       ? "- None recorded."
       : investigation.emailSeeds.map((seed) => `- ${markdownText(seed.value)}`).join("\n"),
+    "",
+    "## Username seeds",
+    usernameRows.length > 1 ? table(usernameRows) : "None recorded.",
+    "",
+    "## Pending username proposals",
+    proposalRows.length > 1 ? table(proposalRows) : "None recorded.",
     "",
     "## Tool action queue",
     table(actionRows),

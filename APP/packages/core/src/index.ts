@@ -1,4 +1,4 @@
-export type { EmailSeed, Seed } from "./domain/seed.ts";
+export { USERNAME_SEED_PATTERN, type EmailSeed, type Seed, type UsernameSeed } from "./domain/seed.ts";
 export { isScannerFinding } from "./domain/observation.ts";
 export type {
   ScannerFinding,
@@ -16,8 +16,13 @@ export {
   type ExecutionState,
 } from "./application/execute-seed-box.ts";
 export {
+  authorizationCovers,
+  CATALOG_INPUT_KINDS,
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
+  isScopedCatalogId,
+  SCOPED_CATALOG_IDS,
+  type ScopedCatalogId,
   INVESTIGATION_NAME_MAX_LENGTH,
   normalizeInvestigationName,
   type ActionApproval,
@@ -28,6 +33,10 @@ export {
   type EvidenceId,
   type EvidenceRecord,
   type GitHubActionSpec,
+  type GravatarActionSpec,
+  type MaigretActionSpec,
+  type UsernameSeedRecord,
+  type UsernameSeedStatus,
   type UserScannerActionSpec,
   type GitHubCatalogAction,
   type Investigation,
@@ -49,14 +58,20 @@ export {
   type InvestigationSeedGraph,
   type InvestigationSeedId,
   type InvestigationSeedNode,
+  type UsernameSeedNode,
+  usernameSeedNodeId,
 } from "./domain/seed-graph.ts";
 export {
+  createCatalogExecutor,
   createInvestigationService,
   createSeedBoxExecutor,
+  gravatarFindingTargetsEmail,
+  type CatalogBoxes,
   InvestigationService,
   type InvestigationIdKind,
   type InvestigationServiceDependencies,
 } from "./application/investigation-service.ts";
+export { usernameProposals, type UsernameProposal } from "./domain/username-proposals.ts";
 export { compileInvestigationReport } from "./application/compile-report.ts";
 export {
   AI_MAX_TOKENS_RANGE,

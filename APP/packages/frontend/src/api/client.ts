@@ -92,6 +92,14 @@ export class InvestigationApiClient {
     return this.post<Investigation>(`/investigations/${pathPart(id)}/emails`, { email, reason });
   }
 
+  async addUsernameSeed(id: string, username: string, reason: string): Promise<Investigation> {
+    return this.post<Investigation>(`/investigations/${pathPart(id)}/usernames`, { username, reason });
+  }
+
+  async decideUsernameProposal(id: string, username: string, decision: "accepted" | "rejected", reason: string): Promise<Investigation> {
+    return this.post<Investigation>(`/investigations/${pathPart(id)}/usernames/decisions`, { username, decision, reason });
+  }
+
   async proposeGitHubAction(id: string, email: string, reason: string): Promise<GitHubCatalogAction> {
     return this.post<GitHubCatalogAction>(
       `/investigations/${pathPart(id)}/actions/proposals`,

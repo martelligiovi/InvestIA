@@ -14,10 +14,14 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm build
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir -r packages/adapter-user-scanner/python/requirements.txt
+# Maigret gets its own venv so its dependency closure never conflicts with user-scanner's.
+RUN python3 -m venv /opt/venv-maigret \
+    && /opt/venv-maigret/bin/python -m pip install --no-cache-dir -r packages/adapter-maigret/python/requirements.txt
 
 FROM base AS runtime
 ENV NODE_ENV=production \
     PYTHON=/opt/venv/bin/python \
+    MAIGRET_PYTHON=/opt/venv-maigret/bin/python \
     PATH="/opt/venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
@@ -25,8 +29,9 @@ WORKDIR /app
 # Scanner and Python dependencies are copied in-image; nothing installs at startup.
 COPY --from=build --chown=node:node /app /app
 COPY --from=build /opt/venv /opt/venv
-# WORKDIR remains root-owned; only the private report directory needs writes.
-RUN install -d -m 0700 -o node -g node /app/.scanner-runs
+COPY --from=build /opt/venv-maigret /opt/venv-maigret
+# WORKDIR remains root-owned; only the private report directories need writes.
+RUN install -d -m 0700 -o node -g node /app/.scanner-runs /app/.maigret-runs
 USER node
 EXPOSE 4317
 CMD ["node", "--experimental-strip-types", "packages/backend/src/main.ts"]

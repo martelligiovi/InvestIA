@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises";
 import {
+  authorizationCovers,
   DEFAULT_INVESTIGATION_NAME,
+  findingSeedNodeId,
+  gravatarFindingTargetsEmail,
   isScannerFinding,
+  isScopedCatalogId,
+  USERNAME_SEED_PATTERN,
   normalizeInvestigationName,
   type ActionClaim,
   type ClaimActionRequest,
@@ -135,16 +140,48 @@ function isApproval(value: unknown): boolean {
 function isAuthorization(value: unknown): boolean {
   return isRecord(value) && typeof value.granted === "boolean" && isTimestamp(value.at) &&
     isNonEmptyString(value.reason) && value.operator === "local-operator" &&
-    (value.catalogScope === undefined || value.catalogScope === "user-scanner.email.v1");
+    (value.catalogScope === undefined || value.catalogScope === "user-scanner.email.v1") &&
+    (value.catalogScopes === undefined || (Array.isArray(value.catalogScopes) &&
+      value.catalogScopes.every(isScopedCatalogId) && new Set(value.catalogScopes).size === value.catalogScopes.length));
 }
+
+function isUsernameSeed(value: unknown): boolean {
+  return isRecord(value) && value.kind === "username" && typeof value.value === "string" && USERNAME_SEED_PATTERN.test(value.value);
+}
+
+function isEmailSeed(value: unknown): boolean {
+  return isRecord(value) && value.kind === "email" && isNonEmptyString(value.value);
+}
+
+function isStoredUsernameSeeds(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  const values = new Set<string>();
+  return value.every((record) => {
+    if (!isUsernameSeed(record) || values.has(record.value)) return false;
+    values.add(record.value);
+    const origin = record.origin;
+    // Operator seeds are accepted on entry; evidence proposals exist here only once decided.
+    const decided = isRecord(origin) && ((origin.kind === "operator" && record.status === "accepted" && record.decision === undefined) ||
+      (origin.kind === "evidence" && isNonEmptyString(origin.evidenceId) && ["accepted", "rejected"].includes(String(record.status)) &&
+        isApproval(record.decision)));
+    return decided && isTimestamp(record.at) && isNonEmptyString(record.reason);
+  });
+}
+
+const ACTION_SPECS: Readonly<Record<string, { readonly provider: string; readonly seed: (value: unknown) => boolean }>> = {
+  "github.email-registration.v1": { provider: "github", seed: isEmailSeed },
+  "user-scanner.email.v1": { provider: "user-scanner", seed: isEmailSeed },
+  "gravatar.email.v1": { provider: "gravatar", seed: isEmailSeed },
+  "maigret.username.v1": { provider: "maigret", seed: isUsernameSeed },
+};
 
 function isStoredAction(value: unknown): boolean {
   if (!isRecord(value) || !isNonEmptyString(value.id) || !isRecord(value.spec)) return false;
-  const seed = value.spec.seed;
+  const expected = Object.prototype.hasOwnProperty.call(ACTION_SPECS, String(value.spec.catalogId))
+    ? ACTION_SPECS[String(value.spec.catalogId)] : undefined;
   if (
-    !((value.spec.catalogId === "github.email-registration.v1" && value.spec.provider === "github") ||
-      (value.spec.catalogId === "user-scanner.email.v1" && value.spec.provider === "user-scanner")) ||
-    !isRecord(seed) || seed.kind !== "email" || !isNonEmptyString(seed.value) ||
+    expected === undefined || value.spec.provider !== expected.provider || !expected.seed(value.spec.seed) ||
     !["proposed", "queued", "claimed", "succeeded", "failed"].includes(String(value.status)) ||
     !isTimestamp(value.proposedAt) || !isNonEmptyString(value.proposalReason)
   ) return false;
@@ -165,11 +202,12 @@ function isStoredAction(value: unknown): boolean {
 }
 
 function isStoredEvidence(value: unknown): boolean {
-  // Historical schema-v1 records had no finding payload. Do not rewrite them.
+  // Historical schema-v1 registration records had no finding payload. Do not rewrite them, but every
+  // username evidence carries a finding, so a finding-less record may only belong to an email seed.
   if (!isRecord(value)) return false;
-  if (value.finding === undefined) return true;
+  if (value.finding === undefined) return value.seed === undefined || isEmailSeed(value.seed);
   return isScannerFinding(value.finding) && isNonEmptyString(value.id) && isNonEmptyString(value.actionId) &&
-    isRecord(value.seed) && value.seed.kind === "email" && isNonEmptyString(value.seed.value) &&
+    (isEmailSeed(value.seed) || isUsernameSeed(value.seed)) &&
     isNonEmptyString(value.provider) && isNonEmptyString(value.sourceId) && isTimestamp(value.recordedAt) &&
     ["registered", "not_registered", "rate_limited", "error", "unknown"].includes(String(value.status));
 }
@@ -214,6 +252,7 @@ function decode(row: StoredRow): Investigation {
     !Array.isArray(candidate.emailSeeds) || !Array.isArray(candidate.actions) ||
     !Array.isArray(candidate.evidence) || !Array.isArray(candidate.validations) || !Array.isArray(candidate.audit) ||
     (candidate.authorization !== undefined && !isAuthorization(candidate.authorization)) ||
+    !isStoredUsernameSeeds(candidate.usernameSeeds) ||
     !candidate.actions.every(isStoredAction) || !candidate.evidence.every(isStoredEvidence)
   ) throw new InvestigationSchemaError("Stored investigation document does not match its schema.");
   return structuredClone({ ...candidate, name, intention, advancementMode } as Investigation);
@@ -232,6 +271,8 @@ function assertSnapshot(investigation: Investigation): void {
     typeof investigation.paused !== "boolean" || !Array.isArray(investigation.emailSeeds) ||
     !Array.isArray(investigation.actions) || !Array.isArray(investigation.evidence) ||
     !Array.isArray(investigation.validations) || !Array.isArray(investigation.audit) ||
+    (investigation.authorization !== undefined && !isAuthorization(investigation.authorization)) ||
+    !isStoredUsernameSeeds(investigation.usernameSeeds) ||
     !investigation.evidence.every(isStoredEvidence) || !investigation.actions.every(isStoredAction)
   ) throw new InvestigationSchemaError("Investigation snapshot is invalid.");
 }
@@ -311,18 +352,44 @@ export class PostgresInvestigationStore implements InvestigationStore {
     return this.mutate(input.investigationId, (current) => {
       if (current.paused || current.authorization?.granted !== true ||
         (input.automaticOnly === true && current.advancementMode !== "automatic")) return { result: undefined };
-      const action = current.actions.find((candidate) => candidate.status === "queued" &&
+      // Historical cases queued Gravatar beside User Scanner. Once that scanner has succeeded,
+      // resolve every such unlinked catalog queue inside this transaction: link it to the
+      // scanner's Gravatar finding, or turn it into a proposal that needs operator approval.
+      const proposalReason = "User Scanner did not find Gravatar; the operator may approve a public profile lookup.";
+      const proposedEvents: (typeof input.auditEvent)[] = [];
+      const actions = current.actions.map((candidate) => {
+        if (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.status !== "queued" ||
+          candidate.queuedByCatalog !== true || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) return candidate;
+        const scannerIds = new Set(current.actions.filter((scanner) => scanner.spec.catalogId === "user-scanner.email.v1" &&
+          scanner.spec.seed.value === candidate.spec.seed.value && scanner.status === "succeeded").map((scanner) => scanner.id));
+        if (scannerIds.size === 0) return candidate;
+        const finding = current.evidence.find((record) => scannerIds.has(record.actionId) && record.status === "registered" &&
+          record.provider.trim().toLowerCase() === "gravatar" && record.finding !== undefined &&
+          gravatarFindingTargetsEmail(record.finding.target, candidate.spec.seed.value));
+        if (finding !== undefined) return { ...candidate, sourceSeedId: findingSeedNodeId(finding.id) };
+        const { queuedByCatalog: _legacyEligibility, ...legacy } = candidate;
+        proposedEvents.push({ ...input.auditEvent, id: `${input.auditEvent.id}:proposal:${candidate.id}`,
+          kind: "action_proposed", actionId: candidate.id, reason: proposalReason });
+        return { ...legacy, status: "proposed" as const, proposalReason };
+      });
+      const changed = actions.some((candidate, index) => candidate !== current.actions[index]);
+      // Unlinked catalog Gravatar entries still waiting for their scanner are never dispatched.
+      const action = actions.find((candidate) => candidate.status === "queued" &&
         (candidate.queuedByCatalog === true || candidate.approval !== undefined) &&
-        (candidate.spec.catalogId !== "user-scanner.email.v1" || current.authorization?.catalogScope === "user-scanner.email.v1"));
-      if (action === undefined) return { result: undefined };
+        (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) &&
+        authorizationCovers(current.authorization, candidate.spec.catalogId));
+      if (action === undefined) {
+        return changed ? { next: revise(current, input.claimedAt, { actions, audit: [...current.audit, ...proposedEvents] }), result: undefined }
+          : { result: undefined };
+      }
       const claimedAction = {
         ...action,
         status: "claimed" as const,
         claim: { id: input.claimId, claimedAt: input.claimedAt },
       };
       const next = revise(current, input.claimedAt, {
-        actions: current.actions.map((candidate) => candidate.id === action.id ? claimedAction : candidate),
-        audit: [...current.audit, { ...input.auditEvent, actionId: action.id }],
+        actions: actions.map((candidate) => candidate.id === action.id ? claimedAction : candidate),
+        audit: [...current.audit, ...proposedEvents, { ...input.auditEvent, actionId: action.id }],
       });
       return {
         next,
@@ -348,12 +415,35 @@ export class PostgresInvestigationStore implements InvestigationStore {
           unsupportedObservationCount: input.result.unsupportedObservationCount,
         }),
       };
+      const followUps = input.result.kind === "success" ? (input.followUps ?? []).filter(({ action: followUp }, index, all) =>
+        all.findIndex(({ action: other }) => other.spec.catalogId === followUp.spec.catalogId &&
+          other.spec.seed.kind === followUp.spec.seed.kind && other.spec.seed.value === followUp.spec.seed.value) === index) : [];
+      const actions = current.actions.map((candidate) => candidate.id === input.actionId ? completed : candidate);
+      const followUpEvents: typeof input.auditEvent[] = [];
+      for (const followUp of followUps) {
+        const existingIndex = actions.findIndex((existing) => existing.spec.catalogId === followUp.action.spec.catalogId &&
+          existing.spec.seed.kind === followUp.action.spec.seed.kind && existing.spec.seed.value === followUp.action.spec.seed.value);
+        if (existingIndex < 0) {
+          actions.push(followUp.action);
+          followUpEvents.push(followUp.auditEvent);
+          continue;
+        }
+        const existing = actions[existingIndex]!;
+        // Convert only an unclaimed legacy catalog sibling; never rewrite completed or human-approved work.
+        if (existing.spec.catalogId !== "gravatar.email.v1" || existing.status !== "queued" ||
+          existing.queuedByCatalog !== true || existing.sourceSeedId !== undefined || existing.approval !== undefined) continue;
+        const { queuedByCatalog: _legacyEligibility, ...legacy } = existing;
+        actions[existingIndex] = { ...legacy, status: followUp.action.status, proposalReason: followUp.action.proposalReason,
+          ...(followUp.action.sourceSeedId === undefined ? {} : { sourceSeedId: followUp.action.sourceSeedId }),
+          ...(followUp.action.queuedByCatalog === true ? { queuedByCatalog: true as const } : {}) };
+        followUpEvents.push({ ...followUp.auditEvent, actionId: existing.id });
+      }
       const next = revise(current, input.completedAt, {
-        actions: current.actions.map((candidate) => candidate.id === input.actionId ? completed : candidate),
+        actions,
         evidence: input.result.kind === "success"
           ? [...current.evidence, ...input.result.evidence]
           : current.evidence,
-        audit: [...current.audit, { ...input.auditEvent, actionId: input.actionId }],
+        audit: [...current.audit, { ...input.auditEvent, actionId: input.actionId }, ...followUpEvents],
       });
       return { next, result: next };
     });

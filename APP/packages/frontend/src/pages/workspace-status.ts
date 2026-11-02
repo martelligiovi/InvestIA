@@ -1,17 +1,19 @@
-import type { GitHubCatalogAction, Investigation } from "@investia/core";
+import { authorizationCovers, type GitHubCatalogAction, type Investigation } from "@investia/core";
 
 export function hasCatalogAuthorization(investigation: Investigation): boolean {
   return investigation.authorization?.granted === true &&
-    (!investigation.actions.some((action) => action.spec.catalogId === "user-scanner.email.v1") ||
-      investigation.authorization.catalogScope === "user-scanner.email.v1");
+    investigation.actions.every((action) => authorizationCovers(investigation.authorization, action.spec.catalogId));
 }
 
 export function actionDisplayState(investigation: Investigation, action: GitHubCatalogAction): string {
   if (action.status !== "queued") return action.status;
-  if (investigation.authorization?.granted !== true ||
-    (action.spec.catalogId === "user-scanner.email.v1" && investigation.authorization.catalogScope !== "user-scanner.email.v1")) return "waiting_authorization";
+  if (!authorizationCovers(investigation.authorization, action.spec.catalogId)) return "waiting_authorization";
   if (investigation.paused) return "paused_queue";
   if (!action.queuedByCatalog && action.approval === undefined) return "not_executable";
+  // Historical unlinked Gravatar queues run only after their user-scanner result links them.
+  if (action.spec.catalogId === "gravatar.email.v1" && action.sourceSeedId === undefined && action.approval === undefined) {
+    return "waiting_scanner";
+  }
   return "queued";
 }
 
@@ -28,8 +30,10 @@ const WORKSPACE_STATUS_LABELS: Readonly<Record<string, string>> = {
   waiting_authorization: "Esperando autorización",
   paused_queue: "En cola · pausada",
   not_executable: "En cola · no ejecutable",
+  waiting_scanner: "En espera de user-scanner",
   no_information: "Sin información",
   leaf_group: "Sin acciones asociadas",
+  discovered: "Semilla descubierta",
   proposed: "Propuesta",
   queued: "En cola",
   claimed: "Reclamada",

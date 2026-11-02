@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react";
 import type { Investigation, ValidationStatus } from "@investia/core";
-import { GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
+import { actionTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 
 export interface WorkspaceDetailsProps {
@@ -9,6 +9,7 @@ export interface WorkspaceDetailsProps {
   readonly disabled: boolean;
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
+  readonly onApproveGravatar?: (actionId: string, reason: string) => Promise<boolean>;
 }
 
 function formatDate(value: string): string {
@@ -72,8 +73,9 @@ function LeafGroupDetails({ node, onSelectNode }: { readonly node: WorkspaceNode
   );
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, onValidate, onSelectNode }: WorkspaceDetailsProps) {
+export function WorkspaceDetails({ investigation, node, disabled, onValidate, onSelectNode, onApproveGravatar }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
+  const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
 
   async function validate(evidenceId: string, status: ValidationStatus) {
@@ -106,6 +108,8 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
           {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} onSelectNode={onSelectNode} />}
           {node.groupId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
             onClick={() => onSelectNode(node.groupId!)}>Volver al grupo</button>}
+          {node.relatedParentId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
+            onClick={() => onSelectNode(node.relatedParentId!)}>Volver a la semilla vinculada</button>}
           {node.kind === "seed" && node.seedValue !== undefined && (
             <>
               <section className="detail-fact" aria-labelledby="selected-seed-heading">
@@ -116,14 +120,14 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
                   <dt>Estado</dt><dd>Dato aportado al expediente</dd>
                 </dl>
               </section>
-              <p className="detail-note">Las semillas nuevas incorporan su búsqueda con user-scanner a la cola del expediente. Incluye plataformas, enlaces y emails descubiertos; las consultas loud pueden enviar correos o notificaciones.</p>
+              {investigation.emailSeeds.some((seed) => seed.value === node.seedValue) && <p className="detail-note">User Scanner se encola al agregar el correo; al finalizar, si encuentra Gravatar se encola la consulta y, si no, se propone para tu aprobación. Las consultas loud pueden enviar correos o notificaciones. La ejecución requiere autorización y respeta el modo de avance.</p>}
             </>
           )}
 
           {node.kind === "action" && node.action !== undefined && (
             <>
               <section className="detail-fact" aria-labelledby="selected-action-heading">
-                <h3 id="selected-action-heading">{node.action.spec.provider === "user-scanner" ? "Búsqueda con user-scanner" : "Comprobación de registro en GitHub"}</h3>
+                <h3 id="selected-action-heading">{actionTitle(node.action)}</h3>
                 <dl className="fact-list">
                   <dt>Proveedor</dt><dd>{node.action.spec.provider}</dd>
                   <dt>Semilla</dt><dd className="break-value">{node.action.spec.seed.value}</dd>
@@ -153,7 +157,16 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
                   <p className="detail-warning" role="note">Acción reclamada: efecto externo incierto o aún en curso. Esta interfaz no la vuelve a ejecutar.</p>
                 )}
               </section>
-              {node.action.status === "proposed" && <p className="detail-note">Propuesta histórica conservada; no forma parte de la cola ejecutable.</p>}
+              {node.action.status === "proposed" && (node.action.spec.catalogId === "gravatar.email.v1" && onApproveGravatar !== undefined ? (
+                <section className="detail-control" aria-labelledby="approval-heading">
+                  <h3 id="approval-heading">¿Querés buscarlo por Gravatar?</h3>
+                  <p className="detail-note">Aprobar agrega la acción a la cola; su ejecución requiere autorización, ausencia de pausa y respeta el modo de avance.</p>
+                  <label className="form-field"><span>Motivo de aprobación</span>
+                    <textarea value={approvalReason} maxLength={2_000} rows={3} disabled={disabled} onChange={(event) => setApprovalReason(event.currentTarget.value)} />
+                  </label>
+                  <button className="workspace-button" type="button" disabled={disabled || approvalReason.trim() === ""} onClick={() => void onApproveGravatar(node.action!.id, approvalReason)}>Aprobar búsqueda de Gravatar</button>
+                </section>
+              ) : <p className="detail-note">Propuesta histórica conservada; no forma parte de la cola ejecutable.</p>)}
             </>
           )}
 
@@ -175,8 +188,21 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
 
           {node.kind === "evidence" && node.evidence !== undefined && (
             <>
+              {node.relatedNodes !== undefined && onSelectNode !== undefined && <section className="detail-fact" aria-labelledby="related-observations-heading">
+                <h3 id="related-observations-heading">Observaciones del mismo perfil</h3>
+                <p className="detail-note">Comparten el enlace del perfil; esto no confirma identidad ni titularidad. Cada observación conserva su validación independiente.</p>
+                {node.relatedNodes.map((related) => <button key={related.id} type="button" className="workspace-button"
+                  onClick={() => onSelectNode(related.id)}>Ver observación relacionada · {related.evidence?.finding?.upstreamStatus}</button>)}
+              </section>}
+              {node.profileSeed && <section className="detail-fact" aria-labelledby="profile-seed-heading">
+                <h3 id="profile-seed-heading">{node.profileSeed.label}</h3>
+                <p className="break-value">{node.profileSeed.isUrl
+                  ? <SafeLink value={node.profileSeed.value} /> : node.profileSeed.value}</p>
+                <p className="detail-note">Semilla descubierta en {node.evidence.provider}. Seleccionarla no ejecuta nuevas búsquedas. No confirma identidad ni titularidad.</p>
+                <p className="detail-note">La validación de abajo corresponde a la observación original completa, no a este campo por separado.</p>
+              </section>}
               <section className="detail-fact" aria-labelledby="selected-evidence-heading">
-                <h3 id="selected-evidence-heading">{node.evidence.finding ? "Hallazgo de user-scanner" : "Observación de registro"}</h3>
+                <h3 id="selected-evidence-heading">{evidenceHeading(node.evidence)}</h3>
                 <dl className="fact-list">
                   <dt>Identificador de evidencia</dt><dd><TechnicalValue label="Identificador de evidencia" value={node.evidence.id} /></dd>
                   <dt>Resultado</dt><dd><StateValue value={node.evidence.status} /></dd>

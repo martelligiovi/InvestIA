@@ -51,6 +51,8 @@ export interface CompleteActionInput {
   readonly completedAt: string;
   readonly result: ActionCompletion;
   readonly auditEvent: AuditEvent;
+  /** Follow-up candidates, committed with the producing evidence and deduplicated under the same lock. */
+  readonly followUps?: readonly { readonly action: GitHubCatalogAction; readonly auditEvent: AuditEvent }[];
 }
 
 /**
@@ -78,4 +80,6 @@ export interface InvestigationStore {
 export interface InvestigationExecutor {
   readonly id: string;
   execute(action: ActionClaim["action"], permit: ExecutionPermit): Promise<readonly Observation[]>;
+  /** Evidence source for an action when one executor routes to several tools; defaults to `id`. */
+  sourceIdFor?(action: GitHubCatalogAction): string;
 }

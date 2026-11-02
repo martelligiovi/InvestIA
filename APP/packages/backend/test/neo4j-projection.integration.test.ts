@@ -50,3 +50,48 @@ test("real Neo4j transaction fences an older investigation revision", {
     await driver.close();
   }
 });
+
+test("real Neo4j projects username seeds and Maigret work as UsernameSeed nodes, never EmailSeed", {
+  skip: uri === undefined || username === undefined || password === undefined
+    ? "Set dedicated INVESTIA_TEST_NEO4J_* connection variables to enable Neo4j integration"
+    : false,
+}, async () => {
+  if (uri === undefined || username === undefined || password === undefined) return;
+  const driver = neo4j.driver(uri, neo4j.auth.basic(username, password));
+  try {
+    const projector = new Neo4jInvestigationProjector(driver, database);
+    const id = `investia-neo4j-test-${randomUUID()}`;
+    const at = new Date().toISOString();
+    const usernameSeed = { kind: "username" as const, value: "anaexample" };
+    const emailSeed = { kind: "email" as const, value: "ana@example.org" };
+    const finding = { target: usernameSeed, upstreamStatus: "Found" as const, url: "", category: "", reason: "", extra: {}, media: {} };
+    const investigation = {
+      ...createInitialInvestigation(id, at), revision: 1, emailSeeds: [emailSeed],
+      usernameSeeds: [{ kind: "username" as const, value: "anaexample", origin: { kind: "operator" as const }, status: "accepted" as const, at, reason: "Operator" }],
+      actions: [
+        { id: "scanner", spec: { catalogId: "user-scanner.email.v1" as const, provider: "user-scanner" as const, seed: emailSeed }, status: "succeeded" as const, queuedByCatalog: true as const, proposedAt: at, proposalReason: "Queue" },
+        { id: "maigret", spec: { catalogId: "maigret.username.v1" as const, provider: "maigret" as const, seed: usernameSeed }, status: "succeeded" as const, queuedByCatalog: true as const, proposedAt: at, proposalReason: "Queue" },
+      ],
+      evidence: [{ id: "evidence-1", actionId: "maigret", seed: usernameSeed, provider: "Reddit", status: "registered" as const, sourceId: "maigret:username", recordedAt: at, finding }],
+    };
+    assert.deepEqual(await projector.project(investigation), { revision: 1, status: "applied" });
+
+    const session = driver.session({ database });
+    try {
+      const count = async (query: string) => {
+        const value = (await session.run(query, { id })).records[0]!.get("n");
+        return typeof value === "number" ? value : value.toNumber();
+      };
+      assert.equal(await count("MATCH (s:EmailSeed {investigationId: $id, value: 'anaexample'}) RETURN count(s) AS n"), 0);
+      assert.equal(await count("MATCH (:Investigation {id: $id})-[:HAS_SEED]->(s:UsernameSeed {value: 'anaexample', status: 'accepted', originKind: 'operator'}) RETURN count(s) AS n"), 1);
+      assert.equal(await count("MATCH (:CatalogAction {investigationId: $id, id: 'maigret'})-[:USES_SEED]->(s:UsernameSeed {value: 'anaexample'}) RETURN count(s) AS n"), 1);
+      assert.equal(await count("MATCH (:CatalogAction {investigationId: $id, id: 'scanner'})-[:USES_SEED]->(s:EmailSeed {value: 'ana@example.org'}) RETURN count(s) AS n"), 1);
+      assert.equal(await count("MATCH (:UsernameSeed {investigationId: $id, value: 'anaexample'})-[:HAS_EVIDENCE]->(e:Evidence {id: 'evidence-1'})<-[:PRODUCED]-(:CatalogAction {id: 'maigret'}) RETURN count(e) AS n"), 1);
+      await session.run("MATCH (n) WHERE n.investigationId = $id OR n.id = $id DETACH DELETE n", { id });
+    } finally {
+      await session.close();
+    }
+  } finally {
+    await driver.close();
+  }
+});

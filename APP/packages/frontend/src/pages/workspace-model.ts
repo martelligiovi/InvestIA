@@ -1,5 +1,6 @@
 import { investigationSeedGraph, seedHasActions, findingSeedNodeId, type EvidenceRecord, type GitHubCatalogAction, type Investigation, type ValidationDecision } from "@investia/core";
 import { actionDisplayState, workspaceStatusLabel } from "./workspace-status";
+import { profileSeeds, type ProfileSeed } from "./profile-seeds";
 
 export type WorkspaceNodeKind = "seed" | "action" | "evidence" | "result" | "leaf-group";
 
@@ -12,7 +13,11 @@ export interface WorkspaceNode {
   readonly seedValue?: string;
   readonly action?: GitHubCatalogAction;
   readonly evidence?: EvidenceRecord;
+  readonly profileSeed?: ProfileSeed;
   readonly members?: readonly WorkspaceNode[];
+  /** Distinct observations displayed under the same linked Gravatar profile seed. */
+  readonly relatedNodes?: readonly WorkspaceNode[];
+  readonly relatedParentId?: string;
   readonly groupId?: string;
   readonly x: number;
   readonly y: number;
@@ -43,6 +48,30 @@ function seedNodeId(value: string): string {
   return `seed:${encodeURIComponent(value)}`;
 }
 
+const ACTION_TITLES: Readonly<Record<string, string>> = {
+  "user-scanner": "Búsqueda de email y enlaces con user-scanner",
+  gravatar: "Perfil público de Gravatar",
+  maigret: "Búsqueda de username con Maigret",
+};
+const SOURCE_TOOLS: Readonly<Record<string, string>> = {
+  "user-scanner:email": "user-scanner",
+  "gravatar:email": "Gravatar",
+  "maigret:username": "Maigret",
+};
+
+function usernameNodeId(value: string): string {
+  return `seed:username:${encodeURIComponent(value)}`;
+}
+
+export function actionTitle(action: GitHubCatalogAction): string {
+  return ACTION_TITLES[action.spec.provider] ?? "Comprobación de registro en GitHub";
+}
+
+export function evidenceHeading(evidence: EvidenceRecord): string {
+  if (evidence.finding === undefined) return "Observación de registro";
+  return `Hallazgo de ${SOURCE_TOOLS[evidence.sourceId] ?? "user-scanner"}`;
+}
+
 function nodeLabel(kind: WorkspaceNodeKind, title: string, state: string): string {
   const noun = kind === "seed" ? "Semilla" : kind === "action" ? "Acción" : kind === "result" ? "Resultado" : "Evidencia";
   return `${noun}: ${title}. Estado: ${workspaceStatusLabel(state)}.`;
@@ -53,7 +82,8 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
   const actionIds = new Set(investigation.actions.map((action) => action.id));
   const seedGraph = investigationSeedGraph(investigation);
   const visualSeedIds = new Map(seedGraph.seeds.map((seed) => [seed.id,
-    seed.kind === "email" ? seedNodeId(seed.value) : `evidence:${seed.evidence.id}`]));
+    seed.kind === "email" ? seedNodeId(seed.value) : seed.kind === "username" ? usernameNodeId(seed.value) : `evidence:${seed.evidence.id}`]));
+  const usernameSeeds = seedGraph.seeds.filter((seed) => seed.kind === "username");
 
   investigation.emailSeeds.forEach((seed, index) => {
     const id = seedNodeId(seed.value);
@@ -71,8 +101,24 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
     });
   });
 
+  usernameSeeds.forEach((seed, index) => {
+    const id = usernameNodeId(seed.value);
+    nodes.push({
+      id,
+      kind: "seed",
+      title: seed.value,
+      state: "aportada",
+      accessibleLabel: nodeLabel("seed", seed.value, "aportada"),
+      seedValue: seed.value,
+      x: 32,
+      y: TOP + (investigation.emailSeeds.length + index) * ROW_GAP,
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
+    });
+  });
+
   investigation.actions.forEach((action, index) => {
-    const title = action.spec.provider === "user-scanner" ? "Búsqueda de email y enlaces con user-scanner" : "Comprobación de registro en GitHub";
+    const title = actionTitle(action);
     const state = actionDisplayState(investigation, action);
     nodes.push({
       id: `action:${action.id}`,
@@ -89,6 +135,16 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
   });
 
   investigation.evidence.forEach((record, index) => {
+    const discovered = profileSeeds(record);
+    for (const seed of discovered) {
+      const title = `${seed.label} · ${seed.value}`;
+      nodes.push({ id: `profile:${encodeURIComponent(record.id)}:${encodeURIComponent(seed.field)}`,
+        kind: "evidence", title, state: "discovered", seedValue: seed.value, profileSeed: seed,
+        evidence: record, accessibleLabel: `Semilla descubierta: ${title}.`,
+        x: 836, y: TOP + index * ROW_GAP, width: NODE_WIDTH, height: NODE_HEIGHT });
+    }
+    // Keep historical input references addressable when a finding already feeds an action.
+    if (discovered.length > 0 && !seedHasActions(seedGraph, findingSeedNodeId(record.id))) return;
     const title = record.finding
       ? `${record.provider} · ${record.finding.target.value} · ${record.finding.upstreamStatus}`
       : `Observación de registro ${record.provider} · ${workspaceStatusLabel(record.status)}`;
@@ -127,10 +183,48 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
     });
   }
 
+  // One scanner can report the same Gravatar profile by email and username. When one
+  // observation feeds an action, retain the other under that seed rather than as a leaf.
+  // Exact profile URL and producer matching are display grouping only, not identity proof.
+  function gravatarProfileKey(node: WorkspaceNode): string | undefined {
+    const record = node.evidence;
+    const finding = record?.finding;
+    if (node.profileSeed !== undefined || record?.sourceId !== "user-scanner:email" ||
+      record.provider.trim().toLowerCase() !== "gravatar" || !finding) return undefined;
+    try {
+      const url = new URL(finding.url);
+      if (url.protocol !== "https:" || !["gravatar.com", "www.gravatar.com"].includes(url.hostname.toLowerCase()) ||
+        url.pathname === "/" || url.username || url.password) return undefined;
+      return JSON.stringify([record.actionId, finding.url]);
+    } catch { return undefined; }
+  }
+  const linkedProfiles = new Map<string, WorkspaceNode[]>();
+  for (const node of nodes) {
+    const key = gravatarProfileKey(node);
+    if (key === undefined || !node.evidence || !seedHasActions(seedGraph, findingSeedNodeId(node.evidence.id))) continue;
+    linkedProfiles.set(key, [...(linkedProfiles.get(key) ?? []), node]);
+  }
+  const relatedByParent = new Map<string, WorkspaceNode[]>();
+  const relatedIds = new Set<string>();
+  for (const node of nodes) {
+    const key = gravatarProfileKey(node);
+    if (key === undefined || !node.evidence || seedHasActions(seedGraph, findingSeedNodeId(node.evidence.id))) continue;
+    const parents = linkedProfiles.get(key) ?? [];
+    if (parents.length !== 1 || parents[0]!.evidence?.finding?.target.kind === node.evidence.finding?.target.kind) continue;
+    const parent = parents[0]!;
+    const related = { ...node, relatedParentId: parent.id };
+    relatedByParent.set(parent.id, [...(relatedByParent.get(parent.id) ?? []), related]);
+    relatedIds.add(node.id);
+  }
+  for (let index = 0; index < nodes.length; index++) {
+    const relatedNodes = relatedByParent.get(nodes[index]!.id);
+    if (relatedNodes !== undefined) nodes[index] = { ...nodes[index]!, relatedNodes };
+  }
+
   // Only sibling leaves collapse; seeds which feed another action remain visible.
   const leavesByAction = new Map<string, WorkspaceNode[]>();
   for (const node of nodes) {
-    if (node.evidence === undefined || !actionIds.has(node.evidence.actionId) ||
+    if (node.evidence === undefined || relatedIds.has(node.id) || !actionIds.has(node.evidence.actionId) ||
       seedHasActions(seedGraph, findingSeedNodeId(node.evidence.id))) continue;
     const leaves = leavesByAction.get(node.evidence.actionId) ?? [];
     leaves.push(node);
@@ -140,7 +234,8 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
   for (const [actionId, leaves] of leavesByAction) {
     if (leaves.length < 2) continue;
     const id = `leaf-group:${actionId}`;
-    const title = `${leaves.length} resultados sin acciones`;
+    const title = leaves.every((leaf) => leaf.profileSeed !== undefined)
+      ? `${leaves.length} semillas de Gravatar` : `${leaves.length} resultados sin acciones`;
     const members = leaves.map((node) => ({ ...node, groupId: id }));
     for (const member of members) {
       groupedIds.add(member.id);
@@ -150,7 +245,7 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
       accessibleLabel: `Grupo de semillas: ${title}.`,
       x: 836, y: TOP, width: NODE_WIDTH, height: NODE_HEIGHT });
   }
-  const visibleNodes = nodes.filter((node) => !groupedIds.has(node.id));
+  const visibleNodes = nodes.filter((node) => !groupedIds.has(node.id) && !relatedIds.has(node.id));
 
   // Follow recorded provenance, not discovered-value equality, to lay out branches.
   const seedsById = new Map(seedGraph.seeds.map((seed) => [seed.id, seed]));
@@ -198,14 +293,13 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
   for (const record of investigation.evidence) {
     if (!actionIds.has(record.actionId)) continue;
     const from = nodeById.get(`action:${record.actionId}`);
-    const to = nodeById.get(visualSeedIds.get(findingSeedNodeId(record.id)) ?? `evidence:${record.id}`);
-    if (from !== undefined && to !== undefined && !edges.some((edge) => edge.from === from.id && edge.to === to.id)) {
-      edges.push({
-        id: to.kind === "leaf-group" ? `action-group:${record.actionId}` : `action-evidence:${record.id}`,
-        from: from.id,
-        to: to.id,
-        path: orthogonalPath(from, to),
-      });
+    const outputs = laidOut.filter((node) => node.evidence?.id === record.id ||
+      node.members?.some((member) => member.evidence?.id === record.id));
+    for (const to of outputs) {
+      if (from === undefined || edges.some((edge) => edge.from === from.id && edge.to === to.id)) continue;
+      const id = to.kind === "leaf-group" ? `action-group:${record.actionId}`
+        : to.profileSeed ? `action-profile:${to.id}` : `action-evidence:${record.id}`;
+      edges.push({ id, from: from.id, to: to.id, path: orthogonalPath(from, to) });
     }
   }
 
@@ -222,18 +316,17 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
     }
   }
 
-  const rowCount = Math.max(...rowsByDepth.values(), 1);
-  return { width: Math.max(1100, ...laidOut.map((node) => node.x + node.width + 32)),
-    height: TOP * 2 + rowCount * ROW_GAP, nodes: laidOut, edges };
+  return layoutBranches(laidOut, edges);
 }
 
 export function findWorkspaceNode(graph: WorkspaceGraph, id: string | null): WorkspaceNode | undefined {
   return graph.nodes.find((node) => node.id === id) ??
-    graph.nodes.flatMap((node) => node.members ?? []).find((node) => node.id === id);
+    graph.nodes.flatMap((node) => [...(node.members ?? []), ...(node.relatedNodes ?? [])]).find((node) => node.id === id);
 }
 
 export function workspaceNodeSelected(node: WorkspaceNode, id: string | null): boolean {
-  return node.id === id || node.members?.some((member) => member.id === id) === true;
+  return node.id === id || node.members?.some((member) => member.id === id) === true ||
+    node.relatedNodes?.some((related) => related.id === id) === true;
 }
 
 export const GRAPH_PAGE_SIZE = 50;
@@ -253,22 +346,53 @@ export function workspaceGraphPage(graph: WorkspaceGraph, page: number): Workspa
   const offset = Math.max(0, Math.min(lastPage, page)) * GRAPH_PAGE_SIZE;
   const visible = evidence.slice(offset, offset + GRAPH_PAGE_SIZE);
   const pageable = new Set(evidence.map((node) => node.id));
-  const rows = new Map<number, number>();
   const nodes = [
     ...graph.nodes.filter((node) => !pageable.has(node.id) && node.kind !== "result"),
     ...visible,
     ...graph.nodes.filter((node) => node.kind === "result"),
-  ].map((node) => {
-    const row = rows.get(node.x) ?? 0;
-    rows.set(node.x, row + 1);
-    return { ...node, y: TOP + row * ROW_GAP };
-  });
-  const byId = new Map(nodes.map((node) => [node.id, node]));
-  const edges = graph.edges.flatMap((edge) => {
-    const from = byId.get(edge.from), to = byId.get(edge.to);
-    return from && to ? [{ ...edge, path: orthogonalPath(from, to) }] : [];
-  });
-  return { width: graph.width, height: Math.max(TOP * 2, ...nodes.map((node) => node.y + node.height + TOP)), nodes, edges };
+  ];
+  const ids = new Set(nodes.map((node) => node.id));
+  return layoutBranches(nodes, graph.edges.filter((edge) => ids.has(edge.from) && ids.has(edge.to)));
+}
+
+/** Allocate whole provenance branches together, not independent rows per column. */
+function layoutBranches(nodes: readonly WorkspaceNode[], edges: readonly WorkspaceEdge[]): WorkspaceGraph {
+  const children = new Map<string, string[]>();
+  const incoming = new Set(edges.map((edge) => edge.to));
+  for (const edge of edges) children.set(edge.from, [...(children.get(edge.from) ?? []), edge.to]);
+  const positions = new Map<string, number>();
+  const visiting = new Set<string>();
+  let row = 0;
+  function place(id: string): number {
+    const existing = positions.get(id);
+    if (existing !== undefined) return existing;
+    if (visiting.has(id)) return TOP + row++ * ROW_GAP;
+    visiting.add(id);
+    const ys = (children.get(id) ?? []).map(place);
+    const y = ys.length === 0 ? TOP + row++ * ROW_GAP : (ys[0]! + ys.at(-1)!) / 2;
+    positions.set(id, y);
+    visiting.delete(id);
+    return y;
+  }
+  for (const node of nodes) if (!incoming.has(node.id) && children.has(node.id)) place(node.id);
+  // Isolated records may share rows in different columns, but never overlap in their own.
+  const bottomByColumn = new Map<number, number>();
+  for (const node of nodes) {
+    const y = positions.get(node.id);
+    if (y !== undefined) bottomByColumn.set(node.x, Math.max(bottomByColumn.get(node.x) ?? TOP - ROW_GAP, y));
+  }
+  for (const node of nodes) {
+    if (positions.has(node.id)) continue;
+    if (children.has(node.id)) { place(node.id); continue; }
+    const y = (bottomByColumn.get(node.x) ?? TOP - ROW_GAP) + ROW_GAP;
+    positions.set(node.id, y);
+    bottomByColumn.set(node.x, y);
+  }
+  const laidOut = nodes.map((node) => ({ ...node, y: positions.get(node.id)! }));
+  const byId = new Map(laidOut.map((node) => [node.id, node]));
+  return { width: Math.max(1100, ...laidOut.map((node) => node.x + node.width + 32)),
+    height: Math.max(TOP * 2, ...laidOut.map((node) => node.y + node.height + TOP)), nodes: laidOut,
+    edges: edges.map((edge) => ({ ...edge, path: orthogonalPath(byId.get(edge.from)!, byId.get(edge.to)!) })) };
 }
 
 function orthogonalPath(from: WorkspaceNode, to: WorkspaceNode): string {

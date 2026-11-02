@@ -36,6 +36,8 @@ test("PostgresSaver resumes the investigation thread without replaying a complet
       executor,
       clock: () => new Date(Date.now() + ticks++).toISOString(),
       createId: (kind) => `${kind}-${randomUUID()}`,
+      // Pins the single-tool queue this legacy GitHub workflow was written for.
+      seedCatalog: ["user-scanner.email.v1"],
     });
     const investigation = await service.createInvestigation();
     const email = `${randomUUID()}@example.org`;

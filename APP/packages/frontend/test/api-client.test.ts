@@ -44,6 +44,22 @@ describe("InvestigationApiClient", () => {
     ]);
   });
 
+  it("sends username seeds and proposal decisions to their endpoints", async () => {
+    const { api, calls } = clientWith({});
+    await api.addUsernameSeed("i/1", "anaexample", "Username aportado");
+    await api.decideUsernameProposal("i/1", "ana-alt", "rejected", "Otra persona");
+
+    expect(calls.map(({ input }) => String(input))).toEqual([
+      "/investigations/i%2F1/usernames",
+      "/investigations/i%2F1/usernames/decisions",
+    ]);
+    expect(calls.map(bodyOf)).toEqual([
+      { username: "anaexample", reason: "Username aportado" },
+      { username: "ana-alt", decision: "rejected", reason: "Otra persona" },
+    ]);
+    expect(calls.every(({ init }) => init?.method === "POST")).toBe(true);
+  });
+
   it("maps every persisted-action endpoint to the backend request contract", async () => {
     const { api, calls } = clientWith({});
     await api.addEmailSeed("i/1", "persona@example.test", "Semilla aportada por el operador");
