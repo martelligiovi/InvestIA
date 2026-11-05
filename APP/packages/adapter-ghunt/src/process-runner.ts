@@ -63,7 +63,7 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
       const directory = await mkdtemp(join(root, "ghunt-run-"));
       const report = join(directory, "report.json");
       try {
-        await new Promise<void>((done, reject) => {
+        const tail = await new Promise<string>((done, reject) => {
           const child = spawn(options.pythonExecutable ?? "python", ghuntArguments(email, report), {
             cwd: directory, shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
             env: { ...process.env, HOME: home, USERPROFILE: home },
@@ -89,12 +89,17 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
             clearTimeout(timer);
             if (failure) reject(failure);
             else if (code !== 0) reject(new GhuntProcessError(failureCode(tail)));
-            else done();
+            else done(tail);
           });
         });
+        let info;
+        try { info = await lstat(report); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT" && failureCode(tail) === "not_found") throw new GhuntProcessError("not_found");
+          throw new GhuntProcessError("missing_report");
+        }
         let handle;
         try {
-          const info = await lstat(report);
           if (!info.isFile() || info.isSymbolicLink()) throw new Error();
           handle = await open(report, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         } catch { throw new GhuntProcessError("missing_report"); }

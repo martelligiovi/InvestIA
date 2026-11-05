@@ -1,5 +1,5 @@
-# GHunt 2.3.4 and its complete Python 3.11 dependency closure, resolved on node:24.14.0-bookworm-slim.
-# Install only into its own container venv. Verified wheel SHA-256: 7b880072131b7a064e6500b9db2f64bd33eb3b396702825330c507243b617f4d
+# GHunt at the fixed upstream commit and its Python 3.11 dependency closure, resolved on node:24.14.0-bookworm-slim.
+# Install only into its own container venv.
 about-time==4.2.1
 alive-progress==3.3.0
 anyio==4.16.0
@@ -10,7 +10,7 @@ certifi==2026.10.23
 dnspython==2.9.2
 geographiclib==2.1
 geopy==2.5.0
-ghunt==2.3.4
+ghunt @ https://github.com/mxrch/GHunt/archive/11b845b0cea6534d85f9b8cde467a3e6ef00d452.tar.gz
 graphemeu==0.7.2
 h11==0.16.0
 h2==4.4.1
@@ -27,7 +27,7 @@ markdown-it-py==4.2.0
 mdurl==0.1.2
 numpy==2.4.6
 packaging==24.2
-pillow==10.4.0
+pillow==12.3.0
 protobuf==5.29.6
 Pygments==2.21.0
 python-dateutil==2.9.0.post0

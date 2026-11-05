@@ -156,6 +156,38 @@ test("upstream not-found exits are classified without disclosing output", async 
   }
 });
 
+test("zero-exit upstream not-found messages without a report are classified as not_found", async () => {
+  for (const message of ["[-] The target wasn't found.\n", "[-] Given information does not match a public Google Account.\n"]) {
+    await fake(async (child) => { child.stdout.emit("data", Buffer.from(message)); child.emit("close", 0); }, async (root, home) => {
+      await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), code("not_found"));
+    });
+  }
+});
+
+test("zero-exit not-found text does not override an existing report", async () => {
+  await fake(async (child, _args, options) => {
+    child.stdout.emit("data", "[-] The target wasn't found.\n");
+    await writeFile(join(options.cwd, "report.json"), "{}");
+    child.emit("close", 0);
+  }, async (root, home) => {
+    assert.equal(await createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), "{}");
+  });
+});
+
+test("zero-exit not-found text does not turn an unsafe report into not_found", async () => {
+  const original = filesystem.lstat;
+  filesystem.lstat = (async (path: Parameters<typeof original>[0], ...args: unknown[]) => {
+    if (String(path).endsWith("report.json")) return { isFile: () => false, isSymbolicLink: () => true };
+    return original(path, ...args as []);
+  }) as typeof original;
+  syncBuiltinESMExports();
+  try {
+    await fake(async (child) => { child.stdout.emit("data", "[-] The target wasn't found.\n"); child.emit("close", 0); }, async (root, home) => {
+      await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), code("missing_report"));
+    });
+  } finally { filesystem.lstat = original; syncBuiltinESMExports(); }
+});
+
 test("upstream session failures are classified as an invalid session", async () => {
   for (const message of ["ghunt.errors.GHuntInvalidSession: Please generate a new session by doing => ghunt login\n", "ghunt.errors.GHuntLoginError: [-] Can't generate cookies after multiple retries. Exiting...\n"]) {
     await fake(async (child) => { child.stdout.emit("data", "Traceback (most recent call last):\n"); child.stderr.emit("data", message); child.emit("close", 1); }, async (root, home) => {
