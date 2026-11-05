@@ -52,6 +52,7 @@ const ACTION_TITLES: Readonly<Record<string, string>> = {
   "user-scanner": "Búsqueda de email y enlaces con user-scanner",
   gravatar: "Perfil público de Gravatar",
   maigret: "Búsqueda de username con Maigret",
+  ghunt: "GHunt",
 };
 const SOURCE_TOOLS: Readonly<Record<string, string>> = {
   "user-scanner:email": "user-scanner",
@@ -64,6 +65,7 @@ function usernameNodeId(value: string): string {
 }
 
 export function actionTitle(action: GitHubCatalogAction): string {
+  if (action.spec.catalogId === "ghunt.email.v1") return "GHunt";
   return ACTION_TITLES[action.spec.provider] ?? "Comprobación de registro en GitHub";
 }
 
@@ -77,7 +79,7 @@ function nodeLabel(kind: WorkspaceNodeKind, title: string, state: string): strin
   return `${noun}: ${title}. Estado: ${workspaceStatusLabel(state)}.`;
 }
 
-export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGraph {
+export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected: boolean | null = null): WorkspaceGraph {
   const nodes: WorkspaceNode[] = [];
   const actionIds = new Set(investigation.actions.map((action) => action.id));
   const seedGraph = investigationSeedGraph(investigation);
@@ -119,7 +121,7 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
 
   investigation.actions.forEach((action, index) => {
     const title = actionTitle(action);
-    const state = actionDisplayState(investigation, action);
+    const state = actionDisplayState(investigation, action, ghuntConnected);
     nodes.push({
       id: `action:${action.id}`,
       kind: "action",

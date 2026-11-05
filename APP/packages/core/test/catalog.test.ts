@@ -42,9 +42,9 @@ test("authorization covers a tool only through an explicit scope", () => {
 });
 
 test("the scoped catalog lists every consentable tool and its input kind", () => {
-  assert.deepEqual(SCOPED_CATALOG_IDS, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"]);
+  assert.deepEqual(SCOPED_CATALOG_IDS, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"]);
   assert.deepEqual(CATALOG_INPUT_KINDS, {
-    "user-scanner.email.v1": "email", "gravatar.email.v1": "email", "maigret.username.v1": "username",
+    "user-scanner.email.v1": "email", "gravatar.email.v1": "email", "maigret.username.v1": "username", "ghunt.email.v1": "email",
   });
   const scannerAndGravatar: AuthorizationRecord = { ...base, granted: true, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] };
   assert.equal(authorizationCovers(scannerAndGravatar, "maigret.username.v1"), false, "earlier grants never cover Maigret");

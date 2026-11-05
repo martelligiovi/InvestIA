@@ -7,6 +7,7 @@ import {
   CATALOG_INPUT_KINDS,
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
+  isGhuntEligibleEmail,
   isScopedCatalogId,
   SCOPED_CATALOG_IDS,
   type ScopedCatalogId,
@@ -43,14 +44,17 @@ export interface InvestigationServiceDependencies {
   readonly createId: (kind: InvestigationIdKind) => string;
   /** Enabled email tools; User Scanner queues on entry, Gravatar follows confirmed findings. */
   readonly seedCatalog?: readonly ScopedCatalogId[];
+  /** Tools not ready to run right now; their queued actions stay queued and others proceed. */
+  readonly deferredCatalogIds?: () => Promise<readonly ScopedCatalogId[]>;
 }
 
 const QUEUE_REASONS: Readonly<Record<ScopedCatalogId, string>> = {
   "user-scanner.email.v1": "Catalog policy queued a user-scanner email and cross-scan check, including loud modules, for the recorded email seed.",
   "gravatar.email.v1": "Catalog policy queued a Gravatar public profile lookup for the recorded email seed.",
   "maigret.username.v1": "Catalog policy queued a Maigret username search with page extraction, without recursion, for the accepted username seed.",
+  "ghunt.email.v1": "Catalog policy queued a GHunt public Google account lookup for the recorded Gmail seed; it runs once a Google session is connected.",
 };
-const CATALOG_PROVIDERS = { "user-scanner.email.v1": "user-scanner", "gravatar.email.v1": "gravatar", "maigret.username.v1": "maigret" } as const;
+const CATALOG_PROVIDERS = { "user-scanner.email.v1": "user-scanner", "gravatar.email.v1": "gravatar", "maigret.username.v1": "maigret", "ghunt.email.v1": "ghunt" } as const;
 const EMAIL_CATALOG_IDS = SCOPED_CATALOG_IDS.filter((catalogId) => CATALOG_INPUT_KINDS[catalogId] === "email");
 
 const CATALOG_ID = "user-scanner.email.v1" as const;
@@ -208,7 +212,8 @@ export class InvestigationService {
     const why = reasonText(reason);
     const at = timestamp(this.dependencies.clock);
     const event = auditEvent(this.dependencies.createId, at, "operator", "email_seed_added", why);
-    const queuedActions = this.seedCatalog.filter((catalogId) => catalogId !== "gravatar.email.v1").map((catalogId): GitHubCatalogAction => ({
+    const queuedActions = this.seedCatalog.filter((catalogId) => catalogId !== "gravatar.email.v1" &&
+      (catalogId !== "ghunt.email.v1" || isGhuntEligibleEmail(seed.value))).map((catalogId): GitHubCatalogAction => ({
       id: newId(this.dependencies.createId, "action"),
       spec: { catalogId, provider: CATALOG_PROVIDERS[catalogId], seed: { ...seed } } as GitHubCatalogAction["spec"],
       status: "queued",
@@ -440,9 +445,11 @@ export class InvestigationService {
 
   async executeNextAction(id: string, automaticOnly = false): Promise<GitHubCatalogAction | undefined> {
     const claimedAt = timestamp(this.dependencies.clock);
+    const deferred = this.dependencies.deferredCatalogIds === undefined ? [] : await this.dependencies.deferredCatalogIds();
     const claimRequest: ClaimActionRequest = {
       investigationId: id,
       automaticOnly,
+      ...(deferred.length > 0 ? { deferredCatalogIds: [...deferred] } : {}),
       claimId: newId(this.dependencies.createId, "claim"),
       claimedAt,
       auditEvent: auditEvent(
@@ -595,6 +602,7 @@ export interface CatalogBoxes {
   readonly "user-scanner.email.v1"?: SeedBox<EmailSeed, Observation>;
   readonly "gravatar.email.v1"?: SeedBox<EmailSeed, Observation>;
   readonly "maigret.username.v1"?: SeedBox<UsernameSeed, Observation>;
+  readonly "ghunt.email.v1"?: SeedBox<EmailSeed, Observation>;
 }
 type AnySeedBox = SeedBox<EmailSeed | UsernameSeed, Observation>;
 

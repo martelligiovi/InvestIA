@@ -1,0 +1,49 @@
+{
+    "PROFILE_CONTAINER": {
+        "profile": {
+            "personId": "100000000000000000001",
+            "sourceIds": {
+                "PROFILE": {
+                    "lastUpdated": "fixture"
+                }
+            },
+            "emails": {},
+            "names": {
+                "PROFILE": {
+                    "fullname": "",
+                    "firstName": "",
+                    "lastName": ""
+                }
+            },
+            "profileInfos": {},
+            "profilePhotos": {
+                "PROFILE": {
+                    "url": "https://lh3.googleusercontent.com/a-/fixture",
+                    "isDefault": false,
+                    "flathash": "fixture"
+                }
+            },
+            "coverPhotos": {},
+            "inAppReachability": {},
+            "extendedData": {
+                "dynamiteData": {
+                    "presence": "",
+                    "entityType": "",
+                    "dndState": "",
+                    "customerId": ""
+                },
+                "gplusData": {
+                    "contentRestriction": "",
+                    "isEntrepriseUser": false
+                }
+            }
+        },
+        "play_games": null,
+        "maps": {
+            "photos": [],
+            "reviews": [],
+            "stats": {}
+        },
+        "calendar": null
+    }
+}

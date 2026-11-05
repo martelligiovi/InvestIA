@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import neo4j from "neo4j-driver";
 import { Pool } from "pg";
+import { createGhuntBox, createGhuntProcessRunner, createGhuntSession, createSessionBoundRunner, type GhuntSession } from "../../adapter-ghunt/src/index.ts";
 import { createGravatarBox } from "../../adapter-gravatar/src/index.ts";
 import { createMaigretBox } from "../../adapter-maigret/src/index.ts";
 import { createUserScannerBox } from "../../adapter-user-scanner/src/index.ts";
 import {
+  CATALOG_INPUT_KINDS,
+  SCOPED_CATALOG_IDS,
   createInvestigationService,
   createCatalogExecutor,
   type InvestigationExecutor,
@@ -30,6 +34,8 @@ export interface BackendStartOptions {
   readonly checkpointer?: BaseCheckpointSaver;
   /** Offline tests inject a fake; production calls NVIDIA Build only when the operator requests a report. */
   readonly nvidiaGateway?: NvidiaBuildGateway;
+  /** Offline tests inject a fake Google session; production uses GHUNT_SESSION_HOME when set. */
+  readonly ghuntSession?: GhuntSession;
   /** Temporary frontend root override for startup tests; never read from environment. */
   readonly frontendDistPath?: string;
 }
@@ -62,6 +68,17 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     await store.migrate();
     const aiSettings = new PostgresAiSettingsStore(pool);
     await aiSettings.migrate();
+    const ghuntSession = options.ghuntSession ?? (config.ghuntSessionHome === undefined ? undefined : createGhuntSession({
+      sessionHome: config.ghuntSessionHome,
+      ...(config.ghuntPython === undefined ? {} : { pythonExecutable: config.ghuntPython }),
+    }));
+    const ghuntBox = ghuntSession !== undefined && config.ghuntSessionHome !== undefined && options.executor === undefined
+      ? createGhuntBox(createSessionBoundRunner(ghuntSession, createGhuntProcessRunner({
+        sessionHome: config.ghuntSessionHome,
+        outputDirectory: tmpdir(),
+        ...(config.ghuntPython === undefined ? {} : { pythonExecutable: config.ghuntPython }),
+      }))) : undefined;
+    const ghuntAvailable = ghuntSession !== undefined && (ghuntBox !== undefined || options.executor !== undefined);
     const checkpointer = options.checkpointer ?? new PostgresSaver(pool);
     if (options.checkpointer === undefined) await (checkpointer as PostgresSaver).setup();
     const service = createInvestigationService({
@@ -70,7 +87,11 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
         "user-scanner.email.v1": createUserScannerBox(),
         "gravatar.email.v1": createGravatarBox({ apiKey: config.gravatarApiKey }),
         "maigret.username.v1": createMaigretBox(),
+        ...(ghuntBox === undefined ? {} : { "ghunt.email.v1": ghuntBox }),
       }),
+      seedCatalog: SCOPED_CATALOG_IDS.filter((catalogId) => CATALOG_INPUT_KINDS[catalogId] === "email" &&
+        (catalogId !== "ghunt.email.v1" || ghuntAvailable)),
+      deferredCatalogIds: async () => ghuntAvailable && (await ghuntSession!.status()).state === "connected" ? [] : ["ghunt.email.v1"],
       clock: () => new Date().toISOString(),
       createId: (kind) => `${kind}-${randomUUID()}`,
     });
@@ -90,6 +111,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
         gateway: options.nvidiaGateway ?? createNvidiaBuildGateway(),
         clock: () => new Date().toISOString(),
       },
+      ghunt: { session: ghuntSession },
     }, {
       frontendDistPath: options.frontendDistPath,
       onFrontendUnavailable: () => console.info(

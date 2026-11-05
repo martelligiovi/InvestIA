@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path";
+
 export interface BackendConfig {
   readonly databaseUrl: string;
   readonly host: string;
@@ -10,6 +12,10 @@ export interface BackendConfig {
   readonly neo4jDatabase: string;
   /** Optional Gravatar key; public profile lookups work without it at a lower rate limit. */
   readonly gravatarApiKey?: string;
+  /** Private persistent directory for the GHunt Google session; GHunt is disabled when omitted. */
+  readonly ghuntSessionHome?: string;
+  /** Interpreter of the isolated GHunt installation. */
+  readonly ghuntPython?: string;
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1"]);
@@ -71,10 +77,15 @@ export function loadBackendConfig(
   const neo4jDatabase = env.NEO4J_DATABASE?.trim() ?? "neo4j";
   if (neo4jDatabase.length === 0) throw new Error("NEO4J_DATABASE must not be empty.");
   const gravatarApiKey = env.GRAVATAR_API_KEY?.trim();
+  const ghuntSessionHome = env.GHUNT_SESSION_HOME?.trim();
+  if (ghuntSessionHome && !isAbsolute(ghuntSessionHome)) throw new Error("GHUNT_SESSION_HOME must be an absolute directory path.");
+  const ghuntPython = env.GHUNT_PYTHON?.trim();
 
   return {
     databaseUrl, host, port, neo4jUri, neo4jUsername, neo4jPassword, neo4jDatabase,
     ...(containerNetworking ? { containerNetworking: true } : {}),
     ...(gravatarApiKey ? { gravatarApiKey } : {}),
+    ...(ghuntSessionHome ? { ghuntSessionHome } : {}),
+    ...(ghuntSessionHome && ghuntPython ? { ghuntPython } : {}),
   };
 }

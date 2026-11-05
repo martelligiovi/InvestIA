@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { AI_MAX_TOKENS_RANGE, type AiReasoningEffort, type AiReportSettings } from "@investia/core";
 import { InvestigationApiClient, type AiModelList, type AiSettingsView } from "../api/client";
+import { GhuntSettings } from "../components/GhuntSettings";
 
 const NVIDIA_MODELS_URL = "https://build.nvidia.com/models";
 
@@ -53,6 +54,13 @@ function messageFor(error: unknown): string {
 }
 
 export function AiSettingsPage() {
+  return <>
+    <AiSettingsContent />
+    <div className="creation-page ai-settings-page"><GhuntSettings /></div>
+  </>;
+}
+
+function AiSettingsContent() {
   const api = useMemo(() => new InvestigationApiClient(), []);
   const [view, setView] = useState<AiSettingsView | null>(null);
   const [draft, setDraft] = useState<SettingsDraft | null>(null);
@@ -86,6 +94,12 @@ export function AiSettingsPage() {
     );
     return () => { active = false; };
   }, [api, loadSettings]);
+
+  useEffect(() => {
+    if (window.location.hash.includes("?seccion=ghunt")) {
+      document.getElementById("ghunt-settings")?.scrollIntoView?.({ block: "start" });
+    }
+  }, [view, loadError]);
 
   function updateDraft(change: Partial<SettingsDraft>) {
     setDraft((current) => current === null ? current : { ...current, ...change });
