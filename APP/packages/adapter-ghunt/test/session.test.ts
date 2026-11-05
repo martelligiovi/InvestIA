@@ -127,3 +127,18 @@ test("scans and session changes never overlap", async () => {
     assert.deepEqual(order, ["scan-start", "scan-end", "disconnect"]);
   });
 });
+
+test("a failure while promoting the new session keeps the previous one", async () => {
+  const filesystem = require("node:fs/promises") as typeof import("node:fs/promises");
+  await withSpawn(succeed, async (home) => {
+    const session = createGhuntSession({ sessionHome: home });
+    await session.connect(code);
+    const original = filesystem.rename;
+    filesystem.rename = (async () => { throw Object.assign(new Error("secret EIO"), { code: "EIO" }); }) as typeof original;
+    syncBuiltinESMExports();
+    try { await assert.rejects(session.connect(code)); }
+    finally { filesystem.rename = original; syncBuiltinESMExports(); }
+    assert.deepEqual(await session.status(), { state: "connected", account: "owner@gmail.com" });
+    assert.equal(await readFile(join(home, ".malfrats", "ghunt", "creds.m"), "utf8"), "stored-secret");
+  });
+});

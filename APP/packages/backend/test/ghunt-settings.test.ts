@@ -104,3 +104,14 @@ test("without GHunt installed the status says so and connecting is refused", asy
   assert.equal(response.statusCode, 409);
   assert.equal(response.json().error, "GHUNT_NOT_INSTALLED");
 });
+
+test("origin-less non-JSON forms cannot connect a Google session", async (t) => {
+  const fake = fakeSession();
+  const server = app(fake.session);
+  t.after(() => server.close());
+  for (const [contentType, payload] of [["text/plain", '{"code":"Y29kZQ=="}'], ["application/x-www-form-urlencoded", "code=Y29kZQ%3D%3D"], ["multipart/form-data; boundary=x", "--x\r\nContent-Disposition: form-data; name=\"code\"\r\n\r\nY29kZQ==\r\n--x--\r\n"]] as const) {
+    const response = await server.inject({ method: "POST", url: "/settings/ghunt/session", headers: { host: "127.0.0.1:4317", "content-type": contentType }, payload });
+    assert.ok([400, 415].includes(response.statusCode), `${contentType} -> ${response.statusCode}`);
+  }
+  assert.deepEqual(fake.codes, []);
+});

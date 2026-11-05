@@ -143,9 +143,10 @@ export function createGhuntSession(options: GhuntSessionOptions): GhuntSession {
             const account = await login(companionCode.trim(), staging);
             const staged = join(staging, ".malfrats", "ghunt", "creds.m");
             if (!await exists(staged)) throw new GhuntSessionError("rejected");
-            await clear();
+            // rename() replaces the previous session atomically; nothing is deleted before it succeeds.
             await mkdir(dirname(credentials), { recursive: true, mode: 0o700 });
             await rename(staged, credentials);
+            await rm(invalidMarker, { force: true });
             await writeFile(accountFile, JSON.stringify(account), { mode: 0o600 });
           } finally { await rm(staging, { recursive: true, force: true }); }
           return status();
