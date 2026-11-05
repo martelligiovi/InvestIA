@@ -17,9 +17,17 @@ export class GhuntProcessError extends Error {
     this.name = "GhuntProcessError";
   }
 }
-function exitDetail(code: number | null, signal: NodeJS.Signals | null): string | undefined {
-  if (signal) return `signal ${signal}`;
-  return code === null ? undefined : `exit ${code}`;
+const TRACEBACK = "Traceback (most recent call last):";
+/** Name of the final Python exception in the tail; its message may hold personal data and is dropped. */
+function exceptionName(tail: string): string {
+  const start = tail.lastIndexOf(TRACEBACK);
+  if (start < 0) return "no traceback";
+  const last = tail.slice(start).split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line && !line.startsWith(" ")).pop() ?? "";
+  const name = /^([A-Za-z_]\w{0,63}(?:\.[A-Za-z_]\w{0,63}){0,7})(?::|$)/.exec(last)?.[1];
+  return name === undefined || last === TRACEBACK ? "unparsed traceback" : name;
+}
+function exitDetail(code: number | null, signal: NodeJS.Signals | null, tail: string): string {
+  return `${signal ? `signal ${signal}` : `exit ${code}`}, ${exceptionName(tail)}`;
 }
 function errnoDetail(error: unknown): string | undefined {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -101,7 +109,7 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
             if (failure) reject(failure);
             else if (code !== 0) {
               const classified = failureCode(tail);
-              reject(new GhuntProcessError(classified, classified === "process_failure" ? exitDetail(code, signal) : undefined));
+              reject(new GhuntProcessError(classified, classified === "process_failure" ? exitDetail(code, signal, tail) : undefined));
             }
             else done(tail);
           });

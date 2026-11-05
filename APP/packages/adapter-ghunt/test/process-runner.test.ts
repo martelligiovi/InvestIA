@@ -147,8 +147,22 @@ test("filesystem failures are internal, keep only the errno code and do not disc
 });
 
 test("unclassified upstream failures record the exit code or signal but never the output", async () => {
-  for (const [exit, signal, expected] of [[2, null, "(exit 2)"], [null, "SIGTERM", "(signal SIGTERM)"]] as const) {
+  for (const [exit, signal, expected] of [[2, null, "(exit 2, no traceback)"], [null, "SIGTERM", "(signal SIGTERM, no traceback)"]] as const) {
     await fake(async (child) => { child.stderr.emit("data", Buffer.from("Traceback: secret\n")); child.emit("close", exit, signal); }, async (root, home) => {
+      await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
+        assert.ok(error instanceof GhuntProcessError);
+        assert.equal(error.code, "process_failure");
+        assert.equal(error.message, `GHunt execution failed: process_failure ${expected}`);
+        return true;
+      });
+    });
+  }
+});
+
+test("unclassified tracebacks record only the final exception name, never its message", async () => {
+  const traceback = "Traceback (most recent call last):\n  File \"/opt/x.py\", line 3, in <module>\nKeyError: 'secret'\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"/opt/y.py\", line 9, in main\nhttpx.ReadTimeout: secret@gmail.com\n";
+  for (const [output, expected] of [[traceback, "(exit 1, httpx.ReadTimeout)"], ["Traceback (most recent call last):\n  File \"/opt/x.py\"\nnot an identifier: secret\n", "(exit 1, unparsed traceback)"]] as const) {
+    await fake(async (child) => { child.stderr.emit("data", Buffer.from(output)); child.emit("close", 1, null); }, async (root, home) => {
       await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
         assert.ok(error instanceof GhuntProcessError);
         assert.equal(error.code, "process_failure");
