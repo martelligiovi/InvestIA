@@ -3,12 +3,13 @@ import { constants } from "node:fs";
 import { lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { tracebackDetail } from "./traceback.ts";
 
 export interface GhuntRunner { run(email: string): Promise<string>; }
 export type GhuntProcessErrorCode = "spawn_failure" | "process_failure" | "timeout" | "output_limit" | "missing_report" | "invalid_session_home" | "not_found" | "invalid_session" | "internal_failure";
 export class GhuntProcessError extends Error {
   readonly code: GhuntProcessErrorCode;
-  /** Non-sensitive shape of the failure (exit code, signal or errno code); never process output or paths. */
+  /** Non-sensitive failure shape; traceback details contain only allowlisted structural fields. */
   readonly detail: string | undefined;
   constructor(code: GhuntProcessErrorCode, detail?: string) {
     super(`GHunt execution failed: ${code}${detail === undefined ? "" : ` (${detail})`}`);
@@ -17,17 +18,11 @@ export class GhuntProcessError extends Error {
     this.name = "GhuntProcessError";
   }
 }
-const TRACEBACK = "Traceback (most recent call last):";
-/** Name of the final Python exception in the tail; its message may hold personal data and is dropped. */
-function exceptionName(tail: string): string {
-  const start = tail.lastIndexOf(TRACEBACK);
-  if (start < 0) return "no traceback";
-  const last = tail.slice(start).split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line && !line.startsWith(" ")).pop() ?? "";
-  const name = /^([A-Za-z_]\w{0,63}(?:\.[A-Za-z_]\w{0,63}){0,7})(?::|$)/.exec(last)?.[1];
-  return name === undefined || last === TRACEBACK ? "unparsed traceback" : name;
-}
-function exitDetail(code: number | null, signal: NodeJS.Signals | null, tail: string): string {
-  return `${signal ? `signal ${signal}` : `exit ${code}`}, ${exceptionName(tail)}`;
+function exitDetail(code: number | null, signal: NodeJS.Signals | null, stderr: string, stdout: string): string {
+  // Python normally emits tracebacks on stderr; stdout is a fallback, not a
+  // merged stream where later unrelated output could erase the traceback.
+  const traceback = tracebackDetail(stderr) ?? tracebackDetail(stdout) ?? "no traceback";
+  return `${signal ? `signal ${signal}` : `exit ${code}`}, ${traceback}`;
 }
 function errnoDetail(error: unknown): string | undefined {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -90,18 +85,25 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
           let failure: GhuntProcessError | undefined;
           let bytes = 0;
           let tail = "";
+          let stdoutTail = "";
+          let stderrTail = "";
           const terminate = (code: GhuntProcessErrorCode) => {
             if (failure) return;
             failure = new GhuntProcessError(code);
             child.kill("SIGKILL");
           };
-          const drain = (chunk: Buffer | string) => {
+          const drain = (stream: "stdout" | "stderr", chunk: Buffer | string) => {
             bytes += Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(chunk);
             if (bytes > maxBytes) terminate("output_limit");
-            else tail = (tail + chunk.toString()).slice(-4096);
+            else {
+              const text = chunk.toString();
+              tail = (tail + text).slice(-4096);
+              if (stream === "stdout") stdoutTail = (stdoutTail + text).slice(-65536);
+              else stderrTail = (stderrTail + text).slice(-65536);
+            }
           };
-          child.stdout.on("data", drain);
-          child.stderr.on("data", drain);
+          child.stdout.on("data", (chunk: Buffer | string) => drain("stdout", chunk));
+          child.stderr.on("data", (chunk: Buffer | string) => drain("stderr", chunk));
           const timer = setTimeout(() => terminate("timeout"), timeoutMs);
           child.once("error", () => { clearTimeout(timer); reject(new GhuntProcessError("spawn_failure")); });
           child.once("close", (code, signal) => {
@@ -109,7 +111,7 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
             if (failure) reject(failure);
             else if (code !== 0) {
               const classified = failureCode(tail);
-              reject(new GhuntProcessError(classified, classified === "process_failure" ? exitDetail(code, signal, tail) : undefined));
+              reject(new GhuntProcessError(classified, classified === "process_failure" ? exitDetail(code, signal, stderrTail, stdoutTail) : undefined));
             }
             else done(tail);
           });

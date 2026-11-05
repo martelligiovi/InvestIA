@@ -173,6 +173,153 @@ test("unclassified tracebacks record only the final exception name, never its me
   }
 });
 
+test("structural diagnostics handle ANSI, split chunks and multiline exception messages", async () => {
+  const output = "\u001b[31mTraceback (most recent call last):\u001b[0m\n  File \"/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py\", line 42, in main\n    private_source(secret)\n\u001b[1mhttpx.ReadTimeout\u001b[0m: private_message\nKeyError: private_second_line\nprivate@gmail.com?token=private_token\n";
+  await fake(async (child) => {
+    for (let i = 0; i < output.length; i += 7) child.stderr.emit("data", Buffer.from(output.slice(i, i + 7)));
+    child.emit("close", 1, null);
+  }, async (root, home, child) => {
+    await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
+      assert.ok(error instanceof GhuntProcessError);
+      assert.equal(error.code, "process_failure");
+      assert.equal(error.detail, "exit 1, httpx.ReadTimeout, frames [ghunt/ghunt.py:42 in main]");
+      assert.equal(error.message, `GHunt execution failed: process_failure (${error.detail})`);
+      for (const secret of ["private_source", "private_message", "private_second_line", "private@gmail.com", "private_token"]) assert.ok(!error.message.includes(secret));
+      return true;
+    });
+    assert.deepEqual(child.signals, []);
+  });
+});
+
+test("a forged traceback header in an exception message can replace real diagnostic structure", async () => {
+  const real = 'Traceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py", line 7, in main\nKeyError: private_message\n';
+  const cases = [
+    ["Traceback (most recent call last):\nprivate_secret@gmail.com\n", "exit 1, unparsed traceback"],
+    ['Traceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/cli.py", line 123456, in main\nValueError: private_secret@gmail.com\n', "exit 1, ValueError, frames [ghunt/cli.py:123456 in main]"],
+  ] as const;
+  for (const [forged, expected] of cases) {
+    await fake(async (child, _args, options) => {
+      await writeFile(join(options.cwd, "report.json"), "private_report");
+      child.stderr.emit("data", real + forged);
+      child.emit("close", 1, null);
+    }, async (root, home, child) => {
+      await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
+        assert.ok(error instanceof GhuntProcessError);
+        assert.equal(error.code, "process_failure");
+        assert.equal(error.detail, expected);
+        assert.equal(error.message, `GHunt execution failed: process_failure (${expected})`);
+        assert.ok(!error.message.includes("private"));
+        return true;
+      });
+      assert.deepEqual(child.signals, []);
+    });
+  }
+});
+
+test("Python 3.11 ExceptionGroup falls back to an unparsed traceback without leaking output", async () => {
+  const output = '  + Exception Group Traceback (most recent call last):\n  |   File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py", line 7, in main\n  | ExceptionGroup: private_message (1 sub-exception)\n  +-+---------------- 1 ----------------\n    | ValueError: private_secret@gmail.com\n    +------------------------------------\n';
+  await fake(async (child, _args, options) => {
+    await writeFile(join(options.cwd, "report.json"), "private_report");
+    child.stderr.emit("data", output);
+    child.emit("close", 1, null);
+  }, async (root, home, child) => {
+    await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
+      assert.ok(error instanceof GhuntProcessError);
+      assert.equal(error.code, "process_failure");
+      assert.equal(error.detail, "exit 1, unparsed traceback");
+      assert.equal(error.message, "GHunt execution failed: process_failure (exit 1, unparsed traceback)");
+      assert.ok(!error.message.includes("private"));
+      return true;
+    });
+    assert.deepEqual(child.signals, []);
+  });
+});
+
+test("stderr traceback survives interleaved trailing stdout beyond classification tail", async () => {
+  await fake(async (child) => {
+    child.stderr.emit("data", 'Traceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py", line 7, in main\nValueError: private_value\n');
+    child.stdout.emit("data", "private_stdout".repeat(1000));
+    child.emit("close", 3, null);
+  }, async (root, home) => {
+    await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
+      assert.ok(error instanceof GhuntProcessError);
+      assert.equal(error.code, "process_failure");
+      assert.equal(error.detail, "exit 3, ValueError, frames [ghunt/ghunt.py:7 in main]");
+      assert.ok(!error.message.includes("private"));
+      return true;
+    });
+  });
+});
+
+test("last chained exception and bounded frames omit unknown and spoofed private data", async () => {
+  const frame = '  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py", line 42, in main\n    private_source\n';
+  const output = 'Traceback (most recent call last):\n' + frame + 'KeyError: old_secret\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n' + frame.repeat(20)
+    + '  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/private_secret.py", line 2, in main\n'
+    + '  File "/tmp/private_secret/ghunt/ghunt.py", line 3, in main\n'
+    + '  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py", line 4, in private_function\n'
+    + 'PrivateException: private_value\n';
+  await fake(async (child) => { child.stderr.emit("data", output); child.emit("close", 1, null); }, async (root, home) => {
+    await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
+      assert.ok(error instanceof GhuntProcessError);
+      assert.equal(error.code, "process_failure");
+      assert.equal(error.detail, `exit 1, unparsed traceback, frames [${Array(8).fill("ghunt/ghunt.py:42 in main").join("; ")}]`);
+      assert.ok(error.detail.length < 512);
+      assert.ok(!error.message.includes("private"));
+      assert.ok(!error.message.includes("PrivateException"));
+      assert.ok(!error.message.includes("KeyError"));
+      return true;
+    });
+  });
+});
+
+test("a chained traceback records only the final exception's frames", async () => {
+  const output = 'Traceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py", line 1, in main\nKeyError: private_first\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/httpx/_client.py", line 22, in send\nhttpx.ReadTimeout: private_final\n';
+  await fake(async (child) => { child.stderr.emit("data", output); child.emit("close", 1, null); }, async (root, home) => {
+    await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
+      assert.ok(error instanceof GhuntProcessError);
+      assert.equal(error.code, "process_failure");
+      assert.equal(error.detail, "exit 1, httpx.ReadTimeout, frames [httpx/_client.py:22 in send]");
+      assert.ok(!error.message.includes("private"));
+      assert.ok(!error.message.includes("KeyError"));
+      return true;
+    });
+  });
+});
+
+test("stdout fallback and unknown structural fields remain private", async () => {
+  const output = 'Traceback (most recent call last):\n'
+    + '  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/private_secret.py", line 2, in main\n'
+    + '  File "/tmp/private_secret/ghunt/ghunt.py", line 3, in main\n'
+    + '  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py", line 4, in private_function\n'
+    + '  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py", line 5, in main\n'
+    + 'PrivateException: private_value\n';
+  await fake(async (child) => { child.stdout.emit("data", output); child.emit("close", 1, null); }, async (root, home) => {
+    await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
+      assert.ok(error instanceof GhuntProcessError);
+      assert.equal(error.code, "process_failure");
+      assert.equal(error.detail, "exit 1, unparsed traceback, frames [ghunt/ghunt.py:5 in main]");
+      assert.ok(!error.message.includes("private"));
+      assert.ok(!error.message.includes("PrivateException"));
+      return true;
+    });
+  });
+});
+
+test("bounded traceback tail finds a long traceback and fails closed if its header is truncated", async () => {
+  const header = "Traceback (most recent call last):\n";
+  for (const [length, expected] of [[8000, "exit 1, KeyError"], [70000, "exit 1, no traceback"]] as const) {
+    await fake(async (child) => { child.stderr.emit("data", header + "  private_source\n".repeat(length / 16) + "KeyError: private_value\n"); child.emit("close", 1, null); }, async (root, home) => {
+      await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
+        assert.ok(error instanceof GhuntProcessError);
+        assert.equal(error.code, "process_failure");
+        assert.equal(error.detail, expected);
+        assert.ok(!error.message.includes("private"));
+        return true;
+      });
+    });
+  }
+});
+
 test("timeout terminates a stalled child", async () => {
   await fake(async () => undefined, async (root, home, child) => {
     await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root, timeoutMs: 5 }).run("ana@gmail.com"), code("timeout"));
