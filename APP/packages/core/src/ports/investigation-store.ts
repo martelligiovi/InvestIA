@@ -31,6 +31,8 @@ export interface ClaimActionRequest {
   readonly investigationId: InvestigationId;
   /** Rechecked inside the atomic claim, never inferred from a worker's stale snapshot. */
   readonly automaticOnly?: boolean;
+  /** Tools that are temporarily not ready (e.g. no Google session); their queued actions wait. */
+  readonly deferredCatalogIds?: readonly string[];
   readonly claimId: string;
   readonly claimedAt: string;
   readonly auditEvent: AuditEvent;

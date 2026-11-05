@@ -57,14 +57,21 @@ export interface ActionApproval {
 }
 
 /** Catalog tools that run only under an explicit, per-tool consent scope. */
-export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1" | "maigret.username.v1";
-export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"]);
+export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1" | "maigret.username.v1" | "ghunt.email.v1";
+export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"]);
 /** Seed kind each scoped tool accepts. */
 export const CATALOG_INPUT_KINDS: Readonly<Record<ScopedCatalogId, "email" | "username">> = Object.freeze({
   "user-scanner.email.v1": "email",
   "gravatar.email.v1": "email",
   "maigret.username.v1": "username",
+  "ghunt.email.v1": "email",
 });
+/** GHunt only applies to Google consumer accounts. */
+export const GHUNT_EMAIL_DOMAINS: readonly string[] = Object.freeze(["gmail.com", "googlemail.com"]);
+export function isGhuntEligibleEmail(value: string): boolean {
+  const at = value.lastIndexOf("@");
+  return at > 0 && GHUNT_EMAIL_DOMAINS.includes(value.slice(at + 1).toLowerCase());
+}
 const LEGACY_CATALOG_ID = "github.email-registration.v1";
 
 export function isScopedCatalogId(value: unknown): value is ScopedCatalogId {
@@ -117,10 +124,16 @@ export interface MaigretActionSpec {
   readonly seed: UsernameSeed;
 }
 
+export interface GhuntActionSpec {
+  readonly catalogId: "ghunt.email.v1";
+  readonly provider: "ghunt";
+  readonly seed: EmailSeed;
+}
+
 /** Historical export name retained for consumers; it covers every catalog action spec. */
 export interface GitHubCatalogAction {
   readonly id: InvestigationActionId;
-  readonly spec: GitHubActionSpec | UserScannerActionSpec | GravatarActionSpec | MaigretActionSpec;
+  readonly spec: GitHubActionSpec | UserScannerActionSpec | GravatarActionSpec | MaigretActionSpec | GhuntActionSpec;
   /**
    * Explicit input seed reference (see seed-graph.ts). Absent on historical actions and on
    * actions whose input is the operator email embedded in their spec.

@@ -174,6 +174,7 @@ const ACTION_SPECS: Readonly<Record<string, { readonly provider: string; readonl
   "user-scanner.email.v1": { provider: "user-scanner", seed: isEmailSeed },
   "gravatar.email.v1": { provider: "gravatar", seed: isEmailSeed },
   "maigret.username.v1": { provider: "maigret", seed: isUsernameSeed },
+  "ghunt.email.v1": { provider: "ghunt", seed: isEmailSeed },
 };
 
 function isStoredAction(value: unknown): boolean {
@@ -377,6 +378,7 @@ export class PostgresInvestigationStore implements InvestigationStore {
       const action = actions.find((candidate) => candidate.status === "queued" &&
         (candidate.queuedByCatalog === true || candidate.approval !== undefined) &&
         (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) &&
+        !(input.deferredCatalogIds ?? []).includes(candidate.spec.catalogId) &&
         authorizationCovers(current.authorization, candidate.spec.catalogId));
       if (action === undefined) {
         return changed ? { next: revise(current, input.claimedAt, { actions, audit: [...current.audit, ...proposedEvents] }), result: undefined }

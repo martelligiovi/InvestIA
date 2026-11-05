@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  authorizationCovers,
   compileInvestigationReport,
   createInvestigationService,
   createSeedBoxExecutor,
@@ -57,7 +58,8 @@ class MemoryInvestigationStore implements InvestigationStore {
       current === undefined || current.paused || current.authorization?.granted !== true
     ) return undefined;
     if (input.automaticOnly && current.advancementMode !== "automatic") return undefined;
-    const action = current.actions.find((candidate) => candidate.status === "queued" && (candidate.approval || candidate.queuedByCatalog));
+    const action = current.actions.find((candidate) => candidate.status === "queued" && (candidate.approval || candidate.queuedByCatalog) &&
+      !(input.deferredCatalogIds ?? []).includes(candidate.spec.catalogId) && authorizationCovers(current.authorization, candidate.spec.catalogId));
     if (action === undefined) return undefined;
 
     const claimedAction = {
@@ -143,6 +145,60 @@ function makeHarness(executor?: InvestigationExecutor, seedCatalog: readonly Sco
   });
   return { store, service };
 }
+
+test("GHunt queues only for eligible domains and enabled catalogs", async () => {
+  for (const [email, eligible] of [["a@gmail.com", true], ["b@GoogleMail.COM", true], ["c@example.com", false], ["d@gmail.com.evil", false], ["e@xgmail.com", false]] as const) {
+    const { service } = makeHarness(undefined, ["user-scanner.email.v1", "ghunt.email.v1"]);
+    const created = await service.createInvestigation();
+    const seeded = await service.addEmailSeed(created.id, email);
+    assert.deepEqual(seeded.actions.map((action) => [action.spec.catalogId, action.spec.provider, action.status]), eligible
+      ? [["user-scanner.email.v1", "user-scanner", "queued"], ["ghunt.email.v1", "ghunt", "queued"]]
+      : [["user-scanner.email.v1", "user-scanner", "queued"]]);
+  }
+  const { service } = makeHarness();
+  const created = await service.createInvestigation();
+  assert.deepEqual((await service.addEmailSeed(created.id, "a@gmail.com")).actions.map((action) => action.spec.catalogId), ["user-scanner.email.v1"]);
+});
+
+test("deferred GHunt waits while other work runs in manual and automatic modes", async () => {
+  for (const mode of ["manual", "automatic"] as const) {
+    let deferred = true;
+    let id = 0;
+    const executed: string[] = [];
+    const service = createInvestigationService({
+      store: new MemoryInvestigationStore(),
+      executor: { id: "fake", async execute(action) { executed.push(action.spec.catalogId); return []; } },
+      clock: () => "2025-01-01T00:00:00.000Z", createId: (kind) => `${kind}-${++id}`,
+      seedCatalog: ["ghunt.email.v1", "user-scanner.email.v1"],
+      deferredCatalogIds: async () => deferred ? ["ghunt.email.v1"] : [],
+    });
+    const created = await service.createInvestigation("Case", "Test", mode);
+    await service.addEmailSeed(created.id, "a@gmail.com");
+    await service.authorize(created.id, true, "Authorize tools");
+    if (mode === "manual") {
+      assert.equal(await service.executeNextAction(created.id, true), undefined);
+      assert.deepEqual(executed, []);
+    }
+    const automaticOnly = mode === "automatic";
+    assert.equal((await service.executeNextAction(created.id, automaticOnly))?.spec.catalogId, "user-scanner.email.v1");
+    assert.equal((await service.loadInvestigation(created.id))!.actions[0]!.status, "queued");
+    assert.equal(await service.executeNextAction(created.id, automaticOnly), undefined);
+    deferred = false;
+    const ghunt = await service.executeNextAction(created.id, automaticOnly);
+    assert.equal(ghunt?.spec.catalogId, "ghunt.email.v1");
+    assert.equal(ghunt?.status, "succeeded");
+    assert.deepEqual(executed, ["user-scanner.email.v1", "ghunt.email.v1"]);
+  }
+});
+
+test("GHunt requires a fresh per-tool consent grant", async () => {
+  const { service } = makeHarness();
+  const created = await service.createInvestigation();
+  const fresh = (await service.authorize(created.id, true, "Authorize tools")).authorization!;
+  const old = { ...fresh, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"] as const };
+  assert.equal(authorizationCovers(old, "ghunt.email.v1"), false);
+  assert.equal(authorizationCovers(fresh, "ghunt.email.v1"), true);
+});
 
 test("a new email queues User Scanner without independently running Gravatar", async () => {
   const store = new MemoryInvestigationStore();
