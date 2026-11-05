@@ -61,6 +61,8 @@ Only after User Scanner completes successfully, a Gravatar finding for the scann
 
 When GHunt is configured with `GHUNT_SESSION_HOME`, Gmail and Googlemail seeds also queue a [GHunt](packages/adapter-ghunt/README.md) Google profile lookup. It waits for a connected Google session without blocking other tools; automatic mode runs it when ready, while manual mode requires run-next. Existing grants must be renewed to include GHunt.
 
+The Docker image installs GHunt 2.3.4 in its own venv (`GHUNT_PYTHON`) and keeps the Google session in the private `ghunt-session` volume (`GHUNT_SESSION_HOME`). To connect, open **Ajustes de IA → Google (GHunt)**, install [GHunt Companion](https://github.com/mxrch/ghunt_companion), sign in to Google in that browser, export the code and paste it. The page shows *conectado*, *requiere conexión* or *sesión inválida*; **Desconectar** deletes the stored session. Session routes only accept same-origin requests from a loopback host. The stored master token gives broad access to that Google account: use a dedicated account and treat the volume like a password. If the session is disconnected or rejected while a GHunt lookup is already running, that lookup fails and is not retried; later ones wait for reconnection.
+
 Accepted username seeds queue a [Maigret](packages/adapter-maigret/README.md) search of about 500 sites, without recursion and without runtime site-database updates. Maigret needs its own venv; point `MAIGRET_PYTHON` at it. Usernames that findings reveal (username targets and Maigret's discovered usernames) appear in the workspace **Usernames** panel as proposals; none runs until the operator accepts it with a reason, and rejected ones stay recorded.
 
 ## Frontend quick path

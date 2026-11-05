@@ -18,6 +18,8 @@
 !packages/adapter-user-scanner/python/requirements.txt
 !packages/adapter-maigret/python/
 !packages/adapter-maigret/python/requirements.txt
+!packages/adapter-ghunt/python/
+!packages/adapter-ghunt/python/requirements.txt
 # Keep host dependency links excluded even when workspace directories are allowed.
 **/node_modules
 **/node_modules/**

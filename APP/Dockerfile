@@ -17,11 +17,16 @@ RUN python3 -m venv /opt/venv \
 # Maigret gets its own venv so its dependency closure never conflicts with user-scanner's.
 RUN python3 -m venv /opt/venv-maigret \
     && /opt/venv-maigret/bin/python -m pip install --no-cache-dir -r packages/adapter-maigret/python/requirements.txt
+# GHunt also gets its own venv; its Google session lives in a separate private volume.
+RUN python3 -m venv /opt/venv-ghunt \
+    && /opt/venv-ghunt/bin/python -m pip install --no-cache-dir -r packages/adapter-ghunt/python/requirements.txt
 
 FROM base AS runtime
 ENV NODE_ENV=production \
     PYTHON=/opt/venv/bin/python \
     MAIGRET_PYTHON=/opt/venv-maigret/bin/python \
+    GHUNT_PYTHON=/opt/venv-ghunt/bin/python \
+    GHUNT_SESSION_HOME=/var/lib/investia/ghunt \
     PATH="/opt/venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
@@ -30,8 +35,9 @@ WORKDIR /app
 COPY --from=build --chown=node:node /app /app
 COPY --from=build /opt/venv /opt/venv
 COPY --from=build /opt/venv-maigret /opt/venv-maigret
+COPY --from=build /opt/venv-ghunt /opt/venv-ghunt
 # WORKDIR remains root-owned; only the private report directories need writes.
-RUN install -d -m 0700 -o node -g node /app/.scanner-runs /app/.maigret-runs
+RUN install -d -m 0700 -o node -g node /app/.scanner-runs /app/.maigret-runs /var/lib/investia/ghunt
 USER node
 EXPOSE 4317
 CMD ["node", "--experimental-strip-types", "packages/backend/src/main.ts"]
