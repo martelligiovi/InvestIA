@@ -134,11 +134,29 @@ test("POSIX credential home must be owner-only", { skip: process.platform === "w
   });
 });
 
-test("filesystem failures do not disclose paths or sensitive details", async () => {
+test("filesystem failures are internal, keep only the errno code and do not disclose paths", async () => {
   await fake(async () => undefined, async (root, home) => {
     const runner = createGhuntProcessRunner({ sessionHome: home, outputDirectory: join(root, "secret-missing") });
-    await assert.rejects(runner.run("ana@gmail.com"), code("process_failure"));
+    await assert.rejects(runner.run("ana@gmail.com"), (error: unknown) => {
+      assert.ok(error instanceof GhuntProcessError);
+      assert.equal(error.code, "internal_failure");
+      assert.equal(error.message, "GHunt execution failed: internal_failure (ENOENT)");
+      return true;
+    });
   });
+});
+
+test("unclassified upstream failures record the exit code or signal but never the output", async () => {
+  for (const [exit, signal, expected] of [[2, null, "(exit 2)"], [null, "SIGTERM", "(signal SIGTERM)"]] as const) {
+    await fake(async (child) => { child.stderr.emit("data", Buffer.from("Traceback: secret\n")); child.emit("close", exit, signal); }, async (root, home) => {
+      await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
+        assert.ok(error instanceof GhuntProcessError);
+        assert.equal(error.code, "process_failure");
+        assert.equal(error.message, `GHunt execution failed: process_failure ${expected}`);
+        return true;
+      });
+    });
+  }
 });
 
 test("timeout terminates a stalled child", async () => {

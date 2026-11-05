@@ -5,14 +5,25 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 export interface GhuntRunner { run(email: string): Promise<string>; }
-export type GhuntProcessErrorCode = "spawn_failure" | "process_failure" | "timeout" | "output_limit" | "missing_report" | "invalid_session_home" | "not_found" | "invalid_session";
+export type GhuntProcessErrorCode = "spawn_failure" | "process_failure" | "timeout" | "output_limit" | "missing_report" | "invalid_session_home" | "not_found" | "invalid_session" | "internal_failure";
 export class GhuntProcessError extends Error {
   readonly code: GhuntProcessErrorCode;
-  constructor(code: GhuntProcessErrorCode) {
-    super(`GHunt execution failed: ${code}`);
+  /** Non-sensitive shape of the failure (exit code, signal or errno code); never process output or paths. */
+  readonly detail: string | undefined;
+  constructor(code: GhuntProcessErrorCode, detail?: string) {
+    super(`GHunt execution failed: ${code}${detail === undefined ? "" : ` (${detail})`}`);
     this.code = code;
+    this.detail = detail;
     this.name = "GhuntProcessError";
   }
+}
+function exitDetail(code: number | null, signal: NodeJS.Signals | null): string | undefined {
+  if (signal) return `signal ${signal}`;
+  return code === null ? undefined : `exit ${code}`;
+}
+function errnoDetail(error: unknown): string | undefined {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === "string" && /^E[A-Z0-9]{1,31}$/.test(code) ? code : undefined;
 }
 export interface GhuntProcessOptions {
   readonly sessionHome: string;
@@ -85,10 +96,13 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
           child.stderr.on("data", drain);
           const timer = setTimeout(() => terminate("timeout"), timeoutMs);
           child.once("error", () => { clearTimeout(timer); reject(new GhuntProcessError("spawn_failure")); });
-          child.once("close", (code) => {
+          child.once("close", (code, signal) => {
             clearTimeout(timer);
             if (failure) reject(failure);
-            else if (code !== 0) reject(new GhuntProcessError(failureCode(tail)));
+            else if (code !== 0) {
+              const classified = failureCode(tail);
+              reject(new GhuntProcessError(classified, classified === "process_failure" ? exitDetail(code, signal) : undefined));
+            }
             else done(tail);
           });
         });
@@ -120,7 +134,7 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
       } finally { await rm(directory, { recursive: true, force: true }); }
       } catch (error) {
         if (error instanceof GhuntProcessError) throw error;
-        throw new GhuntProcessError("process_failure");
+        throw new GhuntProcessError("internal_failure", errnoDetail(error));
       }
     },
   };
