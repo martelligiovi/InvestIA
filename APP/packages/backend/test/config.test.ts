@@ -75,3 +75,19 @@ test("an optional Gravatar API key is trimmed and blank values are omitted", () 
   assert.equal(loadBackendConfig({ ...env, GRAVATAR_API_KEY: "  key-123 " }).gravatarApiKey, "key-123");
   assert.ok(!Object.prototype.hasOwnProperty.call(loadBackendConfig({ ...env, GRAVATAR_API_KEY: "   " }), "gravatarApiKey"));
 });
+
+test("GHunt is enabled only by an absolute session home and its interpreter is optional", () => {
+  const env = {
+    DATABASE_URL: "postgres://local/db",
+    NEO4J_URI: "neo4j://127.0.0.1:7687",
+    NEO4J_USERNAME: "neo4j",
+    NEO4J_PASSWORD: "development-only-password",
+  };
+  const home = process.platform === "win32" ? "C:/ghunt-home" : "/var/lib/ghunt";
+  const enabled = loadBackendConfig({ ...env, GHUNT_SESSION_HOME: ` ${home} `, GHUNT_PYTHON: "/opt/ghunt/bin/python" });
+  assert.equal(enabled.ghuntSessionHome, home);
+  assert.equal(enabled.ghuntPython, "/opt/ghunt/bin/python");
+  const disabled = loadBackendConfig({ ...env, GHUNT_SESSION_HOME: "  ", GHUNT_PYTHON: "/opt/ghunt/bin/python" });
+  assert.ok(!("ghuntSessionHome" in disabled) && !("ghuntPython" in disabled));
+  assert.throws(() => loadBackendConfig({ ...env, GHUNT_SESSION_HOME: "relative/home" }), /GHUNT_SESSION_HOME must be an absolute directory path\./);
+});

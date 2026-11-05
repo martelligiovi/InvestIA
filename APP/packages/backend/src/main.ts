@@ -5,6 +5,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import neo4j from "neo4j-driver";
 import { Pool } from "pg";
+import { createGhuntSession, type GhuntSession } from "../../adapter-ghunt/src/index.ts";
 import { createGravatarBox } from "../../adapter-gravatar/src/index.ts";
 import { createMaigretBox } from "../../adapter-maigret/src/index.ts";
 import { createUserScannerBox } from "../../adapter-user-scanner/src/index.ts";
@@ -30,6 +31,8 @@ export interface BackendStartOptions {
   readonly checkpointer?: BaseCheckpointSaver;
   /** Offline tests inject a fake; production calls NVIDIA Build only when the operator requests a report. */
   readonly nvidiaGateway?: NvidiaBuildGateway;
+  /** Offline tests inject a fake Google session; production uses GHUNT_SESSION_HOME when set. */
+  readonly ghuntSession?: GhuntSession;
   /** Temporary frontend root override for startup tests; never read from environment. */
   readonly frontendDistPath?: string;
 }
@@ -62,6 +65,10 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     await store.migrate();
     const aiSettings = new PostgresAiSettingsStore(pool);
     await aiSettings.migrate();
+    const ghuntSession = options.ghuntSession ?? (config.ghuntSessionHome === undefined ? undefined : createGhuntSession({
+      sessionHome: config.ghuntSessionHome,
+      ...(config.ghuntPython === undefined ? {} : { pythonExecutable: config.ghuntPython }),
+    }));
     const checkpointer = options.checkpointer ?? new PostgresSaver(pool);
     if (options.checkpointer === undefined) await (checkpointer as PostgresSaver).setup();
     const service = createInvestigationService({
@@ -90,6 +97,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
         gateway: options.nvidiaGateway ?? createNvidiaBuildGateway(),
         clock: () => new Date().toISOString(),
       },
+      ghunt: { session: ghuntSession },
     }, {
       frontendDistPath: options.frontendDistPath,
       onFrontendUnavailable: () => console.info(

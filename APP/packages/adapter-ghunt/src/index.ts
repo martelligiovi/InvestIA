@@ -4,6 +4,8 @@ import type { SeedBox } from "../../core/src/domain/seed-box.ts";
 import { GhuntProcessError, validGhuntEmail, type GhuntRunner } from "./process-runner.ts";
 export { createGhuntProcessRunner, ghuntArguments, GhuntProcessError, validGhuntEmail } from "./process-runner.ts";
 export type { GhuntRunner, GhuntProcessOptions, GhuntProcessErrorCode } from "./process-runner.ts";
+export { createGhuntSession, createSessionBoundRunner, GhuntSessionError, GHUNT_LOGIN_SCRIPT, validCompanionCode } from "./session.ts";
+export type { GhuntSession, GhuntSessionErrorCode, GhuntSessionOptions, GhuntSessionState, GhuntSessionStatus } from "./session.ts";
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
