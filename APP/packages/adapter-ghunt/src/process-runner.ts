@@ -44,7 +44,7 @@ export function validGhuntEmail(email: string): boolean {
   return /^(?!\.)(?!.*\.\.)[A-Z0-9_'+.\-]*[A-Z0-9_+-]@(gmail\.com|googlemail\.com)$/i.test(email);
 }
 export function ghuntArguments(email: string, report: string): string[] {
-  return ["-B", "-c", "from ghunt.ghunt import main; main()", "email", "--json", report, "--", email];
+  return ["-B", "-c", "from ghunt.cli import parse_and_run; parse_and_run()", "email", "--json", report, "--", email];
 }
 const NOT_FOUND = ["The target wasn't found.", "does not match a public Google Account."];
 const INVALID_SESSION = ["GHuntInvalidSession", "GHuntLoginError"];

@@ -96,7 +96,7 @@ test("retry rethrows a different second failure without a third attempt", async 
 test("CLI uses main(), a positional email and explicit JSON path without a shell", async () => {
   await fake(async (child, args, options) => {
     assert.deepEqual(args, ghuntArguments("ana@gmail.com", join(options.cwd, "report.json")));
-    assert.deepEqual(args.slice(0, 3), ["-B", "-c", "from ghunt.ghunt import main; main()"]);
+    assert.deepEqual(args.slice(0, 3), ["-B", "-c", "from ghunt.cli import parse_and_run; parse_and_run()"]);
     assert.deepEqual(args.slice(3), ["email", "--json", join(options.cwd, "report.json"), "--", "ana@gmail.com"]);
     assert.equal(options.shell, false);
     assert.notEqual(options.env.HOME, options.cwd);
