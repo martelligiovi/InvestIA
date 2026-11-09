@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import type { Investigation, ValidationStatus } from "@investia/core";
+import { authorizationCovers, type Investigation, type ValidationStatus } from "@investia/core";
 import { actionTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 
@@ -7,6 +7,7 @@ export interface WorkspaceDetailsProps {
   readonly investigation: Investigation;
   readonly node: WorkspaceNode | null;
   readonly disabled: boolean;
+  readonly ghuntConnected?: boolean | null;
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
   readonly onApproveGravatar?: (actionId: string, reason: string) => Promise<boolean>;
@@ -73,7 +74,7 @@ function LeafGroupDetails({ node, onSelectNode }: { readonly node: WorkspaceNode
   );
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, onValidate, onSelectNode, onApproveGravatar }: WorkspaceDetailsProps) {
+export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, onValidate, onSelectNode, onApproveGravatar }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
@@ -153,6 +154,11 @@ export function WorkspaceDetails({ investigation, node, disabled, onValidate, on
                   {node.action.unsupportedObservationCount !== undefined && <><dt>Observaciones no admitidas</dt><dd>{node.action.unsupportedObservationCount}</dd></>}
                 </dl>
                 </details>
+                {node.action.spec.catalogId === "ghunt.email.v1" && node.action.status === "queued" && <>
+                  {!authorizationCovers(investigation.authorization, node.action.spec.catalogId) && <p className="detail-note">Es necesario renovar la autorización para GHunt desde Controles del expediente.</p>}
+                  {ghuntConnected === false && <p className="detail-note"><span className="workspace-state-value">Requiere login</span> · <a href="#/ajustes?seccion=ghunt">Conectar Google</a></p>}
+                  {ghuntConnected === null && <p className="detail-note">No se pudo confirmar la conexión de Google.</p>}
+                </>}
                 {node.action.status === "claimed" && (
                   <p className="detail-warning" role="note">Acción reclamada: efecto externo incierto o aún en curso. Esta interfaz no la vuelve a ejecutar.</p>
                 )}

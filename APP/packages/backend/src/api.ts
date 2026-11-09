@@ -23,6 +23,8 @@ import type { AiSettingsRecord, AiSettingsStore } from "./ai-settings-store.ts";
 import type { InvestigationActionRunner } from "./investigation-run-graph.ts";
 import { NvidiaProviderError, type NvidiaBuildGateway } from "./nvidia-build.ts";
 import type { InvestigationProjector } from "./neo4j-investigation-projector.ts";
+import type { GhuntSession } from "../../adapter-ghunt/src/index.ts";
+import { registerGhuntRoutes } from "./ghunt-routes.ts";
 import { registerFrontend } from "./serve-frontend.ts";
 
 class HttpError extends Error {
@@ -163,6 +165,8 @@ export interface BackendAppAdapters {
   readonly projector: InvestigationProjector;
   /** NVIDIA Build settings and AI reports; their routes are absent when omitted. */
   readonly ai?: AiReportAdapters;
+  /** GHunt Google session routes; `session` is absent when GHunt is not installed. */
+  readonly ghunt?: { readonly session?: GhuntSession };
 }
 
 export interface BackendAppOptions {
@@ -344,6 +348,7 @@ export function createBackendApp(
 
   const ai = adapters.ai;
   if (ai !== undefined) registerAiRoutes(app, service, ai);
+  if (adapters.ghunt !== undefined) registerGhuntRoutes(app, adapters.ghunt.session);
 
   return app;
 }

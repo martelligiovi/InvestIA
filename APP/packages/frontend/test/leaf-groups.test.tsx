@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { findingSeedNodeId, type Investigation } from "@investia/core";
-import { buildWorkspaceGraph, findWorkspaceNode, workspaceGraphPage } from "../src/pages/workspace-model";
+import { buildWorkspaceGraph, evidenceHeading, findWorkspaceNode, workspaceGraphPage } from "../src/pages/workspace-model";
 import { InvestigationGraph } from "../src/components/InvestigationGraph";
 import { WorkspaceDetails } from "../src/components/WorkspaceDetails";
 
@@ -156,4 +156,20 @@ it("preserves every branch input edge while paging unrelated terminal evidence",
   expect(screen.getByText("Resultados 1–50 de 51")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Siguiente página de resultados" }));
   expect(screen.getByText("Resultados 51–51 de 51")).toBeInTheDocument();
+});
+
+it("stacks every GHunt data type of one action with distinct titles and a GHunt heading", () => {
+  const gmail = { kind: "email" as const, value: "ana@gmail.com" };
+  const categories = ["Google account", "Name", "Maps"];
+  const investigation: Investigation = { ...snapshot(0), emailSeeds: [gmail],
+    actions: [{ id: "ghunt", spec: { catalogId: "ghunt.email.v1", provider: "ghunt", seed: gmail },
+      status: "succeeded", queuedByCatalog: true, proposedAt: at, proposalReason: "Test" }],
+    evidence: categories.map((category, i) => ({ id: `g${i}`, actionId: "ghunt", seed: gmail, provider: "GHunt",
+      status: "registered" as const, sourceId: "ghunt:email", recordedAt: at,
+      finding: { target: gmail, upstreamStatus: "Found" as const, url: "", category, reason: "", extra: { source: "ghunt" }, media: {} } })) };
+  const graph = buildWorkspaceGraph(investigation);
+  const groups = graph.nodes.filter((node) => node.kind === "leaf-group");
+  expect(groups).toHaveLength(1);
+  expect(groups[0]?.members?.map((member) => member.title)).toEqual(["GHunt · Cuenta Google", "GHunt · Nombre", "GHunt · Maps"]);
+  expect(evidenceHeading(investigation.evidence[0]!)).toBe("Hallazgo de GHunt");
 });

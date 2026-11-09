@@ -16,6 +16,12 @@ export interface ProjectionReconciliation {
   readonly outcomes: readonly ProjectionReconciliationOutcome[];
 }
 
+export interface GhuntSettingsView {
+  readonly available: boolean;
+  readonly state: "connected" | "requires_connection" | "invalid_session";
+  readonly account: string | null;
+}
+
 export interface AiSettingsView {
   readonly apiKeyConfigured: boolean;
   /** Masked hint of the stored key; the key itself is never returned. */
@@ -159,6 +165,18 @@ export class InvestigationApiClient {
 
   async generateAiReport(id: string): Promise<string> {
     return this.requestMarkdown(`/investigations/${pathPart(id)}/report/ai`, "POST");
+  }
+
+  async getGhuntSettings(): Promise<GhuntSettingsView> {
+    return this.requestJson<GhuntSettingsView>("/settings/ghunt");
+  }
+
+  async connectGhunt(code: string): Promise<GhuntSettingsView> {
+    return this.post<GhuntSettingsView>("/settings/ghunt/session", { code });
+  }
+
+  async disconnectGhunt(): Promise<GhuntSettingsView> {
+    return this.send<GhuntSettingsView>("DELETE", "/settings/ghunt/session");
   }
 
   async getAiSettings(): Promise<AiSettingsView> {

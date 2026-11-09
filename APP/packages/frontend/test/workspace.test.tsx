@@ -599,6 +599,62 @@ describe("espacio de investigación factual", () => {
   });
 });
 
+describe("acciones GHunt", () => {
+  it.each(["requires_connection", "connected"] as const)("muestra el estado de conexión %s sin despachar", async (state) => {
+    const queued: GitHubCatalogAction = { id: "ghunt-1", spec: { catalogId: "ghunt.email.v1", provider: "ghunt", seed }, status: "queued", queuedByCatalog: true, proposedAt: createdAt, proposalReason: "Consulta Gmail" };
+    const current = snapshot({ advancementMode: "automatic", authorization: { granted: true, at: createdAt, reason: "Permiso", operator: "local-operator", catalogScopes: ["ghunt.email.v1"] }, actions: [queued] });
+    const { calls } = installFetch(async (call) => pathOf(call) === "/settings/ghunt"
+      ? json({ available: true, state, account: state === "connected" ? "test@example.test" : null })
+      : json(current));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const list = await screen.findByText(/Lista accesible de nodos/i).then((summary) => summary.closest("details")!);
+    await user.click(list.querySelector("summary")!);
+    await user.click(within(list).getByRole("button", { name: /Acción: ghunt-1.*GHunt/i }));
+    const detail = screen.getByRole("tabpanel", { name: "Detalle" });
+    expect(within(detail).getByRole("heading", { name: "GHunt" })).toBeInTheDocument();
+    if (state === "requires_connection") {
+      expect(within(detail).getAllByText(/requiere login/i).length).toBeGreaterThan(0);
+      expect(within(detail).getByRole("link", { name: "Conectar Google" })).toHaveAttribute("href", "#/ajustes?seccion=ghunt");
+      await waitFor(() => expect(document.querySelector(".workspace-state-tag")).toHaveTextContent("Esperando conexión de Google"));
+    } else {
+      expect(within(detail).queryByRole("link", { name: "Conectar Google" })).not.toBeInTheDocument();
+      await waitFor(() => expect(document.querySelector(".workspace-state-tag")).toHaveTextContent("Cola automática habilitada"));
+    }
+    expect(calls.filter((call) => pathOf(call) === "/settings/ghunt")).toHaveLength(1);
+    expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
+  });
+
+  it("en modo manual solo permite ejecutar GHunt conectado mediante el control del expediente", async () => {
+    const queued: GitHubCatalogAction = { id: "ghunt-1", spec: { catalogId: "ghunt.email.v1", provider: "ghunt", seed }, status: "queued", queuedByCatalog: true, proposedAt: createdAt, proposalReason: "Consulta Gmail" };
+    const current = snapshot({ advancementMode: "manual", authorization: { granted: true, at: createdAt, reason: "Permiso", operator: "local-operator", catalogScopes: ["ghunt.email.v1"] }, actions: [queued] });
+    const { calls } = installFetch(async (call) => pathOf(call) === "/settings/ghunt" ? json({ available: true, state: "connected", account: null }) : json(current));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    await openCaseControls(user);
+    const run = screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i });
+    await waitFor(() => expect(run).toBeEnabled());
+    expect(document.querySelector(".workspace-state-tag")).toHaveTextContent("Avance manual");
+    expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
+    expect(calls.filter((call) => pathOf(call) === "/settings/ghunt")).toHaveLength(1);
+  });
+
+  it("indica cuando la autorización previa no cubre GHunt", async () => {
+    const queued: GitHubCatalogAction = { id: "ghunt-1", spec: { catalogId: "ghunt.email.v1", provider: "ghunt", seed }, status: "queued", queuedByCatalog: true, proposedAt: createdAt, proposalReason: "Consulta Gmail" };
+    installFetch(async (call) => pathOf(call) === "/settings/ghunt" ? json({ available: true, state: "connected", account: null }) : json(snapshot({ actions: [queued], authorization: { granted: true, at: createdAt, reason: "Anterior", operator: "local-operator" } })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const list = await screen.findByText(/Lista accesible de nodos/i).then((summary) => summary.closest("details")!);
+    await user.click(list.querySelector("summary")!);
+    await user.click(within(list).getByRole("button", { name: /Acción: ghunt-1/i }));
+    expect(screen.getByText(/renovar la autorización.*GHunt/i)).toBeInTheDocument();
+    await openCaseControls(user);
+    expect(screen.getByRole("button", { name: "Otorgar autorización" })).toBeDisabled();
+    await user.type(screen.getByLabelText("Motivo de autorización"), "Autorizar GHunt");
+    expect(screen.getByRole("button", { name: "Otorgar autorización" })).toBeEnabled();
+  });
+});
+
 describe("detalle del nodo como panel desplegable", () => {
   const layout = () => document.querySelector<HTMLElement>(".workspace-layout")!;
 

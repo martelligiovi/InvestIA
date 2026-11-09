@@ -52,11 +52,21 @@ const ACTION_TITLES: Readonly<Record<string, string>> = {
   "user-scanner": "Búsqueda de email y enlaces con user-scanner",
   gravatar: "Perfil público de Gravatar",
   maigret: "Búsqueda de username con Maigret",
+  ghunt: "GHunt",
 };
 const SOURCE_TOOLS: Readonly<Record<string, string>> = {
   "user-scanner:email": "user-scanner",
   "gravatar:email": "Gravatar",
   "maigret:username": "Maigret",
+  "ghunt:email": "GHunt",
+};
+const GHUNT_CATEGORIES: Readonly<Record<string, string>> = {
+  "Google account": "Cuenta Google",
+  Name: "Nombre",
+  "Profile photo": "Foto de perfil",
+  "Cover photo": "Portada",
+  "Last profile edit": "Última edición",
+  "Google services": "Servicios de Google",
 };
 
 function usernameNodeId(value: string): string {
@@ -64,6 +74,7 @@ function usernameNodeId(value: string): string {
 }
 
 export function actionTitle(action: GitHubCatalogAction): string {
+  if (action.spec.catalogId === "ghunt.email.v1") return "GHunt";
   return ACTION_TITLES[action.spec.provider] ?? "Comprobación de registro en GitHub";
 }
 
@@ -77,7 +88,7 @@ function nodeLabel(kind: WorkspaceNodeKind, title: string, state: string): strin
   return `${noun}: ${title}. Estado: ${workspaceStatusLabel(state)}.`;
 }
 
-export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGraph {
+export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected: boolean | null = null): WorkspaceGraph {
   const nodes: WorkspaceNode[] = [];
   const actionIds = new Set(investigation.actions.map((action) => action.id));
   const seedGraph = investigationSeedGraph(investigation);
@@ -119,7 +130,7 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
 
   investigation.actions.forEach((action, index) => {
     const title = actionTitle(action);
-    const state = actionDisplayState(investigation, action);
+    const state = actionDisplayState(investigation, action, ghuntConnected);
     nodes.push({
       id: `action:${action.id}`,
       kind: "action",
@@ -145,7 +156,9 @@ export function buildWorkspaceGraph(investigation: Investigation): WorkspaceGrap
     }
     // Keep historical input references addressable when a finding already feeds an action.
     if (discovered.length > 0 && !seedHasActions(seedGraph, findingSeedNodeId(record.id))) return;
-    const title = record.finding
+    const title = record.finding && record.sourceId === "ghunt:email"
+      ? `GHunt · ${GHUNT_CATEGORIES[record.finding.category] ?? record.finding.category}`
+      : record.finding
       ? `${record.provider} · ${record.finding.target.value} · ${record.finding.upstreamStatus}`
       : `Observación de registro ${record.provider} · ${workspaceStatusLabel(record.status)}`;
     nodes.push({

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { usernameProposals, type ValidationStatus } from "@investia/core";
+import { InvestigationApiClient } from "../api/client";
 import { AsciiArt } from "../components/AsciiArt";
 import { InvestigationGraph } from "../components/InvestigationGraph";
 import { UsernameSeedsPanel } from "../components/UsernameSeedsPanel";
@@ -37,6 +38,20 @@ function LoadingWorkspace() {
 export function WorkspacePage({ id }: WorkspacePageProps) {
   const controller = useWorkspaceController(id);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [ghuntConnected, setGhuntConnected] = useState<boolean | null>(null);
+  const hasGhunt = controller.investigation?.actions.some((action) => action.spec.catalogId === "ghunt.email.v1" && action.status === "queued") === true;
+  useEffect(() => {
+    if (!hasGhunt) return;
+    let active = true;
+    const api = new InvestigationApiClient();
+    const load = () => { void api.getGhuntSettings().then(
+      (view) => { if (active) setGhuntConnected(view.available && view.state === "connected"); },
+      () => { if (active) setGhuntConnected(null); },
+    ); };
+    load();
+    window.addEventListener("focus", load);
+    return () => { active = false; window.removeEventListener("focus", load); };
+  }, [hasGhunt]);
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("graph");
   const [detailOpen, setDetailOpen] = useState(false);
   const [authorizationReason, setAuthorizationReason] = useState("");
@@ -61,7 +76,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     if (element !== null && controller.reportError !== "") revealElement(element);
   }, [controller.reportError]);
   const investigation = controller.investigation;
-  const graph = useMemo(() => investigation === null ? null : buildWorkspaceGraph(investigation), [investigation]);
+  const graph = useMemo(() => investigation === null ? null : buildWorkspaceGraph(investigation, ghuntConnected), [investigation, ghuntConnected]);
 
   useEffect(() => {
     // Header disclosures behave as popovers: interacting elsewhere or pressing Escape dismisses them.
@@ -121,7 +136,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const automatic = investigation.advancementMode === "automatic";
   const queuedActions = investigation.actions.filter((action) => action.status === "queued" && (action.queuedByCatalog === true || action.approval !== undefined));
   const claimedActions = investigation.actions.filter((action) => action.status === "claimed");
-  const dispatchEligible = !automatic && !investigation.paused && authorizationGranted && queuedActions.length > 0 && !controller.stale && !controller.busy;
+  const dispatchEligible = !automatic && !investigation.paused && authorizationGranted && queuedActions.some((action) => action.spec.catalogId !== "ghunt.email.v1" || ghuntConnected === true) && !controller.stale && !controller.busy;
   const controlsDisabled = controller.busy || controller.stale;
   const usernameProposalCount = usernameProposals(investigation).length;
   const investigationPaused = investigation.paused;
@@ -216,7 +231,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             <div className="workspace-title-row">
               <h1 id="workspace-title">{investigation.name ?? "Investigación"}</h1>
               <span className={`workspace-state-tag status-chip${investigation.paused ? " is-paused status-chip--muted" : ""}`}>
-                {controller.stale ? "Estado desactualizado" : workspaceHeadline(investigation)}
+                {controller.stale ? "Estado desactualizado" : workspaceHeadline(investigation, ghuntConnected)}
               </span>
             </div>
           </div>
@@ -230,7 +245,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
                 {controller.busy ? "Actualizando…" : "Actualizar expediente"}
               </button>
               <p>{investigation.authorization === undefined ? "Sin autorización registrada" : authorizationGranted ? "Autorización otorgada" : investigation.authorization.granted ? "Autorización previa: requiere consentimiento para las herramientas nuevas del catálogo" : "Autorización revocada"}</p>
-              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, la consulta del perfil público de Gravatar y la búsqueda de usernames aceptados con Maigret en unos 500 sitios. Revocar o pausar no cancela una ejecución en curso.</p>
+              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, la consulta del perfil público de Gravatar, la búsqueda de usernames aceptados con Maigret en unos 500 sitios y GHunt para correos Gmail. Revocar o pausar no cancela una ejecución en curso.</p>
               <label className="form-field">
                 <span>Motivo de autorización</span>
                 <textarea value={authorizationReason} maxLength={2_000} onChange={(event) => { setAuthorizationReason(event.currentTarget.value); setFormError(""); }} disabled={controlsDisabled} rows={2} />
@@ -358,6 +373,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             node={selectedNode}
             onSelectNode={(id) => { const node = findWorkspaceNode(graph, id); if (node) selectNode(node); }}
             disabled={controlsDisabled}
+            ghuntConnected={ghuntConnected}
             onValidate={validate}
             onApproveGravatar={(actionId, reason) => controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason))}
           />
