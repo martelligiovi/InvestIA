@@ -111,7 +111,7 @@ test("an upstream session rejection marks the session invalid until reconnection
   });
 });
 
-test("network timeout after a retry leaves the connected session unchanged", async () => {
+test("network timeout after retries leaves the connected session unchanged", async () => {
   let scans = 0;
   await withSpawn(async (spawned) => {
     if (spawned.args[2] === GHUNT_LOGIN_SCRIPT) return succeed(spawned);
@@ -121,9 +121,9 @@ test("network timeout after a retry leaves the connected session unchanged", asy
   }, async (home) => {
     const session = createGhuntSession({ sessionHome: home });
     await session.connect(code);
-    const runner = createSessionBoundRunner(session, createGhuntProcessRunner({ sessionHome: home, outputDirectory: tmpdir(), retryDelayMs: 0 }));
+    const runner = createSessionBoundRunner(session, createGhuntProcessRunner({ sessionHome: home, outputDirectory: tmpdir(), retryDelaysMs: [0, 0] }));
     await assert.rejects(runner.run("ana@gmail.com"), (error: unknown) => error instanceof GhuntProcessError && error.code === "network_timeout");
-    assert.equal(scans, 2);
+    assert.equal(scans, 3);
     assert.deepEqual(await session.status(), { state: "connected", account: "owner@gmail.com" });
   });
 });

@@ -32,8 +32,8 @@ export interface GhuntProcessOptions {
   readonly sessionHome: string;
   readonly pythonExecutable?: string;
   readonly timeoutMs?: number;
-  /** Delay before the single retry for a transient network failure (default 30 seconds). */
-  readonly retryDelayMs?: number;
+  /** Delays before up to two network retries (default 60 and 120 seconds). */
+  readonly retryDelaysMs?: readonly number[];
   readonly maxOutputBytes?: number;
   /** Existing directory for ephemeral reports, outside the credential home. */
   readonly outputDirectory?: string;
@@ -66,9 +66,10 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
   if (inside(home, root)) throw new GhuntProcessError("invalid_session_home");
   const timeoutMs = options.timeoutMs ?? 15 * 60_000;
   const maxBytes = options.maxOutputBytes ?? 16 * 1024 * 1024;
-  const retryDelayMs = options.retryDelayMs ?? 30_000;
+  const delays = options.retryDelaysMs ?? [60_000, 120_000];
   for (const value of [timeoutMs, maxBytes]) if (!Number.isSafeInteger(value) || value <= 0 || value > 0x7fffffff) throw new RangeError("Invalid GHunt limit");
-  if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 0 || retryDelayMs > 0x7fffffff) throw new RangeError("Invalid GHunt retry delay");
+  if (!Array.isArray(delays) || delays.length > 2 || Array.from(delays).some((value) => !Number.isSafeInteger(value) || value < 0 || value > 0x7fffffff)) throw new RangeError("Invalid GHunt retry delay");
+  const retryDelaysMs = [...delays];
   const runOnce = async (email: string): Promise<string> => {
       if (!validGhuntEmail(email)) throw new Error("A valid Gmail email seed is required");
       try {
@@ -157,11 +158,12 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
   };
   return {
     async run(email) {
-      try { return await runOnce(email); }
-      catch (error) {
-        if (!(error instanceof GhuntProcessError) || error.code !== "network_timeout") throw error;
-        await new Promise<void>((done) => setTimeout(done, retryDelayMs));
-        return runOnce(email);
+      for (let attempt = 0; ; attempt++) {
+        try { return await runOnce(email); }
+        catch (error) {
+          if (!(error instanceof GhuntProcessError) || error.code !== "network_timeout" || attempt >= retryDelaysMs.length) throw error;
+          await new Promise<void>((done) => setTimeout(done, retryDelaysMs[attempt]));
+        }
       }
     },
   };
