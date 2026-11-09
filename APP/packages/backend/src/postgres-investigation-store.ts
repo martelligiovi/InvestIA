@@ -5,6 +5,7 @@ import {
   findingSeedNodeId,
   gravatarFindingTargetsEmail,
   isScannerFinding,
+  isGooglePhotoUrl,
   isScopedCatalogId,
   USERNAME_SEED_PATTERN,
   normalizeInvestigationName,
@@ -149,6 +150,10 @@ function isUsernameSeed(value: unknown): boolean {
   return isRecord(value) && value.kind === "username" && typeof value.value === "string" && USERNAME_SEED_PATTERN.test(value.value);
 }
 
+function isPhotoSeed(value: unknown): boolean {
+  return isRecord(value) && value.kind === "photo" && isGooglePhotoUrl(value.value);
+}
+
 function isEmailSeed(value: unknown): boolean {
   return isRecord(value) && value.kind === "email" && isNonEmptyString(value.value);
 }
@@ -175,6 +180,7 @@ const ACTION_SPECS: Readonly<Record<string, { readonly provider: string; readonl
   "gravatar.email.v1": { provider: "gravatar", seed: isEmailSeed },
   "maigret.username.v1": { provider: "maigret", seed: isUsernameSeed },
   "ghunt.email.v1": { provider: "ghunt", seed: isEmailSeed },
+  "facecheck.photo.v1": { provider: "facecheck", seed: isPhotoSeed },
 };
 
 function isStoredAction(value: unknown): boolean {
@@ -208,7 +214,7 @@ function isStoredEvidence(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (value.finding === undefined) return value.seed === undefined || isEmailSeed(value.seed);
   return isScannerFinding(value.finding) && isNonEmptyString(value.id) && isNonEmptyString(value.actionId) &&
-    (isEmailSeed(value.seed) || isUsernameSeed(value.seed)) &&
+    (isEmailSeed(value.seed) || isUsernameSeed(value.seed) || isPhotoSeed(value.seed)) &&
     isNonEmptyString(value.provider) && isNonEmptyString(value.sourceId) && isTimestamp(value.recordedAt) &&
     ["registered", "not_registered", "rate_limited", "error", "unknown"].includes(String(value.status));
 }

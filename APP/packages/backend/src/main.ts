@@ -6,6 +6,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import neo4j from "neo4j-driver";
 import { Pool } from "pg";
+import { createFacecheckBox } from "../../adapter-facecheck/src/index.ts";
 import { createGhuntBox, createGhuntProcessRunner, createGhuntSession, createSessionBoundRunner, type GhuntSession } from "../../adapter-ghunt/src/index.ts";
 import { createGravatarBox } from "../../adapter-gravatar/src/index.ts";
 import { createMaigretBox } from "../../adapter-maigret/src/index.ts";
@@ -16,8 +17,10 @@ import {
   createInvestigationService,
   createCatalogExecutor,
   type InvestigationExecutor,
+  type ScopedCatalogId,
 } from "@investia/core";
 import { PostgresAiSettingsStore } from "./ai-settings-store.ts";
+import { PostgresFacecheckSettingsStore } from "./facecheck-settings-store.ts";
 import { createBackendApp } from "./api.ts";
 import { AutomaticInvestigationRunner } from "./automatic-investigation-runner.ts";
 import { isAllowedBackendHost, loadBackendConfig, type BackendConfig } from "./config.ts";
@@ -38,6 +41,14 @@ export interface BackendStartOptions {
   readonly ghuntSession?: GhuntSession;
   /** Temporary frontend root override for startup tests; never read from environment. */
   readonly frontendDistPath?: string;
+}
+
+/** Tools whose queued actions wait: GHunt until a Google session is connected, FaceCheck until a token is saved. */
+export function deferredTools(readiness: { readonly ghuntConnected: boolean; readonly facecheckTokenConfigured: boolean }): ScopedCatalogId[] {
+  return [
+    ...(readiness.ghuntConnected ? [] : ["ghunt.email.v1" as const]),
+    ...(readiness.facecheckTokenConfigured ? [] : ["facecheck.photo.v1" as const]),
+  ];
 }
 
 export async function startBackend(config: BackendConfig, options: BackendStartOptions = {}) {
@@ -68,6 +79,8 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     await store.migrate();
     const aiSettings = new PostgresAiSettingsStore(pool);
     await aiSettings.migrate();
+    const facecheckSettings = new PostgresFacecheckSettingsStore(pool);
+    await facecheckSettings.migrate();
     const ghuntSession = options.ghuntSession ?? (config.ghuntSessionHome === undefined ? undefined : createGhuntSession({
       sessionHome: config.ghuntSessionHome,
       ...(config.ghuntPython === undefined ? {} : { pythonExecutable: config.ghuntPython }),
@@ -87,11 +100,19 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
         "user-scanner.email.v1": createUserScannerBox(),
         "gravatar.email.v1": createGravatarBox({ apiKey: config.gravatarApiKey }),
         "maigret.username.v1": createMaigretBox(),
+        "facecheck.photo.v1": createFacecheckBox({ settings: async () => {
+          const { token, testingMode } = await facecheckSettings.load();
+          return token === undefined ? undefined : { token, testingMode };
+        } }),
         ...(ghuntBox === undefined ? {} : { "ghunt.email.v1": ghuntBox }),
       }),
       seedCatalog: SCOPED_CATALOG_IDS.filter((catalogId) => CATALOG_INPUT_KINDS[catalogId] === "email" &&
         (catalogId !== "ghunt.email.v1" || ghuntAvailable)),
-      deferredCatalogIds: async () => ghuntAvailable && (await ghuntSession!.status()).state === "connected" ? [] : ["ghunt.email.v1"],
+      photoCatalog: ["facecheck.photo.v1"],
+      deferredCatalogIds: async () => deferredTools({
+        ghuntConnected: ghuntAvailable && (await ghuntSession!.status()).state === "connected",
+        facecheckTokenConfigured: (await facecheckSettings.load()).token !== undefined,
+      }),
       clock: () => new Date().toISOString(),
       createId: (kind) => `${kind}-${randomUUID()}`,
     });
@@ -112,6 +133,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
         clock: () => new Date().toISOString(),
       },
       ghunt: { session: ghuntSession },
+      facecheck: facecheckSettings,
     }, {
       frontendDistPath: options.frontendDistPath,
       onFrontendUnavailable: () => console.info(

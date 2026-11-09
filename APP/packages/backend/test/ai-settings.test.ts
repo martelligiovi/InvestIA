@@ -90,6 +90,74 @@ const emptyView = {
   defaults: DEFAULT_AI_REPORT_SETTINGS,
 };
 
+test("FaceCheck settings routes keep secrets, default to testing and enforce local origin", async (t) => {
+  let record = { token: undefined as string | undefined, testingMode: true };
+  const facecheck = {
+    async load() { return { ...record }; },
+    async update(update: { token?: string; testingMode?: boolean }) { record = { ...record, ...update }; },
+    async clearToken() { record = { ...record, token: undefined }; },
+  };
+  const app = createBackendApp({} as InvestigationService, { actionRunner: { run: async () => undefined }, projector: { project: async () => ({ revision: 0, status: "applied" }) }, facecheck }, { frontendDistPath: "missing-frontend-dist" });
+  t.after(() => app.close());
+  const headers = { host: "127.0.0.1:4317", origin: "http://127.0.0.1:4317" };
+  const request = (method: "GET" | "PUT" | "DELETE", url: string, payload?: Record<string, unknown>) => app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) });
+  assert.deepEqual((await request("GET", "/settings/facecheck")).json(), { tokenConfigured: false, tokenHint: null, testingMode: true });
+  const saved = await request("PUT", "/settings/facecheck", { token: `  ${KEY}  `, testingMode: false });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json(), { tokenConfigured: true, tokenHint: "nvapi-…1234", testingMode: false });
+  assert.deepEqual(record, { token: KEY, testingMode: false });
+  for (const payload of [{}, { token: " " }, { token: "x".repeat(513) }, { token: "a b" }, { testingMode: "true" }, { token: "new", extra: true }]) {
+    const response = await request("PUT", "/settings/facecheck", payload);
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(response.json(), { error: "INVALID_REQUEST", message: "Invalid request" });
+    assert.deepEqual(record, { token: KEY, testingMode: false });
+  }
+  const cross = await app.inject({ method: "PUT", url: "/settings/facecheck", headers: { host: "127.0.0.1:4317", origin: "https://evil.example" }, payload: { token: "stolen" } });
+  assert.equal(cross.statusCode, 403);
+  assert.deepEqual(record, { token: KEY, testingMode: false });
+  assert.deepEqual((await request("DELETE", "/settings/facecheck/token")).json(), { tokenConfigured: false, tokenHint: null, testingMode: false });
+});
+
+test("FaceCheck settings persist defaults, token, mode, and token deletion", async () => {
+  const { PostgresFacecheckSettingsStore } = await import("../src/facecheck-settings-store.ts");
+  class Pool implements PgPoolLike {
+    row: { token: string | null; testing_mode: boolean } | undefined;
+    statements: string[] = [];
+    async query<T extends Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<PgQueryResult<T>> {
+      this.statements.push(sql);
+      if (/^\s*SELECT token/i.test(sql)) return { rows: (this.row === undefined ? [] : [this.row]) as unknown as T[], rowCount: this.row === undefined ? 0 : 1 };
+      if (/^\s*INSERT INTO facecheck_settings/i.test(sql)) {
+        this.row = { token: values[0] === undefined ? this.row?.token ?? null : values[0] as string | null, testing_mode: values[1] === undefined ? this.row?.testing_mode ?? true : values[1] as boolean };
+      }
+      return { rows: [], rowCount: 1 };
+    }
+    async connect(): Promise<PgClientLike> { return { query: (sql, values) => this.query(sql, values), release() {} }; }
+  }
+  const pool = new Pool();
+  const store = new PostgresFacecheckSettingsStore(pool);
+  await store.migrate();
+  assert.ok(pool.statements.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS facecheck_settings")));
+  assert.deepEqual(await store.load(), { token: undefined, testingMode: true });
+  await store.update({ token: KEY });
+  await store.update({ testingMode: false });
+  assert.deepEqual(await store.load(), { token: KEY, testingMode: false });
+  await store.clearToken();
+  assert.deepEqual(await store.load(), { token: undefined, testingMode: false });
+});
+
+test("public investigation returns FaceCheck candidate data and masks failures", async (t) => {
+  const original = fixture();
+  const photo = { kind: "photo" as const, value: "https://lh3.googleusercontent.com/photo" };
+  const finding = { target: photo, upstreamStatus: "Found" as const, url: "https://example.org/profile", category: "Face match", reason: "", extra: { source: "facecheck", score: 91, testing_mode: true }, media: { thumbnail: "data:image/webp;base64,YWJj" } };
+  const service = { async loadInvestigation() { return { ...original, evidence: [{ id: "candidate", actionId: "face", seed: photo, provider: "FaceCheck", status: "registered" as const, sourceId: "facecheck:photo", recordedAt: NOW, finding }] }; } } as unknown as InvestigationService;
+  const app = createBackendApp(service, { actionRunner: { run: async () => undefined }, projector: { project: async () => ({ revision: 0, status: "applied" }) } }, { frontendDistPath: "missing-frontend-dist" });
+  t.after(() => app.close());
+  const response = await app.inject({ method: "GET", url: "/investigations/1" });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().evidence[0].finding, finding);
+  assert.equal(response.json().actions[0].failure, "Execution failed.");
+});
+
 test("settings start unconfigured with editable defaults", async (t) => {
   const { app } = harness();
   t.after(() => app.close());
