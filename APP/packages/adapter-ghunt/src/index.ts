@@ -13,11 +13,14 @@ function record(value: unknown): Record<string, unknown> | undefined {
 function text(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() && value.length <= 1024 ? value.trim() : undefined;
 }
+/** Google-hosted HTTPS images only, so report values cannot smuggle arbitrary URLs into findings. */
+const IMAGE_HOSTS = [".googleusercontent.com", ".ggpht.com"];
 function safeUrl(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
+  if (typeof value !== "string" || value.includes("?") || value.includes("#")) return undefined;
   try {
     const url = new URL(value);
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) return undefined;
+    if (!IMAGE_HOSTS.some((host) => url.hostname.endsWith(host))) return undefined;
     return url.href;
   } catch { return undefined; }
 }
@@ -27,7 +30,7 @@ function photo(value: unknown): string | undefined {
 }
 function names(value: unknown): string | undefined {
   if (!Array.isArray(value)) return undefined;
-  const items = value.slice(0, 50).map((item) => text(item)).filter((item): item is string => item !== undefined && item.length <= 64);
+  const items = value.slice(0, 50).map((item) => plain(item)).filter((item): item is string => item !== undefined && item.length <= 64);
   return items.length > 0 ? items.join(", ") : undefined;
 }
 /** Short free text from the report: never an email address, control characters or long blobs. */
@@ -60,8 +63,8 @@ function leaves(container: Record<string, unknown>, profile: Record<string, unkn
   const dynamite = record(record(profile.extendedData)?.dynamiteData);
   const gplus = record(record(profile.extendedData)?.gplusData);
   const result: Leaf[] = [{ category: "Google account", extra: defined({
-    person_id: personId, user_types: names(own("profileInfos")?.userTypes), entity_type: text(dynamite?.entityType),
-    customer_id: text(dynamite?.customerId), enterprise_user: typeof gplus?.isEntrepriseUser === "boolean" ? gplus.isEntrepriseUser : undefined,
+    person_id: personId, user_types: names(own("profileInfos")?.userTypes), entity_type: plain(dynamite?.entityType),
+    customer_id: plain(dynamite?.customerId), enterprise_user: typeof gplus?.isEntrepriseUser === "boolean" ? gplus.isEntrepriseUser : undefined,
   }) }];
   const name = own("names");
   const fullname = plain(name?.fullname);
@@ -83,15 +86,16 @@ function leaves(container: Record<string, unknown>, profile: Record<string, unkn
   const calendar = record(container.calendar);
   if (calendar) {
     const details = record(calendar.details);
-    result.push({ category: "Calendar", extra: defined({ summary: plain(details?.summary), time_zone: plain(details?.time_zone), events: count(record(calendar.events)?.items) }) });
+    const extra = defined({ summary: plain(details?.summary), time_zone: plain(details?.time_zone), events: count(record(calendar.events)?.items) });
+    if (Object.keys(extra).length > 0) result.push({ category: "Calendar", extra });
   }
   const games = record(container.play_games);
   const player = record(games?.profile);
   if (player) {
     const playerAvatar = safeUrl(player.avatar_url);
-    result.push({ category: "Play Games", extra: defined({ display_name: plain(player.display_name), gamertag: plain(player.gamertag),
-      title: plain(player.title), played_games: count(games?.played_games), achievements: count(games?.achievements) }),
-    media: playerAvatar ? { avatar: playerAvatar } : {} });
+    const extra = defined({ display_name: plain(player.display_name), gamertag: plain(player.gamertag),
+      title: plain(player.title), played_games: count(games?.played_games), achievements: count(games?.achievements) });
+    if (Object.keys(extra).length > 0 || playerAvatar) result.push({ category: "Play Games", extra, media: playerAvatar ? { avatar: playerAvatar } : {} });
   }
   return result;
 }

@@ -6,8 +6,8 @@ import { createGhuntBox, GhuntProcessError } from "../src/index.ts";
 const email = { kind: "email", value: "Ana@GMAIL.COM" } as const;
 const profile = { PROFILE_CONTAINER: { profile: {
   personId: "123", names: { PROFILE: { fullname: "Ana Example", firstName: "Ana", lastName: "Example", token: "secret" } },
-  profilePhotos: { PROFILE: { url: "https://images.example/photo", isDefault: false, flathash: "secret" } },
-  coverPhotos: { PROFILE: { url: "https://images.example/cover", isDefault: false } },
+  profilePhotos: { PROFILE: { url: "https://lh3.googleusercontent.com/photo", isDefault: false, flathash: "secret" } },
+  coverPhotos: { PROFILE: { url: "https://lh3.googleusercontent.com/cover", isDefault: false } },
   sourceIds: { PROFILE: { lastUpdated: "2024/01/02 03:04:05 (UTC)", secret: "secret" } },
   emails: { PROFILE: { value: "secret@example.test" } },
   profileInfos: { PROFILE: { userTypes: ["GOOGLE_USER", "GOOGLE_ONE_USER"] } },
@@ -15,7 +15,7 @@ const profile = { PROFILE_CONTAINER: { profile: {
   extendedData: { dynamiteData: { entityType: "PERSON", customerId: "C123", presence: "secret" }, gplusData: { isEntrepriseUser: false, contentRestriction: "secret" } },
   access_token: "secret", private: { value: "secret" },
 }, play_games: {
-  profile: { display_name: "AnaPlays", id: "", avatar_url: "https://images.example/player", gamertag: "ana_g", title: "Rookie", banner_url_portrait: "secret" },
+  profile: { display_name: "AnaPlays", id: "", avatar_url: "https://lh3.googleusercontent.com/player", gamertag: "ana_g", title: "Rookie", banner_url_portrait: "secret" },
   played_games: [{ secret: "secret" }, { secret: "secret" }], achievements: [{ secret: "secret" }],
 }, maps: { photos: null, reviews: null, stats: { Reviews: 12, Ratings: 3, Photos: 30, Secret: "secret" } },
 calendar: { details: { id: "secret@example.test", summary: "Ana's calendar", time_zone: "Europe/Madrid" },
@@ -34,13 +34,13 @@ test("each data type of a found profile becomes its own allowlisted finding", as
   assert.deepEqual(await box.execute(email), [
     leaf("Google account", { person_id: "123", user_types: "GOOGLE_USER, GOOGLE_ONE_USER", entity_type: "PERSON", customer_id: "C123", enterprise_user: false }),
     leaf("Name", { fullname: "Ana Example", first_name: "Ana", last_name: "Example" }),
-    leaf("Profile photo", {}, { avatar: "https://images.example/photo" }, "https://images.example/photo"),
-    leaf("Cover photo", {}, { cover: "https://images.example/cover" }, "https://images.example/cover"),
+    leaf("Profile photo", {}, { avatar: "https://lh3.googleusercontent.com/photo" }, "https://lh3.googleusercontent.com/photo"),
+    leaf("Cover photo", {}, { cover: "https://lh3.googleusercontent.com/cover" }, "https://lh3.googleusercontent.com/cover"),
     leaf("Last profile edit", { last_updated: "2024/01/02 03:04:05 (UTC)" }),
     leaf("Google services", { services: "Maps, YouTube" }),
     leaf("Maps", { reviews: 12, ratings: 3, photos: 30 }, {}, "https://www.google.com/maps/contrib/123"),
     leaf("Calendar", { summary: "Ana's calendar", time_zone: "Europe/Madrid", events: 3 }),
-    leaf("Play Games", { display_name: "AnaPlays", gamertag: "ana_g", title: "Rookie", played_games: 2, achievements: 1 }, { avatar: "https://images.example/player" }),
+    leaf("Play Games", { display_name: "AnaPlays", gamertag: "ana_g", title: "Rookie", played_games: 2, achievements: 1 }, { avatar: "https://lh3.googleusercontent.com/player" }),
   ]);
   assert.deepEqual(seen, [email.value]);
 });
@@ -116,4 +116,32 @@ test("impossible edit dates and email-like calendar summaries do not reach findi
   const box = createGhuntBox({ async run() { return JSON.stringify(report); } });
   const results = await box.execute(email);
   assert.deepEqual(results, [leaf("Google account", { person_id: "123" }), leaf("Calendar", { time_zone: "UTC" })]);
+});
+
+test("empty calendar and Play Games sections add no findings", async () => {
+  const report = { PROFILE_CONTAINER: { profile: { personId: "123" }, calendar: {}, play_games: { profile: {} } } };
+  const box = createGhuntBox({ async run() { return JSON.stringify(report); } });
+  assert.deepEqual(await box.execute(email), [leaf("Google account", { person_id: "123" })]);
+});
+
+test("account and service lists drop emails and control characters", async () => {
+  const report = { PROFILE_CONTAINER: { profile: { personId: "123",
+    profileInfos: { PROFILE: { userTypes: ["private@example.test", "bad\nvalue", "GOOGLE_USER"] } },
+    inAppReachability: { PROFILE: { apps: ["private@example.test", "bad\nvalue"] } },
+    extendedData: { dynamiteData: { entityType: "private@example.test", customerId: "token\nsecret" } },
+  } } };
+  const box = createGhuntBox({ async run() { return JSON.stringify(report); } });
+  assert.deepEqual(await box.execute(email), [leaf("Google account", { person_id: "123", user_types: "GOOGLE_USER" })]);
+});
+
+test("photos are kept only from Google image hosts without query or fragment markers", async () => {
+  for (const url of ["https://example.test/oauth2_4/secret-token", "https://lh3.googleusercontent.com/a?", "https://lh3.googleusercontent.com/a#", "https://googleusercontent.com.evil.test/a"]) {
+    const report = { PROFILE_CONTAINER: { profile: { personId: "123",
+      profilePhotos: { PROFILE: { isDefault: false, url } }, coverPhotos: { PROFILE: { isDefault: false, url } } },
+      play_games: { profile: { display_name: "Player", avatar_url: url } } } };
+    const box = createGhuntBox({ async run() { return JSON.stringify(report); } });
+    const results = await box.execute(email);
+    assert.deepEqual(results.map((result) => result.finding.category), ["Google account", "Play Games"]);
+    assert.ok(!JSON.stringify(results).includes(url));
+  }
 });
