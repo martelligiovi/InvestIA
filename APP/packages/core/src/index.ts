@@ -1,4 +1,4 @@
-export { USERNAME_SEED_PATTERN, type EmailSeed, type Seed, type UsernameSeed } from "./domain/seed.ts";
+export { isGooglePhotoUrl, USERNAME_SEED_PATTERN, type EmailSeed, type PhotoSeed, type Seed, type UsernameSeed } from "./domain/seed.ts";
 export { isScannerFinding } from "./domain/observation.ts";
 export type {
   ScannerFinding,
