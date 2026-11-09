@@ -53,12 +53,14 @@ const ACTION_TITLES: Readonly<Record<string, string>> = {
   gravatar: "Perfil público de Gravatar",
   maigret: "Búsqueda de username con Maigret",
   ghunt: "GHunt",
+  facecheck: "Búsqueda facial con FaceCheck",
 };
 const SOURCE_TOOLS: Readonly<Record<string, string>> = {
   "user-scanner:email": "user-scanner",
   "gravatar:email": "Gravatar",
   "maigret:username": "Maigret",
   "ghunt:email": "GHunt",
+  "facecheck:photo": "FaceCheck",
 };
 const GHUNT_CATEGORIES: Readonly<Record<string, string>> = {
   "Google account": "Cuenta Google",
@@ -78,8 +80,13 @@ export function actionTitle(action: GitHubCatalogAction): string {
   return ACTION_TITLES[action.spec.provider] ?? "Comprobación de registro en GitHub";
 }
 
+function hostOf(value: string): string {
+  try { return new URL(value).hostname; } catch { return "sin enlace"; }
+}
+
 export function evidenceHeading(evidence: EvidenceRecord): string {
   if (evidence.finding === undefined) return "Observación de registro";
+  if (evidence.sourceId === "facecheck:photo") return "Candidato de FaceCheck";
   return `Hallazgo de ${SOURCE_TOOLS[evidence.sourceId] ?? "user-scanner"}`;
 }
 
@@ -158,6 +165,8 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
     if (discovered.length > 0 && !seedHasActions(seedGraph, findingSeedNodeId(record.id))) return;
     const title = record.finding && record.sourceId === "ghunt:email"
       ? `GHunt · ${GHUNT_CATEGORIES[record.finding.category] ?? record.finding.category}`
+      : record.finding && record.sourceId === "facecheck:photo"
+      ? `FaceCheck · ${String(record.finding.extra.score ?? "?")} · ${hostOf(record.finding.url)}`
       : record.finding
       ? `${record.provider} · ${record.finding.target.value} · ${record.finding.upstreamStatus}`
       : `Observación de registro ${record.provider} · ${workspaceStatusLabel(record.status)}`;

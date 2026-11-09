@@ -33,6 +33,14 @@ function TechnicalValue({ label, value }: { readonly label: string; readonly val
   );
 }
 
+/** Only inline base64 images become an image source; any other value is shown as text, never loaded. */
+const INLINE_IMAGE = /^data:image\/(?:webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/;
+function MediaValue({ value }: { readonly value: string }) {
+  if (INLINE_IMAGE.test(value)) return <img className="face-thumbnail" src={value} alt="Cara encontrada por FaceCheck" />;
+  if (value.startsWith("data:")) return <span>imagen embebida no admitida</span>;
+  return <span>{value}</span>;
+}
+
 function SafeLink({ value }: { readonly value: string }) {
   try {
     const url = new URL(value);
@@ -218,7 +226,7 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                   <dt>Semilla observada</dt><dd className="break-value">{node.evidence.seed.value}</dd>
                   <dt>Registrada</dt><dd>{formatDate(node.evidence.recordedAt)}</dd>
                   {node.evidence.finding && <>
-                    <dt>Tipo de objetivo descubierto</dt><dd>{node.evidence.finding.target.kind === "email" ? "Email" : "Usuario"}</dd>
+                    <dt>Tipo de objetivo descubierto</dt><dd>{node.evidence.finding.target.kind === "email" ? "Email" : node.evidence.finding.target.kind === "photo" ? "Foto" : "Usuario"}</dd>
                     <dt>Objetivo observado</dt><dd className="break-value">{node.evidence.finding.target.value}</dd>
                     <dt>Estado original de la herramienta</dt><dd>{node.evidence.finding.upstreamStatus}</dd>
                     <dt>Enlace</dt><dd className="break-value"><SafeLink value={node.evidence.finding.url} /></dd>
@@ -230,8 +238,12 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                   <h4>Metadatos y procedencia</h4>
                   <dl className="fact-list">{Object.entries(node.evidence.finding.extra).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value">{String(value)}</dd></Fragment>)}</dl>
                   <h4>Referencias multimedia</h4>
-                  <dl className="fact-list">{Object.entries(node.evidence.finding.media).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value">{value}</dd></Fragment>)}</dl>
+                  <dl className="fact-list">{Object.entries(node.evidence.finding.media).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value"><MediaValue value={value} /></dd></Fragment>)}</dl>
                 </>}
+                {node.evidence.sourceId === "facecheck:photo" && <p className="detail-warning">
+                  Este resultado es un candidato: FaceCheck encontró una cara parecida a la foto de perfil, no necesariamente la misma persona. Necesita que confirmes o rechaces si es esa persona.
+                  {node.evidence.finding?.extra.testing_mode === true && " Se encontró en modo prueba (solo 100.000 caras), así que es poco fiable."}
+                </p>}
                 <p className="detail-warning">La herramienta reportó un hallazgo positivo para el objetivo observado. No confirma identidad ni titularidad y puede contener errores. La confianza informada por la herramienta no es una validación humana.</p>
               </section>
               <section className="detail-control" aria-labelledby="validation-heading">

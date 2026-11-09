@@ -294,6 +294,7 @@
 .workspace-state-value { display: inline-block; padding: 2px 8px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--ink-soft); font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
 
 .detail-warning, .detail-note { margin: var(--space-3) 0 0; padding: var(--space-3); border-left: 2px solid var(--red); background: var(--red-wash); font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+.face-thumbnail { display: block; width: 128px; height: 128px; object-fit: cover; border-radius: var(--radius); border: 1px solid var(--line); }
 .detail-note { border-left-color: var(--line-strong); background: var(--linen); color: var(--ink-soft); }
 
 .detail-control .form-field { margin: var(--space-3) 0; }
