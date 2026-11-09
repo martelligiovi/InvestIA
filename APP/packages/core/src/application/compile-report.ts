@@ -1,5 +1,5 @@
 import { DEFAULT_INVESTIGATION_NAME, type Investigation } from "../domain/investigation.ts";
-import type { EmailSeed, UsernameSeed } from "../domain/seed.ts";
+import type { EmailSeed, PhotoSeed, UsernameSeed } from "../domain/seed.ts";
 import { usernameProposals } from "../domain/username-proposals.ts";
 
 function markdownText(value: string): string {
@@ -11,7 +11,7 @@ function markdownText(value: string): string {
     .replace(/[\\`*_{}\[\]()#+.!|~>-]/g, (character) => `\\${character}`);
 }
 
-function seedText(seed: EmailSeed | UsernameSeed): string {
+function seedText(seed: EmailSeed | UsernameSeed | PhotoSeed): string {
   return markdownText(`${seed.kind}: ${seed.value}`);
 }
 
@@ -58,7 +58,8 @@ export function compileInvestigationReport(investigation: Investigation): string
       markdownText(evidence.finding?.category ?? ""),
       markdownText(evidence.finding?.reason ?? ""),
       markdownText(JSON.stringify(evidence.finding?.extra ?? {})),
-      markdownText(JSON.stringify(evidence.finding?.media ?? {})),
+      markdownText(JSON.stringify(Object.fromEntries(Object.entries(evidence.finding?.media ?? {})
+        .map(([key, value]) => [key, value.startsWith("data:") ? "embedded image" : value])))),
     ]),
   ];
   const usernameRows: string[][] = [

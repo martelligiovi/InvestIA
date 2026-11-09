@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   authorizationCovers,
+  buildAiReportMessages,
   compileInvestigationReport,
   createInvestigationService,
   createSeedBoxExecutor,
@@ -913,4 +914,168 @@ test("SeedBox executor delegates through the existing explicit execution gate", 
   assert.equal(calls, 1);
   assert.equal((await service.loadInvestigation(investigationId))?.evidence.length, 0);
   assert.equal((await service.loadInvestigation(investigationId))?.actions[0]?.status, "succeeded");
+});
+
+const PROFILE_PHOTO = "https://lh3.googleusercontent.com/a-/ALV-ana";
+const THUMBNAIL = "data:image/webp;base64,UklGRhYAAABXRUJQ";
+
+function ghuntPhoto(url: string): Observation {
+  return {
+    kind: "scanner_finding", seed: { kind: "email", value: "ana@gmail.com" }, provider: "GHunt", status: "registered",
+    finding: { target: { kind: "email", value: "ana@gmail.com" }, upstreamStatus: "Found", url, category: "Profile photo", reason: "", extra: { source: "ghunt" }, media: { avatar: url } },
+  };
+}
+
+function faceMatch(score: number): Observation {
+  const seed = { kind: "photo", value: PROFILE_PHOTO } as const;
+  return {
+    kind: "scanner_finding", seed, provider: "FaceCheck", status: "registered",
+    finding: { target: seed, upstreamStatus: "Found", url: `https://example.org/${score}`, category: "Face match", reason: "",
+      extra: { source: "facecheck", score, testing_mode: true }, media: { thumbnail: THUMBNAIL } },
+  };
+}
+
+/** GHunt reports the given observations; FaceCheck reports two candidates. */
+function facecheckHarness(ghunt: Observation[], photoCatalog?: readonly ScopedCatalogId[], deferred: () => readonly ScopedCatalogId[] = () => []) {
+  const store = new MemoryInvestigationStore();
+  let id = 0;
+  const executed: string[] = [];
+  const service = createInvestigationService({
+    store,
+    executor: {
+      id: "fake",
+      async execute(action) {
+        executed.push(`${action.spec.catalogId} ${action.spec.seed.kind}:${action.spec.seed.value}`);
+        return action.spec.catalogId === "ghunt.email.v1" ? ghunt : [faceMatch(80), faceMatch(91)];
+      },
+    },
+    clock: () => "2025-01-01T00:00:00.000Z", createId: (kind) => `${kind}-${++id}`,
+    seedCatalog: ["ghunt.email.v1"],
+    ...(photoCatalog === undefined ? {} : { photoCatalog }),
+    deferredCatalogIds: async () => deferred(),
+  });
+  return { store, service, executed };
+}
+
+test("a GHunt profile photo queues FaceCheck fed by that finding, and each candidate is separate evidence", async () => {
+  const { service, executed } = facecheckHarness([ghuntPhoto(PROFILE_PHOTO)], ["facecheck.photo.v1"]);
+  const created = await service.createInvestigation("Case", "Test", "manual");
+  await service.addEmailSeed(created.id, "ana@gmail.com");
+  await service.authorize(created.id, true, "Authorize tools");
+  await service.executeNextAction(created.id);
+  const afterGhunt = (await service.loadInvestigation(created.id))!;
+  const photoEvidence = afterGhunt.evidence[0]!;
+  const facecheck = afterGhunt.actions.at(-1)!;
+  assert.deepEqual(facecheck.spec, { catalogId: "facecheck.photo.v1", provider: "facecheck", seed: { kind: "photo", value: PROFILE_PHOTO } });
+  assert.equal(facecheck.status, "queued");
+  assert.equal(facecheck.queuedByCatalog, true);
+  assert.equal(facecheck.sourceSeedId, findingSeedNodeId(photoEvidence.id));
+  assert.match(facecheck.proposalReason, /FaceCheck/);
+  assert.deepEqual(afterGhunt.audit.at(-1), {
+    id: afterGhunt.audit.at(-1)!.id, at: "2025-01-01T00:00:00.000Z", actor: "system", kind: "action_queued",
+    reason: facecheck.proposalReason, actionId: facecheck.id,
+  });
+  assert.equal(investigationSeedGraph(afterGhunt).actionInputs.get(facecheck.id), findingSeedNodeId(photoEvidence.id));
+
+  const ran = await service.executeNextAction(created.id);
+  assert.equal(ran?.id, facecheck.id);
+  assert.equal(ran?.status, "succeeded");
+  assert.deepEqual(executed, ["ghunt.email.v1 email:ana@gmail.com", `facecheck.photo.v1 photo:${PROFILE_PHOTO}`]);
+  const stored = (await service.loadInvestigation(created.id))!;
+  const candidates = stored.evidence.filter((record) => record.actionId === facecheck.id);
+  assert.deepEqual(candidates.map((record) => [record.provider, record.seed, record.finding?.url, record.finding?.media.thumbnail]), [
+    ["FaceCheck", { kind: "photo", value: PROFILE_PHOTO }, "https://example.org/80", THUMBNAIL],
+    ["FaceCheck", { kind: "photo", value: PROFILE_PHOTO }, "https://example.org/91", THUMBNAIL],
+  ]);
+  assert.deepEqual(stored.validations, [], "no candidate is confirmed by default");
+  const decided = await service.validateEvidence(created.id, candidates[1]!.id, "accepted", "Same person.");
+  const rejected = await service.validateEvidence(created.id, candidates[0]!.id, "rejected", "Someone else.");
+  assert.deepEqual(rejected.validations.map((decision) => [decision.evidenceId, decision.status]), [
+    [candidates[1]!.id, "accepted"], [candidates[0]!.id, "rejected"],
+  ]);
+  assert.equal(decided.actions.length, stored.actions.length, "a confirmed candidate launches no new action");
+  assert.equal(rejected.actions.length, stored.actions.length);
+});
+
+test("FaceCheck queues only for an own Google profile photo while the tool is enabled, once per photo", async () => {
+  for (const [ghunt, photoCatalog] of [
+    [[ghuntPhoto(PROFILE_PHOTO)], undefined],
+    [[ghuntPhoto("https://example.org/ana.png")], ["facecheck.photo.v1"]],
+    [[{ ...ghuntPhoto(PROFILE_PHOTO), finding: { ...(ghuntPhoto(PROFILE_PHOTO) as { finding: object }).finding, category: "Cover photo" } } as Observation], ["facecheck.photo.v1"]],
+  ] as const) {
+    const { service } = facecheckHarness([...ghunt], photoCatalog);
+    const created = await service.createInvestigation();
+    await service.addEmailSeed(created.id, "ana@gmail.com");
+    await service.authorize(created.id, true, "Authorize tools");
+    await service.executeNextAction(created.id);
+    assert.deepEqual((await service.loadInvestigation(created.id))!.actions.map((action) => action.spec.catalogId), ["ghunt.email.v1"]);
+  }
+  const { service } = facecheckHarness([ghuntPhoto(PROFILE_PHOTO), ghuntPhoto(PROFILE_PHOTO)], ["facecheck.photo.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@gmail.com");
+  await service.authorize(created.id, true, "Authorize tools");
+  await service.executeNextAction(created.id);
+  assert.deepEqual((await service.loadInvestigation(created.id))!.actions.map((action) => action.spec.catalogId), ["ghunt.email.v1", "facecheck.photo.v1"]);
+  assert.throws(() => createInvestigationService({
+    store: new MemoryInvestigationStore(), executor: { id: "x", async execute() { return []; } },
+    clock: () => "2025-01-01T00:00:00.000Z", createId: () => "x", photoCatalog: ["ghunt.email.v1"],
+  }), /photo catalog/);
+});
+
+test("deferred FaceCheck waits until it is ready and requires a grant that names it", async () => {
+  let deferred = true;
+  const { service, executed } = facecheckHarness([ghuntPhoto(PROFILE_PHOTO)], ["facecheck.photo.v1"], () => deferred ? ["facecheck.photo.v1"] : []);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@gmail.com");
+  const fresh = (await service.authorize(created.id, true, "Authorize tools")).authorization!;
+  assert.equal(authorizationCovers({ ...fresh, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"] }, "facecheck.photo.v1"), false);
+  assert.equal(authorizationCovers(fresh, "facecheck.photo.v1"), true);
+  await service.executeNextAction(created.id);
+  assert.equal(await service.executeNextAction(created.id), undefined);
+  assert.equal((await service.loadInvestigation(created.id))!.actions.at(-1)!.status, "queued");
+  deferred = false;
+  assert.equal((await service.executeNextAction(created.id))?.spec.catalogId, "facecheck.photo.v1");
+  assert.equal(executed.length, 2);
+});
+
+test("the report names photo seeds and does not inline FaceCheck thumbnails", async () => {
+  const { service } = facecheckHarness([ghuntPhoto(PROFILE_PHOTO)], ["facecheck.photo.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@gmail.com");
+  await service.authorize(created.id, true, "Authorize tools");
+  await service.executeNextAction(created.id);
+  await service.executeNextAction(created.id);
+  const report = compileInvestigationReport((await service.loadInvestigation(created.id))!);
+  assert.ok(report.includes("photo: https://lh3\\.googleusercontent\\.com/a\\-/ALV\\-ana"));
+  assert.ok(!report.includes("UklGRhYAAABXRUJQ"));
+  assert.ok(report.includes("embedded image"));
+});
+
+test("photo catalog rejects unknown, duplicate and non-photo tools while allowing an empty list", () => {
+  const base = {
+    store: new MemoryInvestigationStore(), executor: { id: "unused", async execute() { return []; } },
+    clock: () => "2025-01-01T00:00:00.000Z", createId: () => "id",
+  };
+  assert.doesNotThrow(() => createInvestigationService({ ...base, photoCatalog: [] }));
+  for (const photoCatalog of [["unknown.tool.v1"], ["facecheck.photo.v1", "facecheck.photo.v1"], ["maigret.username.v1"]]) {
+    assert.throws(() => createInvestigationService({ ...base, photoCatalog: photoCatalog as ScopedCatalogId[] }), /photo catalog/);
+  }
+  assert.throws(() => createInvestigationService({ ...base, seedCatalog: ["facecheck.photo.v1"] }), /seed catalog/);
+});
+
+test("photo candidates are not username proposals and AI receives photo seeds without media", async () => {
+  const { service } = facecheckHarness([ghuntPhoto(PROFILE_PHOTO)], ["facecheck.photo.v1"]);
+  const created = await service.createInvestigation();
+  await service.addEmailSeed(created.id, "ana@gmail.com");
+  await service.authorize(created.id, true, "Authorize tools");
+  await service.executeNextAction(created.id);
+  await service.executeNextAction(created.id);
+  const stored = (await service.loadInvestigation(created.id))!;
+  const candidate = stored.evidence.find((record) => record.provider === "FaceCheck")!;
+  const snapshot = { ...stored, evidence: [{ ...candidate, finding: { ...candidate.finding!, extra: { discovered_usernames: "not_a_confirmed_person" } } }] };
+  assert.deepEqual(usernameProposals(snapshot), []);
+  const message = buildAiReportMessages(snapshot)[1]!.content;
+  assert.ok(message.includes(`"photoSeed": "${PROFILE_PHOTO}"`));
+  assert.ok(!message.includes('"emailSeed"'));
+  assert.ok(!message.includes(THUMBNAIL));
 });
