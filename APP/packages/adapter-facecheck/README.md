@@ -2,7 +2,7 @@
 
 `createFacecheckBox()` is the `facecheck.photo.v1` SeedBox. Its input is a photo seed: the URL of a Google profile photo that GHunt found. It follows the official FaceCheck.id API flow:
 
-1. Download the photo. Only HTTPS `*.googleusercontent.com` and `*.ggpht.com` URLs without a query, fragment or credentials are accepted. Redirects are refused. Only JPEG, PNG, WebP or GIF images of up to 5 MB are uploaded.
+1. Download the photo. Only HTTPS `*.googleusercontent.com` and `*.ggpht.com` URLs without a query, fragment or credentials are accepted. Redirects are refused. Only JPEG, PNG, WebP or GIF images of up to 5 MB are uploaded; a larger body is refused from its declared length or as soon as it exceeds the limit while streaming.
 2. `POST https://facecheck.id/api/upload_pic` with the image as multipart `images` and the header `Authorization: <token>`. The response contains an `id_search`.
 3. Poll `POST https://facecheck.id/api/search` with `{ id_search, with_progress: true, status_only: false, demo }` once per second until `output` arrives. The search stops after 15 minutes.
 
@@ -32,7 +32,7 @@ In testing mode (`demo: true`) FaceCheck scans only 100,000 faces and does not d
 |---|---|
 | No token configured | `FaceCheck API token is not configured` |
 | Photo not downloadable or unusable | `FaceCheck could not download the profile photo` |
-| FaceCheck reports an error | `FaceCheck: <error> (<code>)`, as one line of up to 200 characters |
+| FaceCheck reports an error | `FaceCheck: <error> (<code>)`, as one line of up to 200 characters; an echoed token is replaced by `[token]` |
 | Network failure or request timeout (30 s) | `FaceCheck request failed` |
 | HTTP error without a FaceCheck error | `FaceCheck request failed with HTTP <status>` |
 | No result within the polling limit | `FaceCheck search did not finish in time` |

@@ -162,3 +162,23 @@ test("requires a Google profile photo seed and a configured token before any req
     { message: "FaceCheck API token is not configured" });
   assert.equal(calls.length, 0);
 });
+
+test("refuses an oversized photo from its declared length or while streaming, without reading it all", async () => {
+  let pulled = 0;
+  const streamed = () => new Response(new ReadableStream<Uint8Array>({
+    pull(controller) { pulled++; controller.enqueue(new Uint8Array(8)); if (pulled > 100) controller.close(); },
+  }), { status: 200, headers: { "content-type": "image/jpeg" } });
+  const declared = () => new Response(new Uint8Array(4), { status: 200, headers: { "content-type": "image/jpeg", "content-length": "999" } });
+  for (const response of [streamed, declared]) {
+    const calls: Call[] = [];
+    await assert.rejects(box(fakeFetch(uploaded, [], calls, response), { maxPhotoBytes: 20 }).execute(seed),
+      { message: "FaceCheck could not download the profile photo" });
+    assert.deepEqual(calls.map((call) => call.url), [PHOTO]);
+  }
+  assert.ok(pulled <= 4, `read ${pulled} chunks`);
+});
+
+test("never persists the token when FaceCheck echoes it in an error", async () => {
+  await assert.rejects(box(fakeFetch({ error: `Invalid token ${TOKEN}`, code: "AUTH" }, [])).execute(seed),
+    { message: "FaceCheck: Invalid token [token] (AUTH)" });
+});

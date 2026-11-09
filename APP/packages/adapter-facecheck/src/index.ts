@@ -37,9 +37,34 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-/** Upstream error text is persisted as the action failure: one bounded line, no control characters. */
-function upstreamText(value: unknown): string {
-  return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200) : "";
+/** Upstream error text is persisted as the action failure: one bounded line, no control characters, never the token. */
+function upstreamText(value: unknown, token: string): string {
+  if (typeof value !== "string") return "";
+  return value.split(token).join("[token]").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+/** Reads at most `limit` bytes; a longer body is refused without buffering the rest. */
+async function boundedBytes(response: Response, limit: number): Promise<Uint8Array<ArrayBuffer>> {
+  const declared = Number(response.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > limit) throw new Error("photo too large");
+  const reader = response.body?.getReader();
+  if (reader === undefined) return new Uint8Array(0);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error("photo too large");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
 }
 
 function sourceUrl(value: unknown): string | undefined {
@@ -78,8 +103,8 @@ export function createFacecheckBox(options: FacecheckBoxOptions): SeedBox<PhotoS
         const response = await fetcher(url, { signal, redirect: "error" });
         const type = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
         if (!response.ok || !PHOTO_TYPES.includes(type)) throw new Error("unusable photo");
-        const bytes = await response.arrayBuffer();
-        if (bytes.byteLength === 0 || bytes.byteLength > maxPhotoBytes) throw new Error("unusable photo");
+        const bytes = await boundedBytes(response, maxPhotoBytes);
+        if (bytes.byteLength === 0) throw new Error("unusable photo");
         return new Blob([bytes], { type });
       });
     } catch {
@@ -102,8 +127,8 @@ export function createFacecheckBox(options: FacecheckBoxOptions): SeedBox<PhotoS
     } catch {
       throw new Error("FaceCheck request failed");
     }
-    const error = upstreamText(payload?.error);
-    if (error !== "") throw new Error(`FaceCheck: ${error} (${upstreamText(payload?.code)})`);
+    const error = upstreamText(payload?.error, token);
+    if (error !== "") throw new Error(`FaceCheck: ${error} (${upstreamText(payload?.code, token)})`);
     if (payload === undefined || status < 200 || status >= 300) throw new Error(`FaceCheck request failed with HTTP ${status}`);
     return payload;
   }
