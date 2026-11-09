@@ -20,15 +20,78 @@ async function fake(action: (child: Child, args: string[], options: SpawnOptions
   const home = await mkdtemp(join(tmpdir(), "ghunt-home-"));
   const original = processes.spawn;
   const child = new Child();
+  let calls = 0;
   processes.spawn = ((_: string, args: string[], options: SpawnOptions) => {
-    queueMicrotask(() => { void action(child, args, options).catch((error) => child.emit("error", error)); });
-    return child;
+    const current = calls++ === 0 ? child : new Child();
+    queueMicrotask(() => { void action(current, args, options).catch((error) => current.emit("error", error)); });
+    return current;
   }) as unknown as typeof processes.spawn;
   syncBuiltinESMExports();
   try { await check(root, home, child); assert.deepEqual(await readdir(root), []); }
   finally { processes.spawn = original; syncBuiltinESMExports(); await rm(root, { recursive: true, force: true }); await rm(home, { recursive: true, force: true }); }
 }
 const code = (expected: string) => (error: unknown) => error instanceof GhuntProcessError && error.code === expected && !error.message.includes("secret");
+
+const networkTraceback = (name: string) => `Traceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/httpx/_client.py", line 22, in send\n${name}: secret@gmail.com token=secret\n`;
+
+test("network ConnectTimeout retries once and returns the successful report", async () => {
+  let calls = 0;
+  await fake(async (child, _args, options) => {
+    if (++calls === 1) { child.stderr.emit("data", networkTraceback("httpx.ConnectTimeout")); child.emit("close", 1); }
+    else { await writeFile(join(options.cwd, "report.json"), "{}"); child.emit("close", 0); }
+  }, async (root, home) => {
+    const runner = createGhuntProcessRunner({ sessionHome: home, outputDirectory: root, retryDelayMs: 0 });
+    assert.equal(await runner.run("ana@gmail.com"), "{}");
+    assert.equal(calls, 2);
+  });
+});
+
+test("each network exception retries once and retains only the second sanitized detail", async () => {
+  for (const name of ["httpx.ConnectTimeout", "httpx.ConnectError", "httpx.ReadTimeout"]) {
+    let calls = 0;
+    await fake(async (child) => {
+      calls++;
+      child.stderr.emit("data", networkTraceback(name));
+      child.emit("close", calls === 1 ? 1 : 2);
+    }, async (root, home) => {
+      const runner = createGhuntProcessRunner({ sessionHome: home, outputDirectory: root, retryDelayMs: 0 });
+      await assert.rejects(runner.run("ana@gmail.com"), (error: unknown) => {
+        assert.ok(error instanceof GhuntProcessError);
+        assert.equal(error.code, "network_timeout");
+        assert.equal(error.detail, `exit 2, ${name}, frames [httpx/_client.py:22 in send]`);
+        assert.equal(error.message, `GHunt execution failed: network_timeout (${error.detail})`);
+        return true;
+      });
+      assert.equal(calls, 2);
+    });
+  }
+});
+
+test("other errors and higher-priority classifications do not retry", async () => {
+  for (const [output, expected] of [
+    [networkTraceback("httpx.WriteTimeout"), "process_failure"],
+    [networkTraceback("httpx.ConnectTimeout") + "GHuntInvalidSession\n", "invalid_session"],
+    [networkTraceback("httpx.ConnectTimeout") + "The target wasn't found.\n", "not_found"],
+  ]) {
+    let calls = 0;
+    await fake(async (child) => { calls++; child.stderr.emit("data", output!); child.emit("close", 1); }, async (root, home) => {
+      await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root, retryDelayMs: 0 }).run("ana@gmail.com"), code(expected!));
+      assert.equal(calls, 1);
+    });
+  }
+});
+
+test("retry rethrows a different second failure without a third attempt", async () => {
+  let calls = 0;
+  await fake(async (child) => {
+    calls++;
+    child.stderr.emit("data", calls === 1 ? networkTraceback("httpx.ConnectTimeout") : "GHuntInvalidSession");
+    child.emit("close", 1);
+  }, async (root, home) => {
+    await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root, retryDelayMs: 0 }).run("ana@gmail.com"), code("invalid_session"));
+    assert.equal(calls, 2);
+  });
+});
 
 test("CLI uses main(), a positional email and explicit JSON path without a shell", async () => {
   await fake(async (child, args, options) => {
@@ -160,8 +223,8 @@ test("unclassified upstream failures record the exit code or signal but never th
 });
 
 test("unclassified tracebacks record only the final exception name, never its message", async () => {
-  const traceback = "Traceback (most recent call last):\n  File \"/opt/x.py\", line 3, in <module>\nKeyError: 'secret'\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"/opt/y.py\", line 9, in main\nhttpx.ReadTimeout: secret@gmail.com\n";
-  for (const [output, expected] of [[traceback, "(exit 1, httpx.ReadTimeout)"], ["Traceback (most recent call last):\n  File \"/opt/x.py\"\nnot an identifier: secret\n", "(exit 1, unparsed traceback)"]] as const) {
+  const traceback = "Traceback (most recent call last):\n  File \"/opt/x.py\", line 3, in <module>\nKeyError: 'secret'\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"/opt/y.py\", line 9, in main\nhttpx.WriteTimeout: secret@gmail.com\n";
+  for (const [output, expected] of [[traceback, "(exit 1, httpx.WriteTimeout)"], ["Traceback (most recent call last):\n  File \"/opt/x.py\"\nnot an identifier: secret\n", "(exit 1, unparsed traceback)"]] as const) {
     await fake(async (child) => { child.stderr.emit("data", Buffer.from(output)); child.emit("close", 1, null); }, async (root, home) => {
       await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
         assert.ok(error instanceof GhuntProcessError);
@@ -174,7 +237,7 @@ test("unclassified tracebacks record only the final exception name, never its me
 });
 
 test("structural diagnostics handle ANSI, split chunks and multiline exception messages", async () => {
-  const output = "\u001b[31mTraceback (most recent call last):\u001b[0m\n  File \"/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py\", line 42, in main\n    private_source(secret)\n\u001b[1mhttpx.ReadTimeout\u001b[0m: private_message\nKeyError: private_second_line\nprivate@gmail.com?token=private_token\n";
+  const output = "\u001b[31mTraceback (most recent call last):\u001b[0m\n  File \"/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py\", line 42, in main\n    private_source(secret)\n\u001b[1mhttpx.WriteTimeout\u001b[0m: private_message\nKeyError: private_second_line\nprivate@gmail.com?token=private_token\n";
   await fake(async (child) => {
     for (let i = 0; i < output.length; i += 7) child.stderr.emit("data", Buffer.from(output.slice(i, i + 7)));
     child.emit("close", 1, null);
@@ -182,7 +245,7 @@ test("structural diagnostics handle ANSI, split chunks and multiline exception m
     await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
       assert.ok(error instanceof GhuntProcessError);
       assert.equal(error.code, "process_failure");
-      assert.equal(error.detail, "exit 1, httpx.ReadTimeout, frames [ghunt/ghunt.py:42 in main]");
+      assert.equal(error.detail, "exit 1, httpx.WriteTimeout, frames [ghunt/ghunt.py:42 in main]");
       assert.equal(error.message, `GHunt execution failed: process_failure (${error.detail})`);
       for (const secret of ["private_source", "private_message", "private_second_line", "private@gmail.com", "private_token"]) assert.ok(!error.message.includes(secret));
       return true;
@@ -273,12 +336,12 @@ test("last chained exception and bounded frames omit unknown and spoofed private
 });
 
 test("a chained traceback records only the final exception's frames", async () => {
-  const output = 'Traceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py", line 1, in main\nKeyError: private_first\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/httpx/_client.py", line 22, in send\nhttpx.ReadTimeout: private_final\n';
+  const output = 'Traceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/ghunt.py", line 1, in main\nKeyError: private_first\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/httpx/_client.py", line 22, in send\nhttpx.WriteTimeout: private_final\n';
   await fake(async (child) => { child.stderr.emit("data", output); child.emit("close", 1, null); }, async (root, home) => {
     await assert.rejects(createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), (error: unknown) => {
       assert.ok(error instanceof GhuntProcessError);
       assert.equal(error.code, "process_failure");
-      assert.equal(error.detail, "exit 1, httpx.ReadTimeout, frames [httpx/_client.py:22 in send]");
+      assert.equal(error.detail, "exit 1, httpx.WriteTimeout, frames [httpx/_client.py:22 in send]");
       assert.ok(!error.message.includes("private"));
       assert.ok(!error.message.includes("KeyError"));
       return true;

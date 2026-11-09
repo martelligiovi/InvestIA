@@ -6,7 +6,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { tracebackDetail } from "./traceback.ts";
 
 export interface GhuntRunner { run(email: string): Promise<string>; }
-export type GhuntProcessErrorCode = "spawn_failure" | "process_failure" | "timeout" | "output_limit" | "missing_report" | "invalid_session_home" | "not_found" | "invalid_session" | "internal_failure";
+export type GhuntProcessErrorCode = "spawn_failure" | "process_failure" | "network_timeout" | "timeout" | "output_limit" | "missing_report" | "invalid_session_home" | "not_found" | "invalid_session" | "internal_failure";
 export class GhuntProcessError extends Error {
   readonly code: GhuntProcessErrorCode;
   /** Non-sensitive failure shape; traceback details contain only allowlisted structural fields. */
@@ -32,6 +32,8 @@ export interface GhuntProcessOptions {
   readonly sessionHome: string;
   readonly pythonExecutable?: string;
   readonly timeoutMs?: number;
+  /** Delay before the single retry for a transient network failure (default 30 seconds). */
+  readonly retryDelayMs?: number;
   readonly maxOutputBytes?: number;
   /** Existing directory for ephemeral reports, outside the credential home. */
   readonly outputDirectory?: string;
@@ -46,6 +48,7 @@ export function ghuntArguments(email: string, report: string): string[] {
 }
 const NOT_FOUND = ["The target wasn't found.", "does not match a public Google Account."];
 const INVALID_SESSION = ["GHuntInvalidSession", "GHuntLoginError"];
+const NETWORK_EXCEPTIONS = new Set(["httpx.ConnectTimeout", "httpx.ConnectError", "httpx.ReadTimeout"]);
 /** Classifies a failed run from a bounded output tail; the tail itself is never surfaced. */
 function failureCode(tail: string): GhuntProcessErrorCode {
   if (INVALID_SESSION.some((marker) => tail.includes(marker))) return "invalid_session";
@@ -63,9 +66,10 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
   if (inside(home, root)) throw new GhuntProcessError("invalid_session_home");
   const timeoutMs = options.timeoutMs ?? 15 * 60_000;
   const maxBytes = options.maxOutputBytes ?? 16 * 1024 * 1024;
+  const retryDelayMs = options.retryDelayMs ?? 30_000;
   for (const value of [timeoutMs, maxBytes]) if (!Number.isSafeInteger(value) || value <= 0 || value > 0x7fffffff) throw new RangeError("Invalid GHunt limit");
-  return {
-    async run(email) {
+  if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 0 || retryDelayMs > 0x7fffffff) throw new RangeError("Invalid GHunt retry delay");
+  const runOnce = async (email: string): Promise<string> => {
       if (!validGhuntEmail(email)) throw new Error("A valid Gmail email seed is required");
       try {
       try {
@@ -110,8 +114,12 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
             clearTimeout(timer);
             if (failure) reject(failure);
             else if (code !== 0) {
-              const classified = failureCode(tail);
-              reject(new GhuntProcessError(classified, classified === "process_failure" ? exitDetail(code, signal, stderrTail, stdoutTail) : undefined));
+              let classified = failureCode(tail);
+              const detail = classified === "process_failure" ? exitDetail(code, signal, stderrTail, stdoutTail) : undefined;
+              const traceback = tracebackDetail(stderrTail) ?? tracebackDetail(stdoutTail);
+              const exception = traceback?.split(",", 1)[0];
+              if (classified === "process_failure" && code !== null && NETWORK_EXCEPTIONS.has(exception ?? "")) classified = "network_timeout";
+              reject(new GhuntProcessError(classified, detail));
             }
             else done(tail);
           });
@@ -145,6 +153,15 @@ export function createGhuntProcessRunner(options: GhuntProcessOptions): GhuntRun
       } catch (error) {
         if (error instanceof GhuntProcessError) throw error;
         throw new GhuntProcessError("internal_failure", errnoDetail(error));
+      }
+  };
+  return {
+    async run(email) {
+      try { return await runOnce(email); }
+      catch (error) {
+        if (!(error instanceof GhuntProcessError) || error.code !== "network_timeout") throw error;
+        await new Promise<void>((done) => setTimeout(done, retryDelayMs));
+        return runOnce(email);
       }
     },
   };

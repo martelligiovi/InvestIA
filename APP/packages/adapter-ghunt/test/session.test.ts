@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createGhuntSession, createSessionBoundRunner, GhuntProcessError, GhuntSessionError, GHUNT_LOGIN_SCRIPT, validCompanionCode } from "../src/index.ts";
+import { createGhuntProcessRunner, createGhuntSession, createSessionBoundRunner, GhuntProcessError, GhuntSessionError, GHUNT_LOGIN_SCRIPT, validCompanionCode } from "../src/index.ts";
 
 const require = createRequire(import.meta.url);
 const processes = require("node:child_process") as typeof import("node:child_process");
@@ -108,6 +108,23 @@ test("an upstream session rejection marks the session invalid until reconnection
     assert.deepEqual(await session.disconnect(), { state: "requires_connection", account: null });
     assert.deepEqual((await readdir(home)).filter((name) => name !== ".malfrats"), []);
     await assert.rejects(stat(join(home, ".malfrats", "ghunt", "creds.m")));
+  });
+});
+
+test("network timeout after a retry leaves the connected session unchanged", async () => {
+  let scans = 0;
+  await withSpawn(async (spawned) => {
+    if (spawned.args[2] === GHUNT_LOGIN_SCRIPT) return succeed(spawned);
+    scans++;
+    spawned.child.stderr.emit("data", "Traceback (most recent call last):\nhttpx.ConnectTimeout: secret\n");
+    spawned.child.emit("close", 1);
+  }, async (home) => {
+    const session = createGhuntSession({ sessionHome: home });
+    await session.connect(code);
+    const runner = createSessionBoundRunner(session, createGhuntProcessRunner({ sessionHome: home, outputDirectory: tmpdir(), retryDelayMs: 0 }));
+    await assert.rejects(runner.run("ana@gmail.com"), (error: unknown) => error instanceof GhuntProcessError && error.code === "network_timeout");
+    assert.equal(scans, 2);
+    assert.deepEqual(await session.status(), { state: "connected", account: "owner@gmail.com" });
   });
 });
 
