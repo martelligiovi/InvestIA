@@ -58,6 +58,15 @@ const SOURCE_TOOLS: Readonly<Record<string, string>> = {
   "user-scanner:email": "user-scanner",
   "gravatar:email": "Gravatar",
   "maigret:username": "Maigret",
+  "ghunt:email": "GHunt",
+};
+const GHUNT_CATEGORIES: Readonly<Record<string, string>> = {
+  "Google account": "Cuenta Google",
+  Name: "Nombre",
+  "Profile photo": "Foto de perfil",
+  "Cover photo": "Portada",
+  "Last profile edit": "Última edición",
+  "Google services": "Servicios de Google",
 };
 
 function usernameNodeId(value: string): string {
@@ -147,7 +156,9 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
     }
     // Keep historical input references addressable when a finding already feeds an action.
     if (discovered.length > 0 && !seedHasActions(seedGraph, findingSeedNodeId(record.id))) return;
-    const title = record.finding
+    const title = record.finding && record.sourceId === "ghunt:email"
+      ? `GHunt · ${GHUNT_CATEGORIES[record.finding.category] ?? record.finding.category}`
+      : record.finding
       ? `${record.provider} · ${record.finding.target.value} · ${record.finding.upstreamStatus}`
       : `Observación de registro ${record.provider} · ${workspaceStatusLabel(record.status)}`;
     nodes.push({
