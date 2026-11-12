@@ -169,14 +169,14 @@ export function FacecheckReview({ investigation, actionId, disabled, onDecide, o
   }
 
   function skip() {
-    if (current === undefined) return;
+    if (disabled || current === undefined) return;
     if (revisit !== null) { setRevisit(null); return; }
     setSkipped((previous) => [...previous.filter((id) => id !== current.id), current.id]);
   }
 
   function back() {
     const previous = history.at(-1);
-    if (previous === undefined) return;
+    if (disabled || previous === undefined) return;
     setHistory((items) => items.slice(0, -1));
     setRevisit(previous);
     setTab("review");
@@ -184,7 +184,7 @@ export function FacecheckReview({ investigation, actionId, disabled, onDecide, o
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") { event.stopPropagation(); onClose(); return; }
-    if (tab !== "review" || current === undefined || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (disabled || tab !== "review" || current === undefined || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key === "ArrowRight") { event.preventDefault(); decide(current, "accepted"); }
     else if (event.key === "ArrowLeft") { event.preventDefault(); decide(current, "rejected"); }
     else if (event.key === "ArrowDown") { event.preventDefault(); skip(); }
@@ -230,7 +230,7 @@ export function FacecheckReview({ investigation, actionId, disabled, onDecide, o
                 <p>{plural(state.accepted.length, "aceptado", "aceptados")} y {plural(state.rejected.length, "descartado", "descartados")}.</p>
                 <p className="fc-muted">Solo los aceptados entran en el informe. Podés cambiar cualquier decisión desde las pestañas.</p>
                 <div className="fc-done-actions">
-                  {history.length > 0 && <button type="button" className="workspace-button" onClick={back}>Volver al anterior</button>}
+                  {history.length > 0 && <button type="button" className="workspace-button" disabled={disabled} onClick={back}>Volver al anterior</button>}
                   <button type="button" className="workspace-button workspace-button--primary" onClick={onClose}>Listo</button>
                 </div>
               </div>
@@ -260,14 +260,14 @@ export function FacecheckReview({ investigation, actionId, disabled, onDecide, o
                   <button type="button" className="fc-action fc-action--reject" disabled={disabled} onClick={() => decide(current, "rejected")}>
                     <span className="fc-action-icon" aria-hidden="true">✕</span>Descartar
                   </button>
-                  <button type="button" className="fc-action fc-action--skip" onClick={skip}>{revisit !== null ? "Seguir revisando" : "Saltar"}</button>
+                  <button type="button" className="fc-action fc-action--skip" disabled={disabled} onClick={skip}>{revisit !== null ? "Seguir revisando" : "Saltar"}</button>
                   <button type="button" className="fc-action fc-action--accept" disabled={disabled} onClick={() => decide(current, "accepted")}>
                     <span className="fc-action-icon" aria-hidden="true">✓</span>Aceptar
                   </button>
                 </div>
                 <div className="fc-footer">
                   <p className="fc-keys" aria-hidden="true"><kbd>←</kbd> descartar <kbd>↓</kbd> saltar <kbd>→</kbd> aceptar <kbd>Z</kbd> volver</p>
-                  <button type="button" className="text-button" disabled={history.length === 0} onClick={back}>Volver al anterior</button>
+                  <button type="button" className="text-button" disabled={disabled || history.length === 0} onClick={back}>Volver al anterior</button>
                 </div>
               </>
             )}

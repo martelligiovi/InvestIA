@@ -161,6 +161,19 @@ it("disables decisions while a change is being saved and closes with Escape", ()
   expect(onClose).toHaveBeenCalled();
 });
 
+it("does not move through the deck while a decision is being saved", () => {
+  const snapshot = investigation();
+  const { view } = review(snapshot);
+  fireEvent.click(screen.getByRole("button", { name: /^Aceptar/ }));
+  view.rerender(<FacecheckReview investigation={snapshot} actionId="facecheck" disabled onDecide={vi.fn()} onClose={vi.fn()} />);
+  const dialog = screen.getByRole("dialog");
+  fireEvent.keyDown(dialog, { key: "ArrowDown" });
+  fireEvent.keyDown(dialog, { key: "z" });
+  expect(screen.getByRole("article", { name: /Candidato 1 de 3/ })).toHaveTextContent("GitHub");
+  expect(screen.getByRole("button", { name: /Saltar/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /Volver al anterior/ })).toBeDisabled();
+});
+
 it("offers the card review from the FaceCheck candidate group and from a single candidate", () => {
   const snapshot = investigation([decision("gh", "accepted", 1)]);
   const graph = buildWorkspaceGraph(snapshot);
