@@ -150,17 +150,61 @@ test("stops polling when the search does not finish in time", async () => {
   assert.equal(calls.length, 5);
 });
 
-test("rejects photos it cannot use before uploading anything", async () => {
-  for (const response of [
-    () => new Response("nope", { status: 404 }),
-    () => new Response("<html>", { status: 200, headers: { "content-type": "text/html" } }),
-    () => new Response(new Uint8Array(11), { status: 200, headers: { "content-type": "image/png" } }),
-  ]) {
+test("rejects photos it cannot use before uploading anything, naming the reason, without retrying", async () => {
+  for (const [response, reason] of [
+    [() => new Response("nope", { status: 404 }), "HTTP 404"],
+    [() => new Response("<html>", { status: 200, headers: { "content-type": "text/html" } }), "unsupported type text/html"],
+    [() => new Response(new Uint8Array(11), { status: 200, headers: { "content-type": "image/png" } }), "too large"],
+    [() => new Response(new Uint8Array(0), { status: 200, headers: { "content-type": "image/png" } }), "empty"],
+  ] as const) {
     const calls: Call[] = [];
-    await assert.rejects(box(fakeFetch(uploaded, [], calls, response), { maxPhotoBytes: 10 }).execute(seed),
-      { message: "FaceCheck could not download the profile photo" });
+    const sleeps: number[] = [];
+    await assert.rejects(box(fakeFetch(uploaded, [], calls, response), { maxPhotoBytes: 10, sleep: async (ms) => { sleeps.push(ms); } }).execute(seed),
+      { message: `FaceCheck could not download the profile photo (${reason})` });
     assert.deepEqual(calls.map((call) => call.url), [PHOTO]);
+    assert.deepEqual(sleeps, []);
   }
+});
+
+test("retries the free photo download after a network error, then searches once", async () => {
+  const calls: Call[] = [];
+  const sleeps: number[] = [];
+  let attempts = 0;
+  const flaky = () => { if (++attempts === 1) throw new TypeError("fetch failed"); return photoResponse(); };
+  const observations = await box(fakeFetch(uploaded, [{ output: { items: [item(90)] } }], calls, flaky), { sleep: async (ms) => { sleeps.push(ms); } }).execute(seed);
+  assert.equal(observations.length, 1);
+  assert.deepEqual(calls.map((call) => [call.method, call.url]), [
+    ["GET", PHOTO], ["GET", PHOTO], ["POST", `${FACECHECK_SITE}/api/upload_pic`], ["POST", `${FACECHECK_SITE}/api/search`],
+  ]);
+  assert.deepEqual(sleeps, [1_000]);
+});
+
+test("gives up after three download attempts on network errors, HTTP 429 or 5xx, keeping the last reason, without uploading", async () => {
+  for (const [responses, reason] of [
+    [[() => { throw new TypeError("fetch failed"); }], "network error"],
+    [[() => new Response("", { status: 503 }), () => new Response("", { status: 502 }), () => new Response("", { status: 429 })], "HTTP 429"],
+    [[() => new Response("", { status: 500 }), () => { throw new TypeError("fetch failed"); }], "network error"],
+  ] as const) {
+    const calls: Call[] = [];
+    const sleeps: number[] = [];
+    let attempt = 0;
+    const photo = () => { const next = responses[Math.min(attempt++, responses.length - 1)]!; return next(); };
+    await assert.rejects(box(fakeFetch(uploaded, [], calls, photo), { sleep: async (ms) => { sleeps.push(ms); } }).execute(seed),
+      { message: `FaceCheck could not download the profile photo (${reason})` });
+    assert.deepEqual(calls.map((call) => call.url), [PHOTO, PHOTO, PHOTO]);
+    assert.deepEqual(sleeps, [1_000, 2_000]);
+  }
+});
+
+test("a photo download that times out is retried and named", async () => {
+  const calls: Call[] = [];
+  const hanging = ((input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), method: init?.method ?? "GET", headers: new Headers(init?.headers), body: init?.body });
+    return new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+  }) as typeof fetch;
+  await assert.rejects(box(hanging, { requestTimeoutMs: 5 }).execute(seed),
+    { message: "FaceCheck could not download the profile photo (timed out)" });
+  assert.deepEqual(calls.map((call) => call.url), [PHOTO, PHOTO, PHOTO]);
 });
 
 test("requires a Google profile photo seed and a configured token before any request", async () => {
@@ -189,7 +233,7 @@ test("refuses an oversized photo from its declared length or while streaming, wi
   for (const response of [streamed, declared]) {
     const calls: Call[] = [];
     await assert.rejects(box(fakeFetch(uploaded, [], calls, response), { maxPhotoBytes: 20 }).execute(seed),
-      { message: "FaceCheck could not download the profile photo" });
+      { message: "FaceCheck could not download the profile photo (too large)" });
     assert.deepEqual(calls.map((call) => call.url), [PHOTO]);
   }
   assert.ok(pulled <= 4, `read ${pulled} chunks`);
@@ -198,4 +242,45 @@ test("refuses an oversized photo from its declared length or while streaming, wi
 test("never persists the token when FaceCheck echoes it in an error", async () => {
   await assert.rejects(box(fakeFetch({ error: `Invalid token ${TOKEN}`, code: "AUTH" }, [])).execute(seed),
     { message: "FaceCheck: Invalid token [token] (AUTH)" });
+});
+
+test("validates both URL shapes and normalizes live thumbnails", async () => {
+  const liveThumb = "data:image/webp;base64, UklGRhYAAABXRUJQ";
+  const urls = [
+    "https://example.org/ok",
+    "javascript:alert(1)",
+    "data:text/html,x",
+    "https://user:pass@example.org/",
+    `https://example.org/${"a".repeat(2049)}`,
+  ];
+  for (const wrapped of [false, true]) {
+    for (const [index, url] of urls.entries()) {
+      const candidate = { ...item(90), url: wrapped ? { value: url } : url, base64: liveThumb };
+      const result = await box(fakeFetch(uploaded, [{ output: { items: [candidate] } }])).execute(seed);
+      assert.equal(result.length, index === 0 ? 1 : 0, `${wrapped ? "object" : "string"} url ${url.slice(0, 40)}`);
+      if (index === 0) assert.equal(result[0]!.finding.media.thumbnail, THUMB);
+    }
+  }
+
+  for (const base64 of [
+    "data:text/html;base64, PHNjcmlwdD4=",
+    "data:image/webp;base64, <script>",
+    "data:image/webp;base64, \nUkl GR",
+    `data:image/webp;base64, ${"A".repeat(256 * 1024)}`,
+  ]) {
+    const result = await box(fakeFetch(uploaded, [{ output: { items: [{ ...item(90), url: "https://example.org/", base64 }] } }])).execute(seed);
+    assert.deepEqual(result, []);
+  }
+});
+
+test("ranks live-shape candidates separately", async () => {
+  const items = Array.from({ length: 25 }, (_, score) => ({
+    ...item(score),
+    url: `https://example.org/${score}`,
+    base64: "data:image/webp;base64, UklGRhYAAABXRUJQ",
+  }));
+  const result = await box(fakeFetch(uploaded, [{ output: { items } }])).execute(seed);
+  assert.deepEqual(result.map((observation) => observation.finding.extra.score), Array.from({ length: 20 }, (_, index) => 24 - index));
+  assert.equal(new Set(result.map((observation) => observation.finding.url)).size, 20);
+  assert.ok(result.every((observation) => observation.finding.media.thumbnail === THUMB));
 });

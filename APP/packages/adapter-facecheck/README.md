@@ -31,13 +31,13 @@ In testing mode (`demo: true`) FaceCheck scans only 100,000 faces and does not d
 | Situation | Error |
 |---|---|
 | No token configured | `FaceCheck API token is not configured` |
-| Photo not downloadable or unusable | `FaceCheck could not download the profile photo` |
+| Photo not downloadable or unusable | `FaceCheck could not download the profile photo (<reason>)`, where the reason is `network error`, `timed out`, `HTTP <status>`, `unsupported type <type>`, `too large` or `empty` |
 | FaceCheck reports an error | `FaceCheck: <error> (<code>)`, as one line of up to 200 characters; an echoed token is replaced by `[token]` |
 | Network failure or request timeout (30 s) | `FaceCheck request failed` |
 | HTTP error without a FaceCheck error | `FaceCheck request failed with HTTP <status>` |
 | No result within the polling limit | `FaceCheck search did not finish in time` |
 
-Failed actions are not retried.
+Failed actions are not retried. Only the photo download, which costs no credits, is attempted up to three times (after 1 s and 2 s) on a network error, a timeout, HTTP 429 or HTTP 5xx; nothing is uploaded until the photo is downloaded.
 
 ## Checks
 

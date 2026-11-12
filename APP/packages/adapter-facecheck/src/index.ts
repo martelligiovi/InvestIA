@@ -35,6 +35,19 @@ const DATA_IMAGE = /^data:image\/(?:webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/
 const DATA_IMAGE_PREFIX = /^(data:image\/(?:webp|jpeg|png);base64,)\s+/;
 const BARE_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
+const PHOTO_DOWNLOAD_ATTEMPTS = 3;
+const PHOTO_RETRY_DELAY_MS = 1_000;
+
+class PhotoDownloadError extends Error {
+  readonly reason: string;
+  readonly retryable: boolean;
+  constructor(reason: string, retryable: boolean) {
+    super(reason);
+    this.reason = reason;
+    this.retryable = retryable;
+  }
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
@@ -105,18 +118,44 @@ export function createFacecheckBox(options: FacecheckBoxOptions): SeedBox<PhotoS
   const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const maxPhotoBytes = options.maxPhotoBytes ?? DEFAULT_MAX_PHOTO_BYTES;
 
-  async function downloadPhoto(url: string): Promise<Blob> {
+  /** One download attempt; a failure names its reason and whether another attempt may help. */
+  async function downloadOnce(url: string): Promise<Blob> {
+    let timedOut = false;
     try {
       return await withTimeout(timeoutMs, async (signal) => {
-        const response = await fetcher(url, { signal, redirect: "error" });
+        signal.addEventListener("abort", () => { timedOut = true; });
+        let response: Response;
+        try {
+          response = await fetcher(url, { signal, redirect: "error" });
+        } catch {
+          throw new PhotoDownloadError(timedOut ? "timed out" : "network error", true);
+        }
+        if (!response.ok) throw new PhotoDownloadError(`HTTP ${response.status}`, response.status === 429 || response.status >= 500);
         const type = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-        if (!response.ok || !PHOTO_TYPES.includes(type)) throw new Error("unusable photo");
+        if (!PHOTO_TYPES.includes(type)) throw new PhotoDownloadError(`unsupported type ${type.replace(/[^a-z0-9.+/-]/g, "").slice(0, 60) || "unknown"}`, false);
         const bytes = await boundedBytes(response, maxPhotoBytes);
-        if (bytes.byteLength === 0) throw new Error("unusable photo");
+        if (bytes.byteLength === 0) throw new PhotoDownloadError("empty", false);
         return new Blob([bytes], { type });
       });
-    } catch {
-      throw new Error("FaceCheck could not download the profile photo");
+    } catch (error) {
+      if (error instanceof PhotoDownloadError) throw error;
+      if (error instanceof Error && error.message === "photo too large") throw new PhotoDownloadError("too large", false);
+      throw new PhotoDownloadError(timedOut ? "timed out" : "network error", true);
+    }
+  }
+
+  /** The download costs no credits, so transient failures are retried before anything is uploaded. */
+  async function downloadPhoto(url: string): Promise<Blob> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await downloadOnce(url);
+      } catch (error) {
+        const failure = error as PhotoDownloadError;
+        if (!failure.retryable || attempt + 1 >= PHOTO_DOWNLOAD_ATTEMPTS) {
+          throw new Error(`FaceCheck could not download the profile photo (${failure.reason})`);
+        }
+        await sleep(PHOTO_RETRY_DELAY_MS * (attempt + 1));
+      }
     }
   }
 
