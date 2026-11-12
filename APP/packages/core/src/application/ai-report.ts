@@ -1,4 +1,5 @@
 import type { Investigation, ValidationStatus } from "../domain/investigation.ts";
+import { reportableEvidence } from "./compile-report.ts";
 
 export const AI_REASONING_EFFORTS = ["default", "low", "medium", "high"] as const;
 export type AiReasoningEffort = (typeof AI_REASONING_EFFORTS)[number];
@@ -27,7 +28,7 @@ export const DEFAULT_AI_REPORT_SETTINGS: AiReportSettings = {
 
 export const AI_MAX_TOKENS_RANGE = { min: 256, max: 32_768 } as const;
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
-/** Keeps the request within free-endpoint context windows; the appendix still lists every record. */
+/** Keeps the request within free-endpoint context windows; the appendix still lists every reportable record. */
 const MAX_FINDINGS_CHARACTERS = 60_000;
 
 function invalid(): never {
@@ -96,7 +97,7 @@ interface FindingInput {
 }
 
 function findingInputs(investigation: Investigation): FindingInput[] {
-  return investigation.evidence.map((evidence) => {
+  return reportableEvidence(investigation).evidence.map((evidence) => {
     const decision = investigation.validations.filter((item) => item.evidenceId === evidence.id).at(-1);
     const finding = evidence.finding;
     return {

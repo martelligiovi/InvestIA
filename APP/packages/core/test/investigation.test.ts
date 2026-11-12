@@ -944,6 +944,7 @@ function facecheckHarness(ghunt: Observation[], photoCatalog?: readonly ScopedCa
     store,
     executor: {
       id: "fake",
+      sourceIdFor: (action) => action.spec.catalogId === "facecheck.photo.v1" ? "facecheck:photo" : "fake",
       async execute(action) {
         executed.push(`${action.spec.catalogId} ${action.spec.seed.kind}:${action.spec.seed.value}`);
         return action.spec.catalogId === "ghunt.email.v1" ? ghunt : [faceMatch(80), faceMatch(91)];
@@ -1045,7 +1046,10 @@ test("the report names photo seeds and does not inline FaceCheck thumbnails", as
   await service.authorize(created.id, true, "Authorize tools");
   await service.executeNextAction(created.id);
   await service.executeNextAction(created.id);
-  const report = compileInvestigationReport((await service.loadInvestigation(created.id))!);
+  const stored = (await service.loadInvestigation(created.id))!;
+  const candidate = stored.evidence.find((record) => record.sourceId === "facecheck:photo")!;
+  const reviewed = await service.validateEvidence(created.id, candidate.id, "accepted", "Same person.");
+  const report = compileInvestigationReport(reviewed);
   assert.ok(report.includes("photo: https://lh3\\.googleusercontent\\.com/a\\-/ALV\\-ana"));
   assert.ok(!report.includes("UklGRhYAAABXRUJQ"));
   assert.ok(report.includes("embedded image"));
@@ -1072,7 +1076,8 @@ test("photo candidates are not username proposals and AI receives photo seeds wi
   await service.executeNextAction(created.id);
   const stored = (await service.loadInvestigation(created.id))!;
   const candidate = stored.evidence.find((record) => record.provider === "FaceCheck")!;
-  const snapshot = { ...stored, evidence: [{ ...candidate, finding: { ...candidate.finding!, extra: { discovered_usernames: "not_a_confirmed_person" } } }] };
+  const reviewed = await service.validateEvidence(created.id, candidate.id, "accepted", "Same person.");
+  const snapshot = { ...reviewed, evidence: [{ ...candidate, finding: { ...candidate.finding!, extra: { discovered_usernames: "not_a_confirmed_person" } } }] };
   assert.deepEqual(usernameProposals(snapshot), []);
   const message = buildAiReportMessages(snapshot)[1]!.content;
   assert.ok(message.includes(`"photoSeed": "${PROFILE_PHOTO}"`));
