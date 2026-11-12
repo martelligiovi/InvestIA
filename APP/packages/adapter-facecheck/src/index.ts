@@ -31,6 +31,8 @@ const DEFAULT_MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const MAX_THUMBNAIL_LENGTH = 256 * 1024;
 const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 const DATA_IMAGE = /^data:image\/(?:webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/;
+/** The live API puts a space after the comma: `data:image/webp;base64, UklGR…`. */
+const DATA_IMAGE_PREFIX = /^(data:image\/(?:webp|jpeg|png);base64,)\s+/;
 const BARE_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -77,8 +79,14 @@ function sourceUrl(value: unknown): string | undefined {
 
 function thumbnail(value: unknown): string | undefined {
   if (typeof value !== "string" || value.length > MAX_THUMBNAIL_LENGTH) return undefined;
-  if (DATA_IMAGE.test(value)) return value;
-  return BARE_BASE64.test(value) ? `data:image/webp;base64,${value}` : undefined;
+  const image = value.replace(DATA_IMAGE_PREFIX, "$1");
+  if (DATA_IMAGE.test(image)) return image;
+  return BARE_BASE64.test(image) ? `data:image/webp;base64,${image}` : undefined;
+}
+
+/** The live API sends `url` as a string; the published Swagger describes it as `{ value }`. */
+function itemUrl(value: unknown): string | undefined {
+  return sourceUrl(typeof value === "string" ? value : record(value)?.value);
 }
 
 async function withTimeout<T>(timeoutMs: number, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -159,7 +167,7 @@ export function createFacecheckBox(options: FacecheckBoxOptions): SeedBox<PhotoS
 
       const candidates = (Array.isArray(output.items) ? output.items : []).flatMap((value) => {
         const item = record(value);
-        const url = sourceUrl(record(item?.url)?.value);
+        const url = itemUrl(item?.url);
         const image = thumbnail(item?.base64);
         const score = item?.score;
         if (url === undefined || image === undefined || typeof score !== "number" || !Number.isFinite(score)) return [];

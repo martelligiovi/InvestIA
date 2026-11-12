@@ -110,6 +110,23 @@ test("drops candidates whose source link or thumbnail is unsafe and accepts bare
   ]);
 });
 
+test("keeps candidates in the live response shape: url as a plain string and a space after base64,", async () => {
+  const live = (score: number, url: string, base64: string) => ({ guid: `live${score}`, score, group: 0, base64, url, index: 0, indexDB: 1456707678, seen: null });
+  const items = [
+    live(92, "https://example.org/profile-a", "data:image/webp;base64, UklGRs4HAABXRUJQ"),
+    live(83, "https://example.org/profile-b", "data:image/webp;base64,UklGRsAPAABXRUJQ"),
+    item(81, "https://example.org/swagger-shape"),
+    live(80, "javascript:alert(1)", "data:image/webp;base64, UklGRsAPAABXRUJQ"),
+    live(79, "https://example.org/bad-thumb", "data:image/webp;base64, <script>"),
+  ];
+  const observations = await box(fakeFetch(uploaded, [{ output: { items } }]), {}, false).execute(seed);
+  assert.deepEqual(observations.map((observation) => [observation.finding.url, observation.finding.media.thumbnail, observation.finding.extra]), [
+    ["https://example.org/profile-a", "data:image/webp;base64,UklGRs4HAABXRUJQ", { source: "facecheck", score: 92, group: 0, testing_mode: false }],
+    ["https://example.org/profile-b", "data:image/webp;base64,UklGRsAPAABXRUJQ", { source: "facecheck", score: 83, group: 0, testing_mode: false }],
+    ["https://example.org/swagger-shape", THUMB, { source: "facecheck", score: 81, group: 1, testing_mode: false }],
+  ]);
+});
+
 test("upload and search errors fail with the FaceCheck error and code, without the token", async () => {
   const calls: Call[] = [];
   await assert.rejects(box(fakeFetch({ error: "Not enough credits", code: "NO_CREDITS" }, [], calls)).execute(seed),
