@@ -132,7 +132,7 @@ export function createFacecheckBox(options: FacecheckBoxOptions): SeedBox<PhotoS
         }
         if (!response.ok) throw new PhotoDownloadError(`HTTP ${response.status}`, response.status === 429 || response.status >= 500);
         const type = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-        if (!PHOTO_TYPES.includes(type)) throw new PhotoDownloadError(`unsupported type ${type.replace(/[^a-z0-9.+/-]/g, "").slice(0, 60) || "unknown"}`, false);
+        if (!PHOTO_TYPES.includes(type)) throw new PhotoDownloadError("unsupported type", false);
         const bytes = await boundedBytes(response, maxPhotoBytes);
         if (bytes.byteLength === 0) throw new PhotoDownloadError("empty", false);
         return new Blob([bytes], { type });

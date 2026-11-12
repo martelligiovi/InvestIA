@@ -153,7 +153,7 @@ test("stops polling when the search does not finish in time", async () => {
 test("rejects photos it cannot use before uploading anything, naming the reason, without retrying", async () => {
   for (const [response, reason] of [
     [() => new Response("nope", { status: 404 }), "HTTP 404"],
-    [() => new Response("<html>", { status: 200, headers: { "content-type": "text/html" } }), "unsupported type text/html"],
+    [() => new Response("<html>", { status: 200, headers: { "content-type": "text/html" } }), "unsupported type"],
     [() => new Response(new Uint8Array(11), { status: 200, headers: { "content-type": "image/png" } }), "too large"],
     [() => new Response(new Uint8Array(0), { status: 200, headers: { "content-type": "image/png" } }), "empty"],
   ] as const) {
@@ -283,4 +283,10 @@ test("ranks live-shape candidates separately", async () => {
   assert.deepEqual(result.map((observation) => observation.finding.extra.score), Array.from({ length: 20 }, (_, index) => 24 - index));
   assert.equal(new Set(result.map((observation) => observation.finding.url)).size, 20);
   assert.ok(result.every((observation) => observation.finding.media.thumbnail === THUMB));
+});
+
+test("never persists the token from a photo content type", async () => {
+  const response = () => new Response("bad", { headers: { "content-type": `application/${TOKEN}` } });
+  await assert.rejects(box(fakeFetch(uploaded, [], [], response)).execute(seed), (error: Error) =>
+    error.message === "FaceCheck could not download the profile photo (unsupported type)" && !error.message.includes(TOKEN));
 });
