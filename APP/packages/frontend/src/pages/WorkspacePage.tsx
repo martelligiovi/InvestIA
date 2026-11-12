@@ -5,6 +5,7 @@ import { AsciiArt } from "../components/AsciiArt";
 import { InvestigationGraph } from "../components/InvestigationGraph";
 import { UsernameSeedsPanel } from "../components/UsernameSeedsPanel";
 import { WorkspaceDetails } from "../components/WorkspaceDetails";
+import { FacecheckReview } from "../components/FacecheckReview";
 import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
 import { hasCatalogAuthorization, workspaceHeadline } from "./workspace-status";
@@ -54,6 +55,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   }, [hasGhunt]);
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("graph");
   const [detailOpen, setDetailOpen] = useState(false);
+  const [facecheckReview, setFacecheckReview] = useState<string | null>(null);
   const [authorizationReason, setAuthorizationReason] = useState("");
   const [pauseReason, setPauseReason] = useState("");
   const [formError, setFormError] = useState("");
@@ -376,9 +378,18 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             ghuntConnected={ghuntConnected}
             onValidate={validate}
             onApproveGravatar={(actionId, reason) => controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason))}
+            onReviewFacecheck={setFacecheckReview}
           />
         </div>
       </div>
+
+      {facecheckReview !== null && <FacecheckReview
+        investigation={investigation}
+        actionId={facecheckReview}
+        disabled={controlsDisabled}
+        onDecide={(evidenceId, status, reason) => validate(evidenceId, status, reason)}
+        onClose={() => setFacecheckReview(null)}
+      />}
 
       {controller.reportError !== "" && <p ref={reportErrorRef} className="workspace-alert" role="alert" tabIndex={-1}>{controller.reportError}</p>}
       {reportIsFresh && !controller.busy && controller.report !== null && (

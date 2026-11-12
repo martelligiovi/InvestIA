@@ -256,7 +256,9 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
   for (const [actionId, leaves] of leavesByAction) {
     if (leaves.length < 2) continue;
     const id = `leaf-group:${actionId}`;
-    const title = leaves.every((leaf) => leaf.profileSeed !== undefined)
+    const title = leaves.every((leaf) => leaf.evidence?.sourceId === "facecheck:photo")
+      ? `${leaves.length} candidatos de FaceCheck`
+      : leaves.every((leaf) => leaf.profileSeed !== undefined)
       ? `${leaves.length} semillas de Gravatar` : `${leaves.length} resultados sin acciones`;
     const members = leaves.map((node) => ({ ...node, groupId: id }));
     for (const member of members) {

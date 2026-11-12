@@ -2,6 +2,7 @@ import { Fragment, useState } from "react";
 import { authorizationCovers, type Investigation, type ValidationStatus } from "@investia/core";
 import { actionTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
+import { facecheckReviewState } from "./FacecheckReview";
 
 export interface WorkspaceDetailsProps {
   readonly investigation: Investigation;
@@ -11,6 +12,25 @@ export interface WorkspaceDetailsProps {
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
   readonly onApproveGravatar?: (actionId: string, reason: string) => Promise<boolean>;
+  /** Opens the card review for the candidates of one FaceCheck search. */
+  readonly onReviewFacecheck?: (actionId: string) => void;
+}
+
+function FacecheckReviewCall({ investigation, actionId, onReview }: {
+  readonly investigation: Investigation; readonly actionId: string; readonly onReview: (actionId: string) => void;
+}) {
+  const state = facecheckReviewState(investigation, actionId);
+  if (state.candidates.length === 0) return null;
+  const label = state.pending.length === 0 ? "todo revisado" : `${state.pending.length} por revisar`;
+  return (
+    <section className="fc-call" aria-labelledby="fc-call-heading">
+      <h3 id="fc-call-heading">Candidatos de FaceCheck</h3>
+      <p>{state.accepted.length} aceptados · {state.rejected.length} descartados · {state.pending.length} por revisar. Solo los aceptados entran en el informe.</p>
+      <button type="button" className="workspace-button workspace-button--primary" onClick={() => onReview(actionId)}>
+        Revisar candidatos · {label}
+      </button>
+    </section>
+  );
 }
 
 function formatDate(value: string): string {
@@ -51,6 +71,17 @@ function SafeLink({ value }: { readonly value: string }) {
   return <span>{value}</span>;
 }
 
+/** The FaceCheck search behind a candidate group, a single candidate or the search action itself. */
+function facecheckActionOf(node: WorkspaceNode): string | undefined {
+  if (node.kind === "leaf-group") {
+    const first = node.members?.[0]?.evidence;
+    return first?.sourceId === "facecheck:photo" ? first.actionId : undefined;
+  }
+  if (node.kind === "evidence" && node.evidence?.sourceId === "facecheck:photo") return node.evidence.actionId;
+  if (node.kind === "action" && node.action?.spec.catalogId === "facecheck.photo.v1") return node.action.id;
+  return undefined;
+}
+
 function LeafGroupDetails({ node, onSelectNode }: { readonly node: WorkspaceNode; readonly onSelectNode?: (id: string) => void }) {
   const [page, setPage] = useState(0);
   const members = node.members ?? [];
@@ -82,7 +113,7 @@ function LeafGroupDetails({ node, onSelectNode }: { readonly node: WorkspaceNode
   );
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, onValidate, onSelectNode, onApproveGravatar }: WorkspaceDetailsProps) {
+export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, onValidate, onSelectNode, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
@@ -114,6 +145,8 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
         <p className="detail-empty">Seleccioná una semilla, acción u observación del grafo.</p>
       ) : (
         <div className="detail-content" key={node.id}>
+          {onReviewFacecheck !== undefined && facecheckActionOf(node) !== undefined &&
+            <FacecheckReviewCall investigation={investigation} actionId={facecheckActionOf(node)!} onReview={onReviewFacecheck} />}
           {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} onSelectNode={onSelectNode} />}
           {node.groupId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
             onClick={() => onSelectNode(node.groupId!)}>Volver al grupo</button>}
