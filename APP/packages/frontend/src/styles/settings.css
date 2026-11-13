@@ -1,0 +1,135 @@
+/*
+ * Ajustes: one page for every integration. Each card answers three questions in
+ * order — what it is, whether it is ready (status pill), and what to change — and
+ * keeps its own actions in its own footer so no button floats between cards.
+ */
+.settings-page { display: grid; gap: var(--space-6); }
+.settings-intro { max-width: 760px; }
+
+.settings-layout { display: grid; grid-template-columns: 200px minmax(0, 760px); align-items: start; gap: var(--space-7); }
+
+/* ── Section index ────────────────────────────────────── */
+.settings-index { position: sticky; top: 96px; }
+.settings-index ol { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; border-left: 1px solid var(--line); }
+.settings-index li { display: flex; align-items: baseline; gap: var(--space-2); margin-left: -1px; padding: 6px 0 6px var(--space-4); border-left: 2px solid transparent; }
+.settings-index li:hover { border-left-color: var(--red); }
+.settings-index li > span { color: var(--red); font-family: var(--font-ui); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.settings-index button { padding: 0; border: 0; background: none; color: var(--ink-soft); cursor: pointer; font-family: var(--font-ui); font-size: 14px; font-weight: 600; text-align: left; }
+.settings-index button:hover { color: var(--red); }
+
+.settings-sections { display: grid; gap: var(--space-5); min-width: 0; }
+
+/* ── Card ─────────────────────────────────────────────── */
+.settings-card {
+  display: grid; min-width: 0;
+  border: 1px solid var(--line); border-radius: var(--radius-panel);
+  background: var(--paper);
+  box-shadow: 0 1px 0 var(--line);
+  scroll-margin-top: 96px;
+}
+.settings-card:focus { outline: none; }
+.settings-card:focus-visible { outline: 2px solid var(--red); outline-offset: 3px; }
+
+.settings-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); padding: var(--space-5) 28px var(--space-4); border-bottom: 1px solid var(--line); }
+.settings-card-heading { display: grid; gap: 6px; min-width: 0; }
+.settings-card-eyebrow { display: flex; align-items: baseline; gap: var(--space-2); color: var(--muted); font-family: var(--font-ui); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.settings-card-eyebrow span { color: var(--red); letter-spacing: 0; }
+.settings-card-heading h2 { font-size: 26px; line-height: 1.15; }
+.settings-card-description { max-width: 60ch; color: var(--ink-soft); font-size: 14px; line-height: 1.55; }
+
+.settings-card-body { display: grid; gap: var(--space-5); padding: var(--space-5) 28px; }
+.settings-card-body > .settings-card-footer:last-child,
+.settings-card-body > .settings-form > .settings-card-footer:last-child { margin-bottom: calc(-1 * var(--space-5)); }
+
+.settings-card-footer {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3);
+  margin: 0 -28px; padding: var(--space-4) 28px;
+  border-top: 1px solid var(--line); border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+  background: var(--linen);
+}
+.settings-card-footer > :only-child { margin-left: auto; }
+.settings-card-footer .text-button { min-height: 36px; }
+
+/* ── Status pill ──────────────────────────────────────── */
+.settings-status { flex: none; max-width: 46%; margin: 4px 0 0; }
+.settings-status span {
+  display: inline-flex; align-items: center; gap: 8px; max-width: 100%;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  background: #FFFFFF; color: var(--ink-soft);
+  font-family: var(--font-ui); font-size: 12px; font-weight: 600; line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.settings-status span::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); }
+.settings-status--ok span { border-color: rgb(47 93 70 / 35%); background: rgb(47 93 70 / 7%); color: #244A37; }
+.settings-status--ok span::before { background: #2F5D46; }
+.settings-status--warn span { border-color: rgb(163 50 50 / 35%); background: var(--red-wash); color: var(--red-deep); }
+.settings-status--warn span::before { background: var(--red); }
+.settings-status--pending span::before { background: var(--muted); animation: settings-pulse 1.2s ease-in-out infinite; }
+
+/* ── Body pieces ──────────────────────────────────────── */
+.settings-form, .settings-fieldset { display: grid; gap: var(--space-5); min-width: 0; margin: 0; padding: 0; border: 0; }
+.settings-form[hidden] { display: none; }
+.settings-group { display: grid; gap: var(--space-3); }
+.settings-group + .settings-group { padding-top: var(--space-5); border-top: 1px dashed var(--line); }
+.settings-group h3 { font-family: var(--font-ui); font-size: 15px; font-weight: 600; }
+.settings-muted { color: var(--muted); font-size: 14px; line-height: 1.55; }
+
+.settings-inline { display: flex; align-items: stretch; gap: var(--space-2); }
+.settings-inline input { flex: 1; min-width: 0; }
+.settings-inline .primary-action { flex: none; min-height: 46px; padding-inline: 18px; white-space: nowrap; }
+
+.settings-row-actions { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-top: calc(-1 * var(--space-2)); }
+.settings-row-actions .text-button { min-height: 32px; font-size: 13px; }
+
+.settings-steps { display: grid; gap: 6px; margin: 0; padding-left: 1.3em; color: var(--ink-soft); font-size: 14px; line-height: 1.5; }
+.settings-steps li::marker { color: var(--red); font-weight: 600; }
+
+.settings-privacy, .settings-notice {
+  margin: 0; padding: var(--space-3) var(--space-4);
+  border-left: 2px solid var(--line-strong); border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--linen); color: var(--ink-soft); font-size: 13px; line-height: 1.55;
+}
+.settings-notice { border-left-color: #2F5D46; color: var(--ink); }
+
+/* ── Testing-mode switch (a native checkbox, drawn as a switch) ── */
+.settings-toggle { display: grid; gap: 6px; padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius); background: #FFFFFF; }
+.settings-toggle--on { border-color: rgb(163 50 50 / 35%); background: var(--red-wash); }
+.settings-switch { display: inline-flex; align-items: center; gap: var(--space-3); cursor: pointer; font-size: 15px; font-weight: 600; }
+.settings-switch input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; }
+.settings-switch-track { position: relative; flex: none; width: 40px; height: 22px; border-radius: 999px; background: var(--line-strong); transition: background-color 160ms var(--ease); }
+.settings-switch-track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 1px 2px rgb(35 32 30 / 30%); transition: transform 160ms var(--ease); }
+.settings-switch input:checked + .settings-switch-track { background: var(--red); }
+.settings-switch input:checked + .settings-switch-track::after { transform: translateX(18px); }
+.settings-switch input:focus-visible + .settings-switch-track { outline: 2px solid var(--red); outline-offset: 3px; }
+.settings-switch input:disabled + .settings-switch-track { opacity: 0.5; }
+.settings-toggle .field-hint { padding-left: calc(40px + var(--space-3)); }
+
+.ai-settings-retry { justify-self: start; }
+
+@keyframes settings-pulse { 50% { opacity: 0.35; } }
+
+/* ── Narrower screens ─────────────────────────────────── */
+@media (max-width: 1023px) {
+  .settings-layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); max-width: 760px; }
+  .settings-index { position: static; }
+  .settings-index ol { display: flex; flex-wrap: wrap; gap: var(--space-2); border-left: 0; }
+  .settings-index li { margin: 0; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); }
+  .settings-index li:hover { border-color: var(--red); }
+}
+
+@media (max-width: 600px) {
+  .settings-card-header { flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-4) var(--space-3); }
+  .settings-status { max-width: 100%; margin: 0; }
+  .settings-card-body { padding: var(--space-4); }
+  .settings-card-footer { margin-inline: calc(-1 * var(--space-4)); padding: var(--space-3) var(--space-4); }
+  .settings-card-body > .settings-card-footer:last-child,
+  .settings-card-body > .settings-form > .settings-card-footer:last-child { margin-bottom: calc(-1 * var(--space-4)); }
+  .settings-card-footer .primary-action { flex: 1 1 100%; }
+  .settings-inline { flex-direction: column; }
+  .settings-toggle .field-hint { padding-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-status--pending span::before { animation: none; }
+}

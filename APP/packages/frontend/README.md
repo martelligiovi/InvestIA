@@ -133,7 +133,7 @@ The independent acceptance record reports **110 TypeScript tests passed (0 faile
 
 ## NVIDIA Build AI reports
 
-**Ajustes de IA** (`#/ajustes`, linked from the header on every other page) configures the optional AI-written report:
+**Ajustes** (`#/ajustes`, linked from the header on every other page) groups the integrations as one card each — **Informe con IA** (NVIDIA Build), **Google (GHunt)** and **FaceCheck.id** — with a status pill, its own controls and its own save action; a section index jumps between them. The **Informe con IA** card configures the optional AI-written report:
 
 - **API key.** Get a free key at [build.nvidia.com/models](https://build.nvidia.com/models) and paste it in the password field. It is stored by the backend in PostgreSQL and is never returned to the browser; the page shows only *Configurada (hint)* or *Sin configurar*. Leaving the field empty on save keeps the stored key; **Quitar API key** deletes it.
 - **Model.** The list shows build.nvidia.com Free Endpoint chat models, read live from the NVIDIA catalog; reasoning models are marked. When the catalog is unreachable, a static fallback list is shown with a note. A saved model that is no longer listed stays selectable.

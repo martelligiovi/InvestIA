@@ -3,6 +3,7 @@ import { AI_MAX_TOKENS_RANGE, type AiReasoningEffort, type AiReportSettings } fr
 import { InvestigationApiClient, type AiModelList, type AiSettingsView } from "../api/client";
 import { GhuntSettings } from "../components/GhuntSettings";
 import { FacecheckSettings } from "../components/FacecheckSettings";
+import { SettingsCard, type SettingsStatus } from "../components/SettingsCard";
 
 const NVIDIA_MODELS_URL = "https://build.nvidia.com/models";
 
@@ -54,12 +55,49 @@ function messageFor(error: unknown): string {
   return "Ocurrió un error inesperado.";
 }
 
-export function AiSettingsPage() {
-  return <>
-    <AiSettingsContent />
-    <div className="creation-page ai-settings-page"><GhuntSettings /><FacecheckSettings /></div>
-  </>;
+const SECTIONS = [
+  { id: "ai-settings", label: "Informe con IA" },
+  { id: "ghunt-settings", label: "Google (GHunt)" },
+  { id: "facecheck-settings", label: "FaceCheck.id" },
+] as const;
+
+/** Moves to a section without touching the hash, which the router owns. */
+function goToSection(id: string) {
+  const section = document.getElementById(id);
+  section?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  section?.focus({ preventScroll: true });
 }
+
+export function AiSettingsPage() {
+  return (
+    <div className="settings-page">
+      <header className="page-intro settings-intro">
+        <p className="kicker">Configuración</p>
+        <h1 id="settings-title" className="document-title">Ajustes</h1>
+        <p className="document-lead">Conectá las herramientas que usa InvestIA: el modelo que redacta los informes, la cuenta de Google para GHunt y la búsqueda facial de FaceCheck.</p>
+      </header>
+      <div className="settings-layout">
+        <nav className="settings-index" aria-label="Secciones de ajustes">
+          <ol>
+            {SECTIONS.map((section, index) => (
+              <li key={section.id}>
+                <span aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+                <button type="button" onClick={() => goToSection(section.id)}>{section.label}</button>
+              </li>
+            ))}
+          </ol>
+        </nav>
+        <div className="settings-sections">
+          <AiSettingsContent />
+          <GhuntSettings />
+          <FacecheckSettings />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const AI_DESCRIPTION = "Redacta informes narrativos e hipotéticos a partir de los datos del expediente, con un modelo de NVIDIA Build.";
 
 function AiSettingsContent() {
   const api = useMemo(() => new InvestigationApiClient(), []);
@@ -163,47 +201,36 @@ function AiSettingsContent() {
     setNotice("Se cargaron los valores por defecto. Guardá para aplicarlos.");
   }
 
-  const intro = (
-    <header className="page-intro">
-      <p className="kicker">Informe con IA</p>
-      <h1 id="ai-settings-title" className="document-title">Ajustes de <span>IA</span></h1>
-      <p className="document-lead">Configurá NVIDIA Build para redactar informes narrativos e hipotéticos a partir de los datos del expediente.</p>
-    </header>
-  );
-
   if (view === null || draft === null) {
     return (
-      <section className="creation-page ai-settings-page" aria-labelledby="ai-settings-title">
-        {intro}
+      <SettingsCard id="ai-settings" index="01" eyebrow="NVIDIA Build" title="Informe con IA" description={AI_DESCRIPTION}
+        status={loadError === "" ? { label: "Cargando…", tone: "pending" } : { label: "Sin datos", tone: "off" }}>
         {loadError === "" ? (
-          <p className="document-note" role="status">Cargando ajustes…</p>
+          <p className="settings-muted" role="status">Cargando ajustes…</p>
         ) : (
           <>
             <p className="form-error" role="alert">{loadError}</p>
-            <button className="primary-action ai-settings-retry" type="button" onClick={() => void loadSettings()}>Intentar de nuevo</button>
+            <button className="secondary-action ai-settings-retry" type="button" onClick={() => void loadSettings()}>Intentar de nuevo</button>
           </>
         )}
-      </section>
+      </SettingsCard>
     );
   }
 
   const modelOptions = models?.models ?? [];
   const savedModelMissing = !modelOptions.some((option) => option.id === draft.model);
 
+  const status: SettingsStatus = view.apiKeyConfigured
+    ? { label: `Configurada${view.apiKeyHint === null ? "" : ` (${view.apiKeyHint})`}`, tone: "ok" }
+    : { label: "Sin configurar", tone: "warn" };
+
   return (
-    <section className="creation-page ai-settings-page" aria-labelledby="ai-settings-title">
-      {intro}
-      <form className="create-form ai-settings-form" noValidate onSubmit={(event) => void handleSave(event)}>
-        <fieldset className="create-fields" disabled={pending}>
+    <SettingsCard id="ai-settings" index="01" eyebrow="NVIDIA Build" title="Informe con IA" description={AI_DESCRIPTION} status={status}>
+      <form className="settings-form ai-settings-form" noValidate onSubmit={(event) => void handleSave(event)}>
+        <fieldset className="settings-fieldset" disabled={pending}>
           <legend className="visually-hidden">Ajustes de NVIDIA Build</legend>
-          <section className="create-section" aria-labelledby="ai-settings-key">
-            <div className="create-section-heading">
-              <span className="create-section-index" aria-hidden="true">01</span>
-              <h2 id="ai-settings-key">Clave de acceso</h2>
-            </div>
-            <p className="ai-settings-key-status">
-              Estado: <strong>{view.apiKeyConfigured ? `Configurada${view.apiKeyHint === null ? "" : ` (${view.apiKeyHint})`}` : "Sin configurar"}</strong>
-            </p>
+          <section className="settings-group" aria-labelledby="ai-settings-key">
+            <h3 id="ai-settings-key">Clave de acceso</h3>
             <div className="form-field">
               <label htmlFor="ai-api-key">API key de NVIDIA Build</label>
               <input
@@ -221,18 +248,13 @@ function AiSettingsContent() {
                 Conseguí una API key gratuita en <a href={NVIDIA_MODELS_URL} target="_blank" rel="noreferrer">build.nvidia.com/models</a>. Se guarda en el servidor y nunca se vuelve a mostrar completa.
               </span>
             </div>
-            <div className="ai-settings-actions">
-              <button className="text-button" type="button" disabled={!view.apiKeyConfigured} onClick={() => void handleRemoveKey()}>
-                Quitar API key
-              </button>
+            <div className="settings-row-actions">
+              <button className="text-button" type="button" disabled={!view.apiKeyConfigured} onClick={() => void handleRemoveKey()}>Quitar API key</button>
             </div>
           </section>
 
-          <section className="create-section" aria-labelledby="ai-settings-model">
-            <div className="create-section-heading">
-              <span className="create-section-index" aria-hidden="true">02</span>
-              <h2 id="ai-settings-model">Modelo y parámetros</h2>
-            </div>
+          <section className="settings-group" aria-labelledby="ai-settings-model">
+            <h3 id="ai-settings-model">Modelo y parámetros</h3>
             <div className="form-field">
               <label htmlFor="ai-model">Modelo</label>
               <select
@@ -281,22 +303,20 @@ function AiSettingsContent() {
               </div>
               <p className="field-hint">“Predeterminado del modelo” no envía el esfuerzo de razonamiento. Si elegís otro valor y el modelo no lo admite, NVIDIA Build rechaza el pedido y vas a ver el error al generar el informe.</p>
             </details>
-            <div className="ai-settings-actions">
-              <button className="text-button" type="button" onClick={restoreDefaults}>Restaurar valores por defecto</button>
-            </div>
           </section>
 
-          <p className="document-note ai-settings-privacy">
+          <p className="settings-privacy">
             Al generar un informe con IA, los datos recopilados del expediente se envían a NVIDIA Build. El informe es hipotético y no confirma identidades.
           </p>
           {formError !== "" && <p className="form-error" role="alert">{formError}</p>}
-          {notice !== "" && <p className="ai-settings-notice" role="status">{notice}</p>}
+          {notice !== "" && <p className="settings-notice" role="status">{notice}</p>}
         </fieldset>
-        <div className="create-submit-bar">
-          <button className="primary-action create-submit" type="submit" disabled={pending}>{pending ? "Guardando…" : "Guardar"}</button>
+        <div className="settings-card-footer">
+          <button className="text-button" type="button" disabled={pending} onClick={restoreDefaults}>Restaurar valores por defecto</button>
+          <button className="primary-action" type="submit" disabled={pending}>{pending ? "Guardando…" : "Guardar ajustes de IA"}</button>
         </div>
       </form>
-    </section>
+    </SettingsCard>
   );
 }
 

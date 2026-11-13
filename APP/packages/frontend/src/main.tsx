@@ -9,6 +9,7 @@ import "./styles/workspace.css";
 import "./styles/ai-settings.css";
 import "./styles/interface.css";
 import "./styles/facecheck-review.css";
+import "./styles/settings.css";
 
 const rootElement = document.getElementById("root");
 if (rootElement === null) throw new Error("Missing root element");

@@ -77,6 +77,25 @@ afterEach(() => {
 });
 
 describe("ajustes de IA", () => {
+  it("groups every integration under one Ajustes page with a section index", async () => {
+    installSettingsApi();
+    const user = userEvent.setup();
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    render(<AiSettingsPage />);
+
+    expect(await screen.findByRole("heading", { name: "Ajustes", level: 1 })).toBeInTheDocument();
+    for (const name of ["Informe con IA", "Google (GHunt)", "FaceCheck.id"]) {
+      expect(screen.getByRole("heading", { name, level: 2 })).toBeInTheDocument();
+    }
+    const index = screen.getByRole("navigation", { name: "Secciones de ajustes" });
+    expect(within(index).getAllByRole("button").map((button) => button.textContent)).toEqual(["Informe con IA", "Google (GHunt)", "FaceCheck.id"]);
+    await user.click(within(index).getByRole("button", { name: "FaceCheck.id" }));
+    expect(scrolled).toHaveBeenCalled();
+    expect(window.location.hash).not.toContain("facecheck");
+    expect(screen.getByRole("button", { name: "Guardar ajustes de IA" })).toBeInTheDocument();
+  });
+
   it("muestra la API key sin configurar, los valores por defecto y los modelos Free Endpoint", async () => {
     installSettingsApi();
     const user = userEvent.setup();
@@ -109,7 +128,7 @@ describe("ajustes de IA", () => {
     await screen.findByText("Sin configurar");
 
     await user.type(screen.getByLabelText("API key de NVIDIA Build"), "nvapi-secret-1234");
-    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await user.click(screen.getByRole("button", { name: "Guardar ajustes de IA" }));
 
     expect(await screen.findByText("Configurada (••••1234)")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Ajustes guardados.");
@@ -134,7 +153,7 @@ describe("ajustes de IA", () => {
     fireEvent.change(screen.getByLabelText("Top P"), { target: { value: "0.8" } });
     await user.clear(screen.getByLabelText("Máximo de tokens"));
     await user.type(screen.getByLabelText("Máximo de tokens"), "8192");
-    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await user.click(screen.getByRole("button", { name: "Guardar ajustes de IA" }));
 
     expect(await screen.findByRole("status")).toHaveTextContent("Ajustes guardados.");
     expect(writes(calls)).toEqual([
@@ -151,7 +170,7 @@ describe("ajustes de IA", () => {
     await user.click(screen.getByText("Parámetros avanzados"));
     await user.clear(screen.getByLabelText("Máximo de tokens"));
     await user.type(screen.getByLabelText("Máximo de tokens"), "100");
-    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await user.click(screen.getByRole("button", { name: "Guardar ajustes de IA" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent(/Revisá los parámetros/u);
     expect(screen.getByLabelText("Máximo de tokens")).toHaveAttribute("aria-invalid", "true");
@@ -175,7 +194,7 @@ describe("ajustes de IA", () => {
     expect(screen.getByLabelText("Máximo de tokens")).toHaveValue(4096);
     expect(writes(calls)).toEqual([]);
 
-    await user.click(screen.getByRole("button", { name: "Guardar" }));
+    await user.click(screen.getByRole("button", { name: "Guardar ajustes de IA" }));
     await screen.findByText("Ajustes guardados.");
     expect(writes(calls)).toEqual([["/settings/ai", "PUT", { settings: defaults }]]);
   });

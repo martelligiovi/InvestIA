@@ -37,7 +37,7 @@ export function AppShell({ children, quiet = false, home = false, create = false
                 <span>{create ? "Volver" : "Inicio"}</span>
               </a>
             )}
-            {showSettingsLink && <a className="settings-link" href="#/ajustes">Ajustes de IA</a>}
+            {showSettingsLink && <a className="settings-link" href="#/ajustes">Ajustes</a>}
             {showNewInvestigationLink && (
               <a className="new-investigation-link" href="#/nueva">Nueva investigación <span aria-hidden="true">↗</span></a>
             )}

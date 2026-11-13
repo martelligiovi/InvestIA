@@ -145,11 +145,11 @@ describe("App route scaffold", () => {
     const user = userEvent.setup();
     window.history.replaceState(null, "", "/#/");
     render(<App />);
-    expect(screen.getByRole("link", { name: "Ajustes de IA" })).toHaveAttribute("href", "#/ajustes");
+    expect(screen.getByRole("link", { name: "Ajustes" })).toHaveAttribute("href", "#/ajustes");
 
-    await user.click(screen.getByRole("link", { name: "Ajustes de IA" }));
-    expect(await screen.findByRole("heading", { name: "Ajustes de IA", level: 1 })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Ajustes de IA" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: "Ajustes" }));
+    expect(await screen.findByRole("heading", { name: "Ajustes", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Ajustes" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Inicio" })).toHaveAttribute("href", "#/");
   });
 
