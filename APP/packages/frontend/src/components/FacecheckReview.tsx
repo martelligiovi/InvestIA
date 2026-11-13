@@ -284,11 +284,15 @@ export function FacecheckReview({ investigation, actionId, disabled, onDecide, o
                   <li key={evidence.id} className={`fc-tile fc-tile--${tab}`}>
                     <Thumbnail evidence={evidence} size="small" />
                     <div className="fc-tile-body">
-                      <strong>{siteName(evidence.finding?.url ?? "")}</strong>
-                      <span className="fc-tile-score">Score {score(evidence)}</span>
-                      <PageLink evidence={evidence} compact />
+                      <strong title={siteName(evidence.finding?.url ?? "")}>{siteName(evidence.finding?.url ?? "")}</strong>
+                      {safeUrl(evidence.finding?.url ?? "") !== undefined &&
+                        <span className="fc-tile-path" title={evidence.finding?.url}>{pagePath(safeUrl(evidence.finding!.url)!)}</span>}
+                      <span className="fc-tile-meta">
+                        <span className="fc-tile-score">Score <b>{score(evidence)}</b></span>
+                        <PageLink evidence={evidence} compact />
+                      </span>
                     </div>
-                    <button type="button" className="workspace-button workspace-button--quiet" disabled={disabled}
+                    <button type="button" className="fc-tile-move" disabled={disabled}
                       onClick={() => decide(evidence, tab === "accepted" ? "rejected" : "accepted")}>
                       {tab === "accepted" ? "Mover a descartados" : "Mover a aceptados"}
                     </button>
