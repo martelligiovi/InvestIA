@@ -1,4 +1,5 @@
 import type { Investigation, ValidationStatus } from "../domain/investigation.ts";
+import { reportableEvidence } from "./compile-report.ts";
 
 export const AI_REASONING_EFFORTS = ["default", "low", "medium", "high"] as const;
 export type AiReasoningEffort = (typeof AI_REASONING_EFFORTS)[number];
@@ -27,7 +28,7 @@ export const DEFAULT_AI_REPORT_SETTINGS: AiReportSettings = {
 
 export const AI_MAX_TOKENS_RANGE = { min: 256, max: 32_768 } as const;
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
-/** Keeps the request within free-endpoint context windows; the appendix still lists every record. */
+/** Keeps the request within free-endpoint context windows; the appendix still lists every reportable record. */
 const MAX_FINDINGS_CHARACTERS = 60_000;
 
 function invalid(): never {
@@ -57,7 +58,7 @@ export function normalizeAiReportSettings(value: Partial<Record<keyof AiReportSe
 }
 
 export const AI_REPORT_SYSTEM_PROMPT = [
-  "Sos un analista de inteligencia de fuentes abiertas (OSINT). Recibís los datos que recopiló una investigación autorizada a partir de una o más direcciones de correo y de los usernames que el operador confirmó (cada hallazgo indica si su semilla fue un correo o un username): servicios donde una herramienta automática reportó una cuenta, URLs, categorías, metadatos públicos y las decisiones de validación del operador.",
+  "Sos un analista de inteligencia de fuentes abiertas (OSINT). Recibís los datos que recopiló una investigación autorizada a partir de una o más direcciones de correo y de los usernames que el operador confirmó (cada hallazgo indica si su semilla fue un correo, un username o una foto de perfil): servicios donde una herramienta automática reportó una cuenta, URLs, categorías, metadatos públicos y las decisiones de validación del operador.",
   "",
   "Tu tarea es redactar, en español y en Markdown, un informe textual que responda de forma hipotética: si tuvieras que decidir, ¿quién podría ser esta persona? Describí su posible perfil, sus gustos e intereses probables, su actividad y sus hábitos digitales, y las conclusiones que se pueden sacar de los datos.",
   "",
@@ -82,9 +83,10 @@ export const AI_REPORT_SYSTEM_PROMPT = [
 
 interface FindingInput {
   readonly evidenceId: string;
-  /** Exactly one: the email or the confirmed username the producing action ran on. */
+  /** Exactly one: the email, confirmed username or profile photo the producing action ran on. */
   readonly emailSeed?: string;
   readonly usernameSeed?: string;
+  readonly photoSeed?: string;
   readonly provider: string;
   readonly target: string;
   readonly url?: string;
@@ -95,12 +97,13 @@ interface FindingInput {
 }
 
 function findingInputs(investigation: Investigation): FindingInput[] {
-  return investigation.evidence.map((evidence) => {
+  return reportableEvidence(investigation).evidence.map((evidence) => {
     const decision = investigation.validations.filter((item) => item.evidenceId === evidence.id).at(-1);
     const finding = evidence.finding;
     return {
       evidenceId: evidence.id,
-      ...(evidence.seed.kind === "username" ? { usernameSeed: evidence.seed.value } : { emailSeed: evidence.seed.value }),
+      ...(evidence.seed.kind === "username" ? { usernameSeed: evidence.seed.value }
+        : evidence.seed.kind === "photo" ? { photoSeed: evidence.seed.value } : { emailSeed: evidence.seed.value }),
       provider: evidence.provider,
       target: finding?.target.value ?? evidence.seed.value,
       ...(finding !== undefined && finding.url.length > 0 ? { url: finding.url } : {}),

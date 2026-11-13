@@ -1,4 +1,4 @@
-import type { EmailSeed, UsernameSeed } from "./seed.ts";
+import type { EmailSeed, PhotoSeed, UsernameSeed } from "./seed.ts";
 import type { RegistrationStatus, ScannerFinding } from "./observation.ts";
 export type { RegistrationStatus } from "./observation.ts";
 
@@ -57,14 +57,15 @@ export interface ActionApproval {
 }
 
 /** Catalog tools that run only under an explicit, per-tool consent scope. */
-export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1" | "maigret.username.v1" | "ghunt.email.v1";
-export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"]);
+export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1" | "maigret.username.v1" | "ghunt.email.v1" | "facecheck.photo.v1";
+export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1"]);
 /** Seed kind each scoped tool accepts. */
-export const CATALOG_INPUT_KINDS: Readonly<Record<ScopedCatalogId, "email" | "username">> = Object.freeze({
+export const CATALOG_INPUT_KINDS: Readonly<Record<ScopedCatalogId, "email" | "username" | "photo">> = Object.freeze({
   "user-scanner.email.v1": "email",
   "gravatar.email.v1": "email",
   "maigret.username.v1": "username",
   "ghunt.email.v1": "email",
+  "facecheck.photo.v1": "photo",
 });
 /** GHunt only applies to Google consumer accounts. */
 export const GHUNT_EMAIL_DOMAINS: readonly string[] = Object.freeze(["gmail.com", "googlemail.com"]);
@@ -130,10 +131,16 @@ export interface GhuntActionSpec {
   readonly seed: EmailSeed;
 }
 
+export interface FacecheckActionSpec {
+  readonly catalogId: "facecheck.photo.v1";
+  readonly provider: "facecheck";
+  readonly seed: PhotoSeed;
+}
+
 /** Historical export name retained for consumers; it covers every catalog action spec. */
 export interface GitHubCatalogAction {
   readonly id: InvestigationActionId;
-  readonly spec: GitHubActionSpec | UserScannerActionSpec | GravatarActionSpec | MaigretActionSpec | GhuntActionSpec;
+  readonly spec: GitHubActionSpec | UserScannerActionSpec | GravatarActionSpec | MaigretActionSpec | GhuntActionSpec | FacecheckActionSpec;
   /**
    * Explicit input seed reference (see seed-graph.ts). Absent on historical actions and on
    * actions whose input is the operator email embedded in their spec.
@@ -154,8 +161,8 @@ export interface GitHubCatalogAction {
 export interface EvidenceRecord {
   readonly id: EvidenceId;
   readonly actionId: InvestigationActionId;
-  /** Seed of the action that produced it: an email or a confirmed username. */
-  readonly seed: EmailSeed | UsernameSeed;
+  /** Seed of the action that produced it: an email, confirmed username or profile photo. */
+  readonly seed: EmailSeed | UsernameSeed | PhotoSeed;
   readonly provider: string;
   readonly status: RegistrationStatus;
   /** Absent on historical registration observations. */

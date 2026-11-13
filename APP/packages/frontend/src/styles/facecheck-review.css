@@ -1,0 +1,209 @@
+/*
+ * FaceCheck candidate review: one card at a time over the workspace.
+ * The face is the decision input, so it gets the stage; red marks the discard path,
+ * ink marks acceptance, and the linen surface keeps the editorial tone of the app.
+ */
+:root {
+  --fc-accept: #2F5D46;
+  --fc-accept-deep: #244A37;
+  --fc-accept-wash: rgb(47 93 70 / 8%);
+}
+
+/* ── Entry point in the detail drawer ─────────────────── */
+.fc-call { display: grid; gap: var(--space-3); margin: 0 0 var(--space-4); padding: var(--space-4); border: 1px solid var(--line); border-left: 3px solid var(--red); border-radius: var(--radius); background: var(--paper); }
+.fc-call h3 { margin: 0; font-family: var(--font-ui); font-size: 15px; font-weight: 600; }
+.fc-call p { color: var(--ink-soft); font-size: 13px; line-height: 1.5; }
+.fc-call .workspace-button { justify-self: start; }
+
+/* ── Overlay and dialog ───────────────────────────────── */
+.fc-overlay {
+  position: fixed; inset: 0; z-index: 60;
+  display: grid; place-items: center;
+  padding: clamp(8px, 3vw, 32px);
+  background: rgb(35 32 30 / 46%);
+  backdrop-filter: blur(3px);
+  animation: fc-fade 160ms var(--ease);
+}
+.fc-dialog {
+  display: flex; flex-direction: column;
+  width: min(880px, 100%); max-height: calc(100vh - 2 * clamp(8px, 3vw, 32px));
+  overflow: auto;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-panel);
+  background: var(--linen);
+  box-shadow: 0 30px 80px -30px rgb(35 32 30 / 55%);
+  font-family: var(--font-ui);
+  animation: fc-rise 220ms var(--ease);
+}
+.fc-dialog:focus { outline: none; }
+.fc-dialog:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }
+
+.fc-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); padding: var(--space-5) var(--space-5) var(--space-4); }
+.fc-header h2 { margin-top: var(--space-1); font-family: var(--font-display); font-size: clamp(24px, 3.4vw, 32px); }
+.fc-subtitle { max-width: 60ch; margin-top: var(--space-2); color: var(--muted); font-size: 14px; line-height: 1.5; }
+.fc-close { flex: none; width: 40px; height: 40px; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--paper); color: var(--ink); cursor: pointer; font-size: 22px; line-height: 1; }
+.fc-close:hover { border-color: var(--red); color: var(--red); }
+
+.fc-progress { height: 3px; margin: 0 var(--space-5); background: var(--line); border-radius: 2px; overflow: hidden; }
+.fc-progress > span { display: block; height: 100%; background: var(--red); transition: width 260ms var(--ease); }
+
+/* ── Tabs ─────────────────────────────────────────────── */
+/* The tab bar stays reachable while a long Aceptados / Descartados list scrolls. */
+.fc-tabs { position: sticky; top: 0; z-index: 2; display: flex; flex: none; gap: var(--space-1); padding: var(--space-4) var(--space-5) 0; border-bottom: 1px solid var(--line); background: var(--linen); }
+.fc-tab { margin-bottom: -1px; padding: 10px 14px; border: 1px solid transparent; border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 600; }
+.fc-tab:hover { color: var(--ink); }
+.fc-tab[aria-selected="true"] { border-color: var(--line); background: var(--paper); color: var(--ink); }
+.fc-tab--accepted[aria-selected="true"] { box-shadow: inset 0 2px 0 var(--fc-accept); }
+.fc-tab--rejected[aria-selected="true"] { box-shadow: inset 0 2px 0 var(--red); }
+.fc-tab--review[aria-selected="true"] { box-shadow: inset 0 2px 0 var(--ink); }
+
+.fc-panel { padding: var(--space-5); background: var(--paper); }
+.fc-count { margin-bottom: var(--space-4); color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+
+/* ── The card ─────────────────────────────────────────── */
+.fc-stage { display: grid; grid-template-columns: 148px minmax(0, 1fr); align-items: start; gap: var(--space-5); }
+.fc-stage:has(> .fc-card:only-child) { grid-template-columns: minmax(0, 1fr); }
+
+.fc-reference { display: grid; gap: var(--space-2); margin: 0; }
+.fc-reference figcaption { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-align: center; text-transform: uppercase; }
+.fc-reference-reveal {
+  display: grid; place-items: center; align-content: center; gap: 6px;
+  width: 148px; aspect-ratio: 1; padding: var(--space-3);
+  border: 1px dashed var(--line-strong); border-radius: var(--radius-panel);
+  background: var(--linen); color: var(--ink); cursor: pointer; font-size: 13px; font-weight: 600; text-align: center;
+}
+.fc-reference-reveal small { color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.35; }
+.fc-reference-reveal:hover { border-color: var(--red); color: var(--red); }
+.fc-reference-icon { font-size: 22px; }
+
+.fc-card {
+  position: relative;
+  display: grid; grid-template-columns: minmax(200px, 320px) minmax(0, 1fr); gap: var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--line); border-radius: var(--radius-panel);
+  background: #FFFFFF;
+  box-shadow: 0 1px 0 var(--line), 0 18px 40px -28px rgb(35 32 30 / 45%);
+  animation: fc-card-in 240ms var(--ease);
+}
+.fc-card--accepted { border-color: var(--fc-accept); }
+.fc-card--rejected { border-color: var(--red); }
+
+.fc-card-media { position: relative; }
+.fc-thumb { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border: 1px solid var(--line); border-radius: var(--radius); background: var(--linen); }
+.fc-thumb--reference { width: 148px; border-radius: var(--radius-panel); }
+.fc-thumb--small { width: 72px; flex: none; }
+.fc-thumb--missing { display: grid; place-items: center; color: var(--muted); font-size: 12px; text-align: center; }
+
+.fc-stamp { position: absolute; top: 12px; left: 12px; padding: 4px 10px; border-radius: 999px; color: #FFFFFF; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+.fc-stamp--accepted { background: var(--fc-accept); }
+.fc-stamp--rejected { background: var(--red); }
+
+.fc-card-body { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; padding-top: var(--space-1); }
+.fc-rank { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.fc-card-body h3 { font-family: var(--font-display); font-size: clamp(28px, 4vw, 38px); line-height: 1.05; overflow-wrap: anywhere; }
+.fc-path { overflow: hidden; color: var(--ink-soft); font-family: var(--font-code); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+
+.fc-score { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; align-items: baseline; column-gap: var(--space-3); row-gap: 6px; margin-top: var(--space-2); }
+.fc-score-label { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.fc-score-value { justify-self: end; font-family: var(--font-display); font-size: 34px; font-variant-numeric: tabular-nums; line-height: 1; }
+.fc-score-track { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.fc-score-track > span { display: block; height: 100%; border-radius: 3px; background: var(--ink); }
+
+.fc-flag { align-self: flex-start; padding: 4px 10px; border: 1px solid var(--red); border-radius: 999px; background: var(--red-wash); color: var(--red-deep); font-size: 12px; font-weight: 600; }
+
+.fc-link { align-self: flex-start; margin-top: auto; color: var(--ink); font-size: 14px; font-weight: 600; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 0.3em; }
+.fc-link:hover { color: var(--red); text-decoration-color: currentColor; }
+.fc-link--unsafe { color: var(--muted); font-weight: 400; text-decoration: none; }
+
+/* ── Decision buttons ─────────────────────────────────── */
+.fc-actions { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: var(--space-3); margin-top: var(--space-5); }
+.fc-action {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  min-height: 56px; padding: 12px 20px;
+  border: 1px solid; border-radius: 999px;
+  cursor: pointer; font-size: 16px; font-weight: 700;
+  transition: background-color 140ms var(--ease), color 140ms var(--ease), transform 140ms var(--ease), box-shadow 140ms var(--ease);
+}
+.fc-action:active:not(:disabled) { transform: scale(0.97); }
+.fc-action:disabled { cursor: not-allowed; opacity: 0.45; }
+.fc-action-icon { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; font-size: 14px; }
+.fc-action--reject { border-color: var(--red); background: var(--paper); color: var(--red); }
+.fc-action--reject .fc-action-icon { background: var(--red-wash); }
+.fc-action--reject:hover:not(:disabled) { background: var(--red); color: #FFFFFF; box-shadow: 0 10px 24px -14px var(--red); }
+.fc-action--reject:hover:not(:disabled) .fc-action-icon { background: rgb(255 255 255 / 18%); }
+.fc-action--accept { border-color: var(--fc-accept); background: var(--fc-accept); color: #FFFFFF; }
+.fc-action--accept .fc-action-icon { background: rgb(255 255 255 / 18%); }
+.fc-action--accept:hover:not(:disabled) { border-color: var(--fc-accept-deep); background: var(--fc-accept-deep); box-shadow: 0 10px 24px -14px var(--fc-accept); }
+.fc-action--skip { min-height: 44px; padding-inline: 18px; border-color: var(--line-strong); background: transparent; color: var(--ink-soft); font-size: 14px; font-weight: 600; }
+.fc-action--skip:hover { border-color: var(--ink); color: var(--ink); }
+
+.fc-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-4); }
+.fc-keys { color: var(--muted); font-size: 12px; }
+.fc-keys kbd { display: inline-block; min-width: 22px; margin: 0 2px 0 8px; padding: 1px 6px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; background: #FFFFFF; color: var(--ink); font-family: var(--font-ui); font-size: 11px; text-align: center; }
+.fc-keys kbd:first-child { margin-left: 0; }
+.fc-footer .text-button { min-height: 32px; font-size: 13px; }
+
+/* ── Done state ───────────────────────────────────────── */
+.fc-done { display: grid; justify-items: center; gap: var(--space-3); padding: var(--space-6) var(--space-4); text-align: center; }
+.fc-done-mark { display: grid; place-items: center; width: 56px; height: 56px; border-radius: 50%; background: var(--fc-accept-wash); color: var(--fc-accept); font-size: 26px; }
+.fc-done h3 { font-family: var(--font-display); font-size: 28px; }
+.fc-done-actions { display: flex; gap: var(--space-3); margin-top: var(--space-2); }
+
+/* ── Accepted / discarded lists ───────────────────────── */
+/* Each tile stacks face, site, path and score, then a full-width move button, so nothing overlaps at any width. */
+.fc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
+.fc-tile {
+  display: flex; flex-direction: column; gap: var(--space-3); min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--line); border-top: 3px solid var(--line-strong); border-radius: var(--radius-panel);
+  background: #FFFFFF;
+}
+.fc-tile--accepted { border-top-color: var(--fc-accept); }
+.fc-tile--rejected { border-top-color: var(--red); }
+.fc-tile .fc-thumb--small { width: 100%; }
+.fc-tile--rejected .fc-thumb { filter: grayscale(0.6); }
+.fc-tile-body { display: grid; flex: 1; align-content: start; gap: 4px; min-width: 0; }
+.fc-tile-body strong { overflow: hidden; font-size: 15px; font-weight: 700; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.fc-tile-path { overflow: hidden; color: var(--ink-soft); font-family: var(--font-code); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.fc-tile-meta { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); margin-top: 2px; }
+.fc-tile-score { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.fc-tile-score b { color: var(--ink); font-size: 15px; font-variant-numeric: tabular-nums; }
+.fc-tile .fc-link { margin-top: 0; font-size: 13px; white-space: nowrap; }
+.fc-tile-move {
+  width: 100%; min-height: 36px; padding: 6px 10px;
+  border: 1px solid var(--line-strong); border-radius: 999px;
+  background: transparent; color: var(--ink); cursor: pointer;
+  font-family: var(--font-ui); font-size: 13px; font-weight: 600; line-height: 1.2;
+  transition: background-color 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease);
+}
+.fc-tile--rejected .fc-tile-move:hover:not(:disabled) { border-color: var(--fc-accept); background: var(--fc-accept); color: #FFFFFF; }
+.fc-tile--accepted .fc-tile-move:hover:not(:disabled) { border-color: var(--red); background: var(--red); color: #FFFFFF; }
+.fc-tile-move:disabled { cursor: not-allowed; opacity: 0.5; }
+.fc-empty, .fc-muted { color: var(--muted); font-size: 14px; }
+.fc-panel > .fc-muted { margin-top: var(--space-4); }
+
+/* ── Motion ───────────────────────────────────────────── */
+@keyframes fc-fade { from { opacity: 0; } }
+@keyframes fc-rise { from { opacity: 0; transform: translateY(12px); } }
+@keyframes fc-card-in { from { opacity: 0; transform: translateX(18px) rotate(0.6deg); } }
+
+/* ── Narrow screens ───────────────────────────────────── */
+@media (max-width: 720px) {
+  .fc-header, .fc-panel { padding-inline: var(--space-4); }
+  .fc-progress { margin-inline: var(--space-4); }
+  .fc-tabs { padding-inline: var(--space-3); overflow-x: auto; scrollbar-width: none; }
+  .fc-tab { flex: none; padding-inline: 10px; }
+  .fc-stage { grid-template-columns: minmax(0, 1fr); }
+  .fc-reference { grid-template-columns: auto 1fr; align-items: center; }
+  .fc-reference-reveal, .fc-thumb--reference { width: 88px; }
+  .fc-reference figcaption { text-align: left; }
+  .fc-card { grid-template-columns: minmax(0, 1fr); }
+  .fc-actions { grid-template-columns: 1fr 1fr; }
+  .fc-action--skip { grid-column: 1 / -1; grid-row: 2; justify-self: center; }
+  .fc-keys { display: none; }
+  .fc-grid { grid-template-columns: repeat(auto-fill, minmax(136px, 1fr)); gap: var(--space-3); }
+  .fc-tile { padding: var(--space-2); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fc-overlay, .fc-dialog, .fc-card { animation: none; }
+}

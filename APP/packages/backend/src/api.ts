@@ -24,7 +24,8 @@ import type { InvestigationActionRunner } from "./investigation-run-graph.ts";
 import { NvidiaProviderError, type NvidiaBuildGateway } from "./nvidia-build.ts";
 import type { InvestigationProjector } from "./neo4j-investigation-projector.ts";
 import type { GhuntSession } from "../../adapter-ghunt/src/index.ts";
-import { registerGhuntRoutes } from "./ghunt-routes.ts";
+import { isLocalSameOriginRequest, registerGhuntRoutes } from "./ghunt-routes.ts";
+import type { FacecheckSettingsRecord, FacecheckSettingsStore } from "./facecheck-settings-store.ts";
 import { registerFrontend } from "./serve-frontend.ts";
 
 class HttpError extends Error {
@@ -69,6 +70,11 @@ const AiSettingsBody = z.object({
     maxTokens: z.number().int().min(AI_MAX_TOKENS_RANGE.min).max(AI_MAX_TOKENS_RANGE.max),
   }).partial().strict().optional(),
 }).strict().refine((body) => body.apiKey !== undefined || body.settings !== undefined);
+
+const FacecheckSettingsBody = z.object({
+  token: z.string().trim().min(1).max(512).regex(/^\S+$/).optional(),
+  testingMode: z.boolean().optional(),
+}).strict().refine((body) => body.token !== undefined || body.testingMode !== undefined);
 
 const PROVIDER_ERRORS = {
   unauthorized: new HttpError(502, "AI_PROVIDER_UNAUTHORIZED", "NVIDIA Build rejected the API key"),
@@ -167,6 +173,7 @@ export interface BackendAppAdapters {
   readonly ai?: AiReportAdapters;
   /** GHunt Google session routes; `session` is absent when GHunt is not installed. */
   readonly ghunt?: { readonly session?: GhuntSession };
+  readonly facecheck?: FacecheckSettingsStore;
 }
 
 export interface BackendAppOptions {
@@ -349,8 +356,34 @@ export function createBackendApp(
   const ai = adapters.ai;
   if (ai !== undefined) registerAiRoutes(app, service, ai);
   if (adapters.ghunt !== undefined) registerGhuntRoutes(app, adapters.ghunt.session);
+  if (adapters.facecheck !== undefined) registerFacecheckRoutes(app, adapters.facecheck);
 
   return app;
+}
+
+function facecheckView(record: FacecheckSettingsRecord) {
+  return { tokenConfigured: record.token !== undefined, tokenHint: record.token === undefined ? null : apiKeyHint(record.token), testingMode: record.testingMode };
+}
+
+function registerFacecheckRoutes(app: FastifyInstance, settings: FacecheckSettingsStore): void {
+  function guard(headers: Parameters<typeof isLocalSameOriginRequest>[0]) {
+    if (!isLocalSameOriginRequest(headers)) throw new HttpError(403, "FORBIDDEN", "FaceCheck settings can only be managed from this computer's InvestIA page");
+  }
+  app.get("/settings/facecheck", async (request) => {
+    guard(request.headers);
+    return facecheckView(await settings.load());
+  });
+  app.put("/settings/facecheck", async (request) => {
+    guard(request.headers);
+    const body = input(FacecheckSettingsBody, request.body);
+    await settings.update(body);
+    return facecheckView(await settings.load());
+  });
+  app.delete("/settings/facecheck/token", async (request) => {
+    guard(request.headers);
+    await settings.clearToken();
+    return facecheckView(await settings.load());
+  });
 }
 
 function registerAiRoutes(app: FastifyInstance, service: InvestigationService, ai: AiReportAdapters): void {

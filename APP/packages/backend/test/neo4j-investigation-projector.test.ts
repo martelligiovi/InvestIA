@@ -86,6 +86,21 @@ function snapshot(revision: number, paused: boolean): Investigation {
   };
 }
 
+test("FaceCheck photo action and evidence project through PhotoSeed", async () => {
+  const driver = new FakeNeo4jDriver();
+  const projector = new Neo4jInvestigationProjector(driver, "neo4j");
+  const base = snapshot(3, false);
+  const seed = { kind: "photo" as const, value: "https://lh3.googleusercontent.com/photo" };
+  await projector.project({ ...base, actions: [{ id: "face", spec: { catalogId: "facecheck.photo.v1", provider: "facecheck", seed }, status: "queued", queuedByCatalog: true, proposedAt: base.createdAt, proposalReason: "photo" }], evidence: [{ id: "candidate", actionId: "face", seed, provider: "FaceCheck", status: "registered", sourceId: "facecheck:photo", recordedAt: base.createdAt, finding: { target: seed, upstreamStatus: "Found", url: "https://example.org/", category: "Face match", reason: "", extra: { score: 92, testing_mode: true }, media: { thumbnail: "data:image/webp;base64,YWJj" } } }] });
+  const actions = driver.calls.find(({ parameters }) => Array.isArray(parameters.actions))!;
+  const evidence = driver.calls.find(({ parameters }) => Array.isArray(parameters.evidence))!;
+  assert.match(actions.query, /WHEN action\.seedKind = 'photo'[\s\S]*MERGE \(s:PhotoSeed/);
+  assert.match(evidence.query, /WHEN record\.seedKind = 'photo'[\s\S]*MERGE \(s:PhotoSeed/);
+  assert.equal((actions.parameters.actions as { seedValue: string }[])[0]!.seedValue, seed.value);
+  assert.equal((evidence.parameters.evidence as { seedValue: string }[])[0]!.seedValue, seed.value);
+  assert.ok(driver.calls.some(({ query }) => /CONSTRAINT photo_seed_unique[\s\S]*n:PhotoSeed/.test(query)));
+});
+
 test("rich scanner payload is projected without discarding target or provenance", async () => {
   const driver = new FakeNeo4jDriver();
   const projector = new Neo4jInvestigationProjector(driver, "neo4j");

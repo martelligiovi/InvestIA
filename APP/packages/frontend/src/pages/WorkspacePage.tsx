@@ -5,6 +5,7 @@ import { AsciiArt } from "../components/AsciiArt";
 import { InvestigationGraph } from "../components/InvestigationGraph";
 import { UsernameSeedsPanel } from "../components/UsernameSeedsPanel";
 import { WorkspaceDetails } from "../components/WorkspaceDetails";
+import { FacecheckReview } from "../components/FacecheckReview";
 import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
 import { hasCatalogAuthorization, workspaceHeadline } from "./workspace-status";
@@ -54,6 +55,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   }, [hasGhunt]);
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("graph");
   const [detailOpen, setDetailOpen] = useState(false);
+  const [facecheckReview, setFacecheckReview] = useState<string | null>(null);
   const [authorizationReason, setAuthorizationReason] = useState("");
   const [pauseReason, setPauseReason] = useState("");
   const [formError, setFormError] = useState("");
@@ -245,7 +247,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
                 {controller.busy ? "Actualizando…" : "Actualizar expediente"}
               </button>
               <p>{investigation.authorization === undefined ? "Sin autorización registrada" : authorizationGranted ? "Autorización otorgada" : investigation.authorization.granted ? "Autorización previa: requiere consentimiento para las herramientas nuevas del catálogo" : "Autorización revocada"}</p>
-              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, la consulta del perfil público de Gravatar, la búsqueda de usernames aceptados con Maigret en unos 500 sitios y GHunt para correos Gmail. Revocar o pausar no cancela una ejecución en curso.</p>
+              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, la consulta del perfil público de Gravatar, la búsqueda de usernames aceptados con Maigret en unos 500 sitios GHunt para correos Gmail y la búsqueda facial con FaceCheck.id, que envía la foto de perfil de Google encontrada a facecheck.id y gasta créditos fuera del modo prueba. Revocar o pausar no cancela una ejecución en curso.</p>
               <label className="form-field">
                 <span>Motivo de autorización</span>
                 <textarea value={authorizationReason} maxLength={2_000} onChange={(event) => { setAuthorizationReason(event.currentTarget.value); setFormError(""); }} disabled={controlsDisabled} rows={2} />
@@ -376,9 +378,18 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             ghuntConnected={ghuntConnected}
             onValidate={validate}
             onApproveGravatar={(actionId, reason) => controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason))}
+            onReviewFacecheck={setFacecheckReview}
           />
         </div>
       </div>
+
+      {facecheckReview !== null && <FacecheckReview
+        investigation={investigation}
+        actionId={facecheckReview}
+        disabled={controlsDisabled}
+        onDecide={(evidenceId, status, reason) => validate(evidenceId, status, reason)}
+        onClose={() => setFacecheckReview(null)}
+      />}
 
       {controller.reportError !== "" && <p ref={reportErrorRef} className="workspace-alert" role="alert" tabIndex={-1}>{controller.reportError}</p>}
       {reportIsFresh && !controller.busy && controller.report !== null && (

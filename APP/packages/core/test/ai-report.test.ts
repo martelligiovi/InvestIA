@@ -4,6 +4,7 @@ import {
   AI_REPORT_SYSTEM_PROMPT,
   buildAiReportMessages,
   composeAiReport,
+  compileInvestigationReport,
   countOmittedAiReportFindings,
   DEFAULT_AI_REPORT_SETTINGS,
   normalizeAiReportSettings,
@@ -60,6 +61,95 @@ function investigation(): Investigation {
     audit: [],
   };
 }
+
+function facecheckCase(): Investigation {
+  const base = investigation();
+  const names = ["accepted", "rejected", "reaccepted", "rerejected", "inconclusive", "undecided"];
+  const evidence = names.map((name) => ({
+    ...base.evidence[0]!,
+    id: `face-${name}`,
+    provider: "facecheck",
+    sourceId: "facecheck:photo",
+    seed: { kind: "photo" as const, value: "https://photos.example/seed" },
+    finding: { ...base.evidence[0]!.finding!, url: `https://candidate.example/${name}` },
+  }));
+  const decisions = [
+    ["accepted", "accepted"], ["rejected", "rejected"],
+    ["reaccepted", "rejected"], ["reaccepted", "accepted"],
+    ["rerejected", "accepted"], ["rerejected", "rejected"], ["inconclusive", "inconclusive"],
+  ] as const;
+  return {
+    ...base,
+    evidence: [...base.evidence, ...evidence],
+    validations: [...base.validations, ...decisions.map(([name, status], index) => ({
+      id: `decision-${index}`, evidenceId: `face-${name}`, status,
+      reason: "review", at: "2026-10-01T10:00:00.000Z", operator: "local-operator" as const,
+    }))],
+  };
+}
+
+function requestData(value: Investigation): { findings: { evidenceId: string; url?: string; operatorValidation: string }[]; omittedFindings?: number } {
+  const user = buildAiReportMessages(value)[1]!.content;
+  return JSON.parse(user.slice(user.indexOf("```json") + 7, user.lastIndexOf("```")));
+}
+
+test("factual report includes only FaceCheck candidates with a latest accepted decision", () => {
+  const value = facecheckCase();
+  const report = compileInvestigationReport(value);
+  const evidenceSection = report.split("## Evidence\n")[1]!.split("\n## Validation decisions")[0]!;
+  for (const name of ["accepted", "reaccepted"]) assert.ok(evidenceSection.includes(`https://candidate\\.example/${name}`));
+  for (const name of ["rejected", "rerejected", "inconclusive", "undecided"]) assert.ok(!report.includes(`https://candidate\\.example/${name}`));
+  assert.ok(evidenceSection.includes("FaceCheck candidates: 2 accepted (included), 2 discarded and 2 not reviewed (excluded)."));
+  assert.equal(report, compileInvestigationReport(value));
+  const withoutCandidates = { ...value, evidence: value.evidence.filter((item) => item.sourceId !== "facecheck:photo") };
+  assert.equal(report.split("## Validation decisions\n")[1], compileInvestigationReport(withoutCandidates).split("## Validation decisions\n")[1]);
+});
+
+test("AI request and factual appendix exclude non-accepted FaceCheck candidates without charging the size budget", () => {
+  const value = facecheckCase();
+  const data = requestData(value);
+  assert.deepEqual(data.findings.map((item) => item.evidenceId), ["evidence-1", "evidence-2", "face-accepted", "face-reaccepted"]);
+  assert.equal(data.findings[2]!.operatorValidation, "accepted");
+  assert.equal(data.findings[3]!.operatorValidation, "accepted");
+  assert.equal(data.omittedFindings, undefined);
+  assert.equal(countOmittedAiReportFindings(value), 0);
+  const report = composeAiReport({ narrative: "Resumen", factualReport: compileInvestigationReport(value), model: "test/model", generatedAt: "2026-10-01" });
+  for (const name of ["accepted", "reaccepted"]) assert.ok(report.includes(`https://candidate\\.example/${name}`));
+  for (const name of ["rejected", "rerejected", "inconclusive", "undecided"]) assert.ok(!report.includes(`https://candidate\\.example/${name}`));
+
+  const base = investigation();
+  const evidence = Array.from({ length: 400 }, (_, index) => ({
+    ...base.evidence[0]!, id: `large-${index}`, finding: { ...base.evidence[0]!.finding!, extra: { bio: "x".repeat(200) } },
+  }));
+  const large = { ...base, evidence, validations: [] };
+  const excluded = { ...large, evidence: [value.evidence[3]!, ...evidence] };
+  assert.ok(countOmittedAiReportFindings(large) > 0);
+  assert.deepEqual(requestData(excluded), requestData(large));
+  assert.equal(countOmittedAiReportFindings(excluded), countOmittedAiReportFindings(large));
+});
+
+test("rejected evidence from another provider remains in factual and AI reports", () => {
+  const value = investigation();
+  const report = compileInvestigationReport(value);
+  assert.ok(report.includes("| evidence\\-2 | action\\-1 | email: ana@example\\.com | steam | registered | user\\-scanner |"));
+  assert.deepEqual(requestData(value).findings[1], {
+    evidenceId: "evidence-2", emailSeed: "ana@example.com", provider: "steam", target: "ana@example.com",
+    operatorValidation: "rejected", operatorReason: "Falso positivo",
+  });
+});
+
+test("a report without FaceCheck candidates retains its existing evidence section", () => {
+  const report = compileInvestigationReport(investigation());
+  const section = report.split("## Evidence\n")[1]!.split("\n## Validation decisions")[0]!;
+  assert.equal(section, [
+    "| Evidence | Action | Seed | Provider | Registration status | Source | Recorded at | Target kind | Observed target | Upstream status | URL | Category | Reason | Metadata | Media |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| evidence\\-1 | action\\-1 | email: ana@example\\.com | spotify | registered | user\\-scanner | 2026\\-10\\-01T10:30:00\\.000Z | email | ana@example\\.com | Registered | https://open\\.spotify\\.com/user/ana | music |  | \\{\"display\\_name\":\"Ana Rock\"\\} | \\{\\} |",
+    "| evidence\\-2 | action\\-1 | email: ana@example\\.com | steam | registered | user\\-scanner | 2026\\-10\\-01T10:31:00\\.000Z | email | ana@example\\.com | registered |  |  |  | \\{\\} | \\{\\} |",
+    "",
+  ].join("\n"));
+  assert.ok(!report.includes("FaceCheck candidates:"));
+});
 
 test("defaults make a configuration that only needs an API key", () => {
   assert.deepEqual(DEFAULT_AI_REPORT_SETTINGS, {

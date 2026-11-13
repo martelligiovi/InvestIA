@@ -42,9 +42,9 @@ test("authorization covers a tool only through an explicit scope", () => {
 });
 
 test("the scoped catalog lists every consentable tool and its input kind", () => {
-  assert.deepEqual(SCOPED_CATALOG_IDS, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"]);
+  assert.deepEqual(SCOPED_CATALOG_IDS, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1"]);
   assert.deepEqual(CATALOG_INPUT_KINDS, {
-    "user-scanner.email.v1": "email", "gravatar.email.v1": "email", "maigret.username.v1": "username", "ghunt.email.v1": "email",
+    "user-scanner.email.v1": "email", "gravatar.email.v1": "email", "maigret.username.v1": "username", "ghunt.email.v1": "email", "facecheck.photo.v1": "photo",
   });
   const scannerAndGravatar: AuthorizationRecord = { ...base, granted: true, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] };
   assert.equal(authorizationCovers(scannerAndGravatar, "maigret.username.v1"), false, "earlier grants never cover Maigret");
@@ -88,6 +88,21 @@ test("catalog executor refuses unregistered and historical catalogs without disp
   await assert.rejects(executor.execute(unclaimed, permit), /claimed action/i);
   await assert.rejects(executor.execute(claimed(scannerSpec), { ...permit, paused: true } as unknown as typeof permit), /paused/);
   assert.equal(calls, 0);
+});
+
+test("catalog executor routes photo actions to a photo box", async () => {
+  const seen: string[] = [];
+  const photo = { kind: "photo", value: "https://lh3.googleusercontent.com/a-/ana" } as const;
+  const executor = createCatalogExecutor({
+    "facecheck.photo.v1": { id: "facecheck:photo", inputKind: "photo", async execute(seed) { seen.push(`${seed.kind}:${seed.value}`); return []; } },
+  });
+  const action = claimed({ catalogId: "facecheck.photo.v1", provider: "facecheck", seed: photo });
+  await executor.execute(action, permit);
+  assert.deepEqual(seen, [`photo:${photo.value}`]);
+  assert.equal(executor.sourceIdFor?.(action), "facecheck:photo");
+  assert.throws(() => createCatalogExecutor({
+    "facecheck.photo.v1": { id: "wrong", inputKind: "email", async execute() { return []; } },
+  } as unknown as Parameters<typeof createCatalogExecutor>[0]), /requires a photo SeedBox/);
 });
 
 test("catalog executor rejects a box registered under an input kind it cannot accept", () => {

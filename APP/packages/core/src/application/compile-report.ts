@@ -1,5 +1,5 @@
 import { DEFAULT_INVESTIGATION_NAME, type Investigation } from "../domain/investigation.ts";
-import type { EmailSeed, UsernameSeed } from "../domain/seed.ts";
+import type { EmailSeed, PhotoSeed, UsernameSeed } from "../domain/seed.ts";
 import { usernameProposals } from "../domain/username-proposals.ts";
 
 function markdownText(value: string): string {
@@ -11,7 +11,7 @@ function markdownText(value: string): string {
     .replace(/[\\`*_{}\[\]()#+.!|~>-]/g, (character) => `\\${character}`);
 }
 
-function seedText(seed: EmailSeed | UsernameSeed): string {
+function seedText(seed: EmailSeed | UsernameSeed | PhotoSeed): string {
   return markdownText(`${seed.kind}: ${seed.value}`);
 }
 
@@ -22,6 +22,24 @@ function table(rows: readonly (readonly string[])[]): string {
     `| ${rows[0]!.map(() => "---").join(" | ")} |`,
     ...rows.slice(1).map((row) => `| ${row.join(" | ")} |`),
   ].join("\n");
+}
+
+/** FaceCheck findings are reportable only after the operator's latest decision accepts them. */
+export function reportableEvidence(investigation: Investigation) {
+  const latest = new Map(investigation.validations.map((decision) => [decision.evidenceId, decision.status]));
+  const counts = { accepted: 0, discarded: 0, notReviewed: 0 };
+  const evidence = investigation.evidence.filter((record) => {
+    if (record.sourceId !== "facecheck:photo") return true;
+    const status = latest.get(record.id);
+    if (status === "accepted") {
+      counts.accepted++;
+      return true;
+    }
+    if (status === "rejected") counts.discarded++;
+    else counts.notReviewed++;
+    return false;
+  });
+  return { evidence, counts };
 }
 
 /** Compiles only persisted facts; output is stable for an unchanged snapshot and contains no inference. */
@@ -41,9 +59,10 @@ export function compileInvestigationReport(investigation: Investigation): string
       action.failure === undefined ? "none" : markdownText(action.failure),
     ]),
   ];
+  const { evidence, counts: facecheckCounts } = reportableEvidence(investigation);
   const evidenceRows: string[][] = [
     ["Evidence", "Action", "Seed", "Provider", "Registration status", "Source", "Recorded at", "Target kind", "Observed target", "Upstream status", "URL", "Category", "Reason", "Metadata", "Media"],
-    ...investigation.evidence.map((evidence) => [
+    ...evidence.map((evidence) => [
       markdownText(evidence.id),
       markdownText(evidence.actionId),
       seedText(evidence.seed),
@@ -58,7 +77,8 @@ export function compileInvestigationReport(investigation: Investigation): string
       markdownText(evidence.finding?.category ?? ""),
       markdownText(evidence.finding?.reason ?? ""),
       markdownText(JSON.stringify(evidence.finding?.extra ?? {})),
-      markdownText(JSON.stringify(evidence.finding?.media ?? {})),
+      markdownText(JSON.stringify(Object.fromEntries(Object.entries(evidence.finding?.media ?? {})
+        .map(([key, value]) => [key, value.startsWith("data:") ? "embedded image" : value])))),
     ]),
   ];
   const usernameRows: string[][] = [
@@ -128,6 +148,9 @@ export function compileInvestigationReport(investigation: Investigation): string
     "",
     "## Evidence",
     table(evidenceRows),
+    ...(facecheckCounts.accepted + facecheckCounts.discarded + facecheckCounts.notReviewed > 0
+      ? ["", `FaceCheck candidates: ${facecheckCounts.accepted} accepted (included), ${facecheckCounts.discarded} discarded and ${facecheckCounts.notReviewed} not reviewed (excluded).`]
+      : []),
     "",
     "## Validation decisions",
     table(validationRows),

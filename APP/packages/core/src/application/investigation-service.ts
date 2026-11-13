@@ -1,5 +1,5 @@
 import { isScannerFinding, type Observation, type RegistrationObservation, type RegistrationStatus, type ScannerFinding, type ScannerObservation } from "../domain/observation.ts";
-import { USERNAME_SEED_PATTERN, type EmailSeed, type UsernameSeed } from "../domain/seed.ts";
+import { isGooglePhotoUrl, USERNAME_SEED_PATTERN, type EmailSeed, type PhotoSeed, type UsernameSeed } from "../domain/seed.ts";
 import { findingSeedNodeId, usernameSeedNodeId } from "../domain/seed-graph.ts";
 import { usernameProposals } from "../domain/username-proposals.ts";
 import type { SeedBox } from "../domain/seed-box.ts";
@@ -44,6 +44,8 @@ export interface InvestigationServiceDependencies {
   readonly createId: (kind: InvestigationIdKind) => string;
   /** Enabled email tools; User Scanner queues on entry, Gravatar follows confirmed findings. */
   readonly seedCatalog?: readonly ScopedCatalogId[];
+  /** Photo tools queued from GHunt profile photos; none by default. */
+  readonly photoCatalog?: readonly ScopedCatalogId[];
   /** Tools not ready to run right now; their queued actions stay queued and others proceed. */
   readonly deferredCatalogIds?: () => Promise<readonly ScopedCatalogId[]>;
 }
@@ -53,8 +55,9 @@ const QUEUE_REASONS: Readonly<Record<ScopedCatalogId, string>> = {
   "gravatar.email.v1": "Catalog policy queued a Gravatar public profile lookup for the recorded email seed.",
   "maigret.username.v1": "Catalog policy queued a Maigret username search with page extraction, without recursion, for the accepted username seed.",
   "ghunt.email.v1": "Catalog policy queued a GHunt public Google account lookup for the recorded Gmail seed; it runs once a Google session is connected.",
+  "facecheck.photo.v1": "Catalog policy queued a FaceCheck face search for the Google profile photo GHunt found; every candidate needs the operator's decision.",
 };
-const CATALOG_PROVIDERS = { "user-scanner.email.v1": "user-scanner", "gravatar.email.v1": "gravatar", "maigret.username.v1": "maigret", "ghunt.email.v1": "ghunt" } as const;
+const CATALOG_PROVIDERS = { "user-scanner.email.v1": "user-scanner", "gravatar.email.v1": "gravatar", "maigret.username.v1": "maigret", "ghunt.email.v1": "ghunt", "facecheck.photo.v1": "facecheck" } as const;
 const EMAIL_CATALOG_IDS = SCOPED_CATALOG_IDS.filter((catalogId) => CATALOG_INPUT_KINDS[catalogId] === "email");
 
 const CATALOG_ID = "user-scanner.email.v1" as const;
@@ -143,7 +146,7 @@ function isRegistrationObservation(
 function isScannerObservation(value: unknown): value is ScannerObservation {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<ScannerObservation>;
-  return candidate.kind === "scanner_finding" && (candidate.seed?.kind === "email" || candidate.seed?.kind === "username") &&
+  return candidate.kind === "scanner_finding" && (candidate.seed?.kind === "email" || candidate.seed?.kind === "username" || candidate.seed?.kind === "photo") &&
     typeof candidate.seed.value === "string" && typeof candidate.provider === "string" &&
     candidate.provider.trim().length > 0 && REGISTRATION_STATUSES.includes(candidate.status as RegistrationStatus) &&
     isScannerFinding(candidate.finding);
@@ -166,6 +169,7 @@ function getAction(investigation: Investigation, actionId: InvestigationActionId
 export class InvestigationService {
   private readonly dependencies: InvestigationServiceDependencies;
   private readonly seedCatalog: readonly ScopedCatalogId[];
+  private readonly photoCatalog: readonly ScopedCatalogId[];
 
   constructor(dependencies: InvestigationServiceDependencies) {
     if (dependencies.executor.id.trim().length === 0) throw new Error("Executor id must not be empty");
@@ -174,8 +178,14 @@ export class InvestigationService {
       !seedCatalog.every((catalogId) => isScopedCatalogId(catalogId) && CATALOG_INPUT_KINDS[catalogId] === "email")) {
       throw new Error("The seed catalog must list known scoped tools exactly once");
     }
+    const photoCatalog = dependencies.photoCatalog ?? [];
+    if (new Set(photoCatalog).size !== photoCatalog.length ||
+      !photoCatalog.every((catalogId) => isScopedCatalogId(catalogId) && CATALOG_INPUT_KINDS[catalogId] === "photo")) {
+      throw new Error("The photo catalog must list known photo tools exactly once");
+    }
     this.dependencies = dependencies;
     this.seedCatalog = [...seedCatalog];
+    this.photoCatalog = [...photoCatalog];
   }
 
   async createInvestigation(name?: string, intention?: string, advancementMode?: AdvancementMode): Promise<Investigation> {
@@ -486,8 +496,8 @@ export class InvestigationService {
       const registration = isRegistrationObservation(observation) && observation.provider === "github";
       if (
         (!scanner && !registration) ||
-        (observation as { seed: EmailSeed | UsernameSeed }).seed.kind !== claim.action.spec.seed.kind ||
-        (observation as { seed: EmailSeed | UsernameSeed }).seed.value !== claim.action.spec.seed.value ||
+        (observation as { seed: EmailSeed | UsernameSeed | PhotoSeed }).seed.kind !== claim.action.spec.seed.kind ||
+        (observation as { seed: EmailSeed | UsernameSeed | PhotoSeed }).seed.value !== claim.action.spec.seed.value ||
         (scanner && !isScopedCatalogId(claim.action.spec.catalogId))
       ) {
         unsupportedObservationCount++;
@@ -539,11 +549,29 @@ export class InvestigationService {
     if (chainsGravatar && !gravatarFound) {
       const action: GitHubCatalogAction = {
         id: newId(this.dependencies.createId, "action"),
-        spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: claim.action.spec.seed },
+        spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: scanned },
         status: "proposed", proposedAt: completedAt,
         proposalReason: "User Scanner did not find Gravatar; the operator may approve a public profile lookup.",
       };
       followUps.push({ action, auditEvent: auditEvent(this.dependencies.createId, completedAt, "system", "action_proposed", action.proposalReason, { actionId: action.id }) });
+    }
+    if (claim.action.spec.catalogId === "ghunt.email.v1" && this.photoCatalog.includes("facecheck.photo.v1")) {
+      const seenPhotos = new Set<string>();
+      for (const record of evidence) {
+        const finding = record.finding;
+        if (record.provider !== "GHunt" || finding?.category !== "Profile photo" ||
+          !isGooglePhotoUrl(finding.url) || seenPhotos.has(finding.url)) continue;
+        seenPhotos.add(finding.url);
+        const action: GitHubCatalogAction = {
+          id: newId(this.dependencies.createId, "action"),
+          spec: { catalogId: "facecheck.photo.v1", provider: "facecheck", seed: { kind: "photo", value: finding.url } },
+          sourceSeedId: findingSeedNodeId(record.id),
+          status: "queued", queuedByCatalog: true, proposedAt: completedAt,
+          proposalReason: QUEUE_REASONS["facecheck.photo.v1"],
+        };
+        followUps.push({ action, auditEvent: auditEvent(this.dependencies.createId, completedAt, "system",
+          "action_queued", action.proposalReason, { actionId: action.id }) });
+      }
     }
     const completed = await this.dependencies.store.completeAction({ ...this.completion(
       claim,
@@ -603,8 +631,9 @@ export interface CatalogBoxes {
   readonly "gravatar.email.v1"?: SeedBox<EmailSeed, Observation>;
   readonly "maigret.username.v1"?: SeedBox<UsernameSeed, Observation>;
   readonly "ghunt.email.v1"?: SeedBox<EmailSeed, Observation>;
+  readonly "facecheck.photo.v1"?: SeedBox<PhotoSeed, Observation>;
 }
-type AnySeedBox = SeedBox<EmailSeed | UsernameSeed, Observation>;
+type AnySeedBox = SeedBox<EmailSeed | UsernameSeed | PhotoSeed, Observation>;
 
 /** Routes each claimed action to the tool registered for its catalog id. */
 export function createCatalogExecutor(boxes: CatalogBoxes): InvestigationExecutor {
@@ -613,7 +642,7 @@ export function createCatalogExecutor(boxes: CatalogBoxes): InvestigationExecuto
     if (!isScopedCatalogId(catalogId)) throw new Error(`Unknown catalog id: ${catalogId}`);
     if (box === undefined) continue;
     const kind = CATALOG_INPUT_KINDS[catalogId];
-    if (box.inputKind !== kind) throw new Error(`Catalog ${catalogId} requires ${kind === "email" ? "an email" : "a username"} SeedBox`);
+    if (box.inputKind !== kind) throw new Error(`Catalog ${catalogId} requires ${kind === "email" ? "an email" : kind === "username" ? "a username" : "a photo"} SeedBox`);
     registry.set(catalogId, box);
   }
   const boxFor = (action: GitHubCatalogAction) => {

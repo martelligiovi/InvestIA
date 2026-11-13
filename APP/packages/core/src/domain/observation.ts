@@ -1,4 +1,4 @@
-import type { EmailSeed, Seed, UsernameSeed } from "./seed.ts";
+import { isGooglePhotoUrl, type EmailSeed, type PhotoSeed, type Seed, type UsernameSeed } from "./seed.ts";
 
 export type RegistrationStatus =
   | "registered"
@@ -21,7 +21,7 @@ export interface IdentityObservation {
 }
 
 export interface ScannerFinding {
-  readonly target: { readonly kind: "email" | "username"; readonly value: string };
+  readonly target: { readonly kind: "email" | "username" | "photo"; readonly value: string };
   readonly upstreamStatus: "Registered" | "Not Registered" | "Found" | "Not Found" | "Error" | "Skipped";
   readonly url: string;
   readonly category: string;
@@ -33,7 +33,7 @@ export interface ScannerFinding {
 export interface ScannerObservation {
   readonly kind: "scanner_finding";
   /** Seed the tool ran on (operator-supplied or confirmed), not a discovered target. */
-  readonly seed: EmailSeed | UsernameSeed;
+  readonly seed: EmailSeed | UsernameSeed | PhotoSeed;
   readonly provider: string;
   readonly status: RegistrationStatus;
   readonly finding: ScannerFinding;
@@ -45,9 +45,10 @@ function record(value: unknown): value is Record<string, unknown> {
 
 export function isScannerFinding(value: unknown): value is ScannerFinding {
   if (!record(value) || !record(value.target) || !record(value.extra) || !record(value.media)) return false;
-  return ["email", "username"].includes(String(value.target.kind)) &&
+  return ["email", "username", "photo"].includes(String(value.target.kind)) &&
     typeof value.target.value === "string" && value.target.value.trim().length > 0 &&
     (value.target.kind !== "email" || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.target.value)) &&
+    (value.target.kind !== "photo" || isGooglePhotoUrl(value.target.value)) &&
     ["Registered", "Not Registered", "Found", "Not Found", "Error", "Skipped"].includes(String(value.upstreamStatus)) &&
     [value.url, value.category, value.reason].every((field) => typeof field === "string") &&
     Object.values(value.extra).every((field) => typeof field === "string" || typeof field === "boolean" ||

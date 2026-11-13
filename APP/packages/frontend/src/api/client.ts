@@ -22,6 +22,18 @@ export interface GhuntSettingsView {
   readonly account: string | null;
 }
 
+export interface FacecheckSettingsView {
+  readonly tokenConfigured: boolean;
+  /** Masked hint of the stored token; the token itself is never returned. */
+  readonly tokenHint: string | null;
+  readonly testingMode: boolean;
+}
+
+export interface FacecheckSettingsUpdate {
+  readonly token?: string;
+  readonly testingMode?: boolean;
+}
+
 export interface AiSettingsView {
   readonly apiKeyConfigured: boolean;
   /** Masked hint of the stored key; the key itself is never returned. */
@@ -177,6 +189,18 @@ export class InvestigationApiClient {
 
   async disconnectGhunt(): Promise<GhuntSettingsView> {
     return this.send<GhuntSettingsView>("DELETE", "/settings/ghunt/session");
+  }
+
+  async getFacecheckSettings(): Promise<FacecheckSettingsView> {
+    return this.requestJson<FacecheckSettingsView>("/settings/facecheck");
+  }
+
+  async saveFacecheckSettings(update: FacecheckSettingsUpdate): Promise<FacecheckSettingsView> {
+    return this.send<FacecheckSettingsView>("PUT", "/settings/facecheck", update);
+  }
+
+  async removeFacecheckToken(): Promise<FacecheckSettingsView> {
+    return this.send<FacecheckSettingsView>("DELETE", "/settings/facecheck/token");
   }
 
   async getAiSettings(): Promise<AiSettingsView> {

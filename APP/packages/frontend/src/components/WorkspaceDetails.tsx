@@ -2,6 +2,7 @@ import { Fragment, useState } from "react";
 import { authorizationCovers, type Investigation, type ValidationStatus } from "@investia/core";
 import { actionTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
+import { facecheckReviewState } from "./FacecheckReview";
 
 export interface WorkspaceDetailsProps {
   readonly investigation: Investigation;
@@ -11,6 +12,25 @@ export interface WorkspaceDetailsProps {
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
   readonly onApproveGravatar?: (actionId: string, reason: string) => Promise<boolean>;
+  /** Opens the card review for the candidates of one FaceCheck search. */
+  readonly onReviewFacecheck?: (actionId: string) => void;
+}
+
+function FacecheckReviewCall({ investigation, actionId, onReview }: {
+  readonly investigation: Investigation; readonly actionId: string; readonly onReview: (actionId: string) => void;
+}) {
+  const state = facecheckReviewState(investigation, actionId);
+  if (state.candidates.length === 0) return null;
+  const label = state.pending.length === 0 ? "todo revisado" : `${state.pending.length} por revisar`;
+  return (
+    <section className="fc-call" aria-labelledby="fc-call-heading">
+      <h3 id="fc-call-heading">Candidatos de FaceCheck</h3>
+      <p>{state.accepted.length} aceptados · {state.rejected.length} descartados · {state.pending.length} por revisar. Solo los aceptados entran en el informe.</p>
+      <button type="button" className="workspace-button workspace-button--primary" onClick={() => onReview(actionId)}>
+        Revisar candidatos · {label}
+      </button>
+    </section>
+  );
 }
 
 function formatDate(value: string): string {
@@ -33,6 +53,14 @@ function TechnicalValue({ label, value }: { readonly label: string; readonly val
   );
 }
 
+/** Only inline base64 images become an image source; any other value is shown as text, never loaded. */
+const INLINE_IMAGE = /^data:image\/(?:webp|jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/;
+function MediaValue({ value }: { readonly value: string }) {
+  if (INLINE_IMAGE.test(value)) return <img className="face-thumbnail" src={value} alt="Cara encontrada por FaceCheck" />;
+  if (value.startsWith("data:")) return <span>imagen embebida no admitida</span>;
+  return <span>{value}</span>;
+}
+
 function SafeLink({ value }: { readonly value: string }) {
   try {
     const url = new URL(value);
@@ -43,16 +71,40 @@ function SafeLink({ value }: { readonly value: string }) {
   return <span>{value}</span>;
 }
 
-function LeafGroupDetails({ node, onSelectNode }: { readonly node: WorkspaceNode; readonly onSelectNode?: (id: string) => void }) {
+/** The FaceCheck search behind a candidate group, a single candidate or the search action itself. */
+function facecheckActionOf(node: WorkspaceNode): string | undefined {
+  if (node.kind === "leaf-group") {
+    const first = node.members?.[0]?.evidence;
+    return first?.sourceId === "facecheck:photo" ? first.actionId : undefined;
+  }
+  if (node.kind === "evidence" && node.evidence?.sourceId === "facecheck:photo") return node.evidence.actionId;
+  if (node.kind === "action" && node.action?.spec.catalogId === "facecheck.photo.v1") return node.action.id;
+  return undefined;
+}
+
+function facecheckGroupHeading(members: readonly WorkspaceNode[], investigation: Investigation): string {
+  const latest = new Map(investigation.validations.map((decision) => [decision.evidenceId, decision.status]));
+  const accepted = members.filter((member) => latest.get(member.evidence?.id ?? "") === "accepted").length;
+  const pending = members.length - accepted;
+  if (accepted > 0 && pending > 0) return `Candidatos · ${accepted} aceptados y ${pending} por revisar`;
+  if (accepted > 0) return `Candidatos aceptados · ${accepted}`;
+  if (pending > 0) return `Candidatos por revisar · ${pending}`;
+  return "Ningún candidato aceptado";
+}
+
+function LeafGroupDetails({ node, investigation, onSelectNode }: { readonly node: WorkspaceNode; readonly investigation: Investigation; readonly onSelectNode?: (id: string) => void }) {
   const [page, setPage] = useState(0);
   const members = node.members ?? [];
   const lastPage = Math.max(0, Math.ceil(members.length / GRAPH_PAGE_SIZE) - 1);
   const currentPage = Math.min(page, lastPage);
   const start = currentPage * GRAPH_PAGE_SIZE;
+  const facecheck = node.hiddenMembers !== undefined;
   return (
     <section className="detail-fact" aria-labelledby="group-heading">
-      <h3 id="group-heading">Semillas agrupadas · {members.length} resultados</h3>
-      <p className="detail-note">Son semillas producidas por la misma acción, sin acciones asociadas por ahora. Abrir un resultado no ejecuta ninguna acción ni expande el grafo.</p>
+      <h3 id="group-heading">{facecheck ? facecheckGroupHeading(members, investigation) : `Semillas agrupadas · ${members.length} resultados`}</h3>
+      {facecheck
+        ? <p className="detail-note">{node.hiddenMembers! > 0 && `Los ${node.hiddenMembers} descartados no se muestran en el grafo; siguen en la pestaña Descartados de la revisión. `}Abrir un candidato no ejecuta ninguna acción.</p>
+        : <p className="detail-note">Son semillas producidas por la misma acción, sin acciones asociadas por ahora. Abrir un resultado no ejecuta ninguna acción ni expande el grafo.</p>}
       <ul className="leaf-group-members">
         {members.slice(start, start + GRAPH_PAGE_SIZE).map((member) => (
           <li key={member.id}><button type="button" className="workspace-button"
@@ -74,7 +126,7 @@ function LeafGroupDetails({ node, onSelectNode }: { readonly node: WorkspaceNode
   );
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, onValidate, onSelectNode, onApproveGravatar }: WorkspaceDetailsProps) {
+export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, onValidate, onSelectNode, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
@@ -106,7 +158,9 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
         <p className="detail-empty">Seleccioná una semilla, acción u observación del grafo.</p>
       ) : (
         <div className="detail-content" key={node.id}>
-          {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} onSelectNode={onSelectNode} />}
+          {onReviewFacecheck !== undefined && facecheckActionOf(node) !== undefined &&
+            <FacecheckReviewCall investigation={investigation} actionId={facecheckActionOf(node)!} onReview={onReviewFacecheck} />}
+          {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} investigation={investigation} onSelectNode={onSelectNode} />}
           {node.groupId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
             onClick={() => onSelectNode(node.groupId!)}>Volver al grupo</button>}
           {node.relatedParentId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
@@ -218,7 +272,7 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                   <dt>Semilla observada</dt><dd className="break-value">{node.evidence.seed.value}</dd>
                   <dt>Registrada</dt><dd>{formatDate(node.evidence.recordedAt)}</dd>
                   {node.evidence.finding && <>
-                    <dt>Tipo de objetivo descubierto</dt><dd>{node.evidence.finding.target.kind === "email" ? "Email" : "Usuario"}</dd>
+                    <dt>Tipo de objetivo descubierto</dt><dd>{node.evidence.finding.target.kind === "email" ? "Email" : node.evidence.finding.target.kind === "photo" ? "Foto" : "Usuario"}</dd>
                     <dt>Objetivo observado</dt><dd className="break-value">{node.evidence.finding.target.value}</dd>
                     <dt>Estado original de la herramienta</dt><dd>{node.evidence.finding.upstreamStatus}</dd>
                     <dt>Enlace</dt><dd className="break-value"><SafeLink value={node.evidence.finding.url} /></dd>
@@ -230,8 +284,12 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                   <h4>Metadatos y procedencia</h4>
                   <dl className="fact-list">{Object.entries(node.evidence.finding.extra).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value">{String(value)}</dd></Fragment>)}</dl>
                   <h4>Referencias multimedia</h4>
-                  <dl className="fact-list">{Object.entries(node.evidence.finding.media).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value">{value}</dd></Fragment>)}</dl>
+                  <dl className="fact-list">{Object.entries(node.evidence.finding.media).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value"><MediaValue value={value} /></dd></Fragment>)}</dl>
                 </>}
+                {node.evidence.sourceId === "facecheck:photo" && <p className="detail-warning">
+                  Este resultado es un candidato: FaceCheck encontró una cara parecida a la foto de perfil, no necesariamente la misma persona. Necesita que confirmes o rechaces si es esa persona.
+                  {node.evidence.finding?.extra.testing_mode === true && " Se encontró en modo prueba (solo 100.000 caras), así que es poco fiable."}
+                </p>}
                 <p className="detail-warning">La herramienta reportó un hallazgo positivo para el objetivo observado. No confirma identidad ni titularidad y puede contener errores. La confianza informada por la herramienta no es una validación humana.</p>
               </section>
               <section className="detail-control" aria-labelledby="validation-heading">
