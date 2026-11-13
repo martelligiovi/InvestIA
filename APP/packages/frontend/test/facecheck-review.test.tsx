@@ -174,11 +174,44 @@ it("does not move through the deck while a decision is being saved", () => {
   expect(screen.getByRole("button", { name: /Volver al anterior/ })).toBeDisabled();
 });
 
+it("hides discarded candidates from the graph and counts only accepted and unreviewed ones", () => {
+  const visible = (snapshot: Investigation) => {
+    const graph = buildWorkspaceGraph(snapshot);
+    const group = graph.nodes.find((node) => node.id === "leaf-group:facecheck");
+    const loose = graph.nodes.filter((node) => node.evidence?.sourceId === "facecheck:photo").map((node) => node.id);
+    return { title: group?.title, members: group?.members?.map((member) => member.evidence!.id), loose,
+      result: graph.nodes.some((node) => node.id === "result:facecheck") };
+  };
+  expect(visible(investigation([decision("gh", "accepted", 1), decision("li", "rejected", 2)])))
+    .toEqual({ title: "1 aceptado · 1 por revisar", members: ["gh", "ig"], loose: [], result: false });
+  expect(visible(investigation([decision("gh", "accepted", 1), decision("li", "rejected", 2), decision("ig", "rejected", 3)])))
+    .toEqual({ title: "1 candidato aceptado", members: ["gh"], loose: [], result: false });
+  expect(visible(investigation([decision("gh", "accepted", 1), decision("li", "accepted", 2), decision("ig", "rejected", 3)])))
+    .toEqual({ title: "2 candidatos aceptados", members: ["gh", "li"], loose: [], result: false });
+  expect(visible(investigation([decision("gh", "rejected", 1), decision("li", "rejected", 2), decision("ig", "rejected", 3)])))
+    .toEqual({ title: "Ningún candidato aceptado", members: [], loose: [], result: false });
+  expect(visible(investigation([decision("gh", "rejected", 1), decision("gh", "accepted", 2)])))
+    .toEqual({ title: "1 aceptado · 2 por revisar", members: ["gh", "li", "ig"], loose: [], result: false });
+  expect(visible(investigation([], [CANDIDATES[0]!])))
+    .toEqual({ title: "1 candidato por revisar", members: ["ig"], loose: [], result: false });
+  expect(visible(investigation()).title).toBe("3 candidatos por revisar");
+});
+
+it("tells in the group detail that discarded candidates are hidden and still reviewable", () => {
+  const snapshot = investigation([decision("gh", "accepted", 1), decision("li", "rejected", 2), decision("ig", "rejected", 3)]);
+  const group = buildWorkspaceGraph(snapshot).nodes.find((node) => node.id === "leaf-group:facecheck")!;
+  render(<WorkspaceDetails investigation={snapshot} node={group} disabled={false} onValidate={vi.fn()} onReviewFacecheck={vi.fn()} />);
+  expect(screen.getByRole("heading", { name: "Candidatos aceptados · 1" })).toBeInTheDocument();
+  expect(screen.getByText(/2 descartados no se muestran en el grafo/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Ver resultado: FaceCheck · 92 · github.com/ })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /linkedin/ })).toBeNull();
+});
+
 it("offers the card review from the FaceCheck candidate group and from a single candidate", () => {
   const snapshot = investigation([decision("gh", "accepted", 1)]);
   const graph = buildWorkspaceGraph(snapshot);
   const group = graph.nodes.find((node) => node.id === "leaf-group:facecheck")!;
-  expect(group.title).toBe("3 candidatos de FaceCheck");
+  expect(group.title).toBe("1 aceptado · 2 por revisar");
   const onReview = vi.fn();
   render(<WorkspaceDetails investigation={snapshot} node={group} disabled={false} onValidate={vi.fn()} onReviewFacecheck={onReview} />);
   fireEvent.click(screen.getByRole("button", { name: /Revisar candidatos · 2 por revisar/ }));

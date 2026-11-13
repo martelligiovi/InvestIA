@@ -82,16 +82,29 @@ function facecheckActionOf(node: WorkspaceNode): string | undefined {
   return undefined;
 }
 
-function LeafGroupDetails({ node, onSelectNode }: { readonly node: WorkspaceNode; readonly onSelectNode?: (id: string) => void }) {
+function facecheckGroupHeading(members: readonly WorkspaceNode[], investigation: Investigation): string {
+  const latest = new Map(investigation.validations.map((decision) => [decision.evidenceId, decision.status]));
+  const accepted = members.filter((member) => latest.get(member.evidence?.id ?? "") === "accepted").length;
+  const pending = members.length - accepted;
+  if (accepted > 0 && pending > 0) return `Candidatos · ${accepted} aceptados y ${pending} por revisar`;
+  if (accepted > 0) return `Candidatos aceptados · ${accepted}`;
+  if (pending > 0) return `Candidatos por revisar · ${pending}`;
+  return "Ningún candidato aceptado";
+}
+
+function LeafGroupDetails({ node, investigation, onSelectNode }: { readonly node: WorkspaceNode; readonly investigation: Investigation; readonly onSelectNode?: (id: string) => void }) {
   const [page, setPage] = useState(0);
   const members = node.members ?? [];
   const lastPage = Math.max(0, Math.ceil(members.length / GRAPH_PAGE_SIZE) - 1);
   const currentPage = Math.min(page, lastPage);
   const start = currentPage * GRAPH_PAGE_SIZE;
+  const facecheck = node.hiddenMembers !== undefined;
   return (
     <section className="detail-fact" aria-labelledby="group-heading">
-      <h3 id="group-heading">Semillas agrupadas · {members.length} resultados</h3>
-      <p className="detail-note">Son semillas producidas por la misma acción, sin acciones asociadas por ahora. Abrir un resultado no ejecuta ninguna acción ni expande el grafo.</p>
+      <h3 id="group-heading">{facecheck ? facecheckGroupHeading(members, investigation) : `Semillas agrupadas · ${members.length} resultados`}</h3>
+      {facecheck
+        ? <p className="detail-note">{node.hiddenMembers! > 0 && `Los ${node.hiddenMembers} descartados no se muestran en el grafo; siguen en la pestaña Descartados de la revisión. `}Abrir un candidato no ejecuta ninguna acción.</p>
+        : <p className="detail-note">Son semillas producidas por la misma acción, sin acciones asociadas por ahora. Abrir un resultado no ejecuta ninguna acción ni expande el grafo.</p>}
       <ul className="leaf-group-members">
         {members.slice(start, start + GRAPH_PAGE_SIZE).map((member) => (
           <li key={member.id}><button type="button" className="workspace-button"
@@ -147,7 +160,7 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
         <div className="detail-content" key={node.id}>
           {onReviewFacecheck !== undefined && facecheckActionOf(node) !== undefined &&
             <FacecheckReviewCall investigation={investigation} actionId={facecheckActionOf(node)!} onReview={onReviewFacecheck} />}
-          {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} onSelectNode={onSelectNode} />}
+          {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} investigation={investigation} onSelectNode={onSelectNode} />}
           {node.groupId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
             onClick={() => onSelectNode(node.groupId!)}>Volver al grupo</button>}
           {node.relatedParentId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"

@@ -15,6 +15,8 @@ export interface WorkspaceNode {
   readonly evidence?: EvidenceRecord;
   readonly profileSeed?: ProfileSeed;
   readonly members?: readonly WorkspaceNode[];
+  /** FaceCheck candidates the operator discarded: left out of the graph, still reviewable. */
+  readonly hiddenMembers?: number;
   /** Distinct observations displayed under the same linked Gravatar profile seed. */
   readonly relatedNodes?: readonly WorkspaceNode[];
   readonly relatedParentId?: string;
@@ -93,6 +95,26 @@ export function evidenceHeading(evidence: EvidenceRecord): string {
 function nodeLabel(kind: WorkspaceNodeKind, title: string, state: string): string {
   const noun = kind === "seed" ? "Semilla" : kind === "action" ? "Acción" : kind === "result" ? "Resultado" : "Evidencia";
   return `${noun}: ${title}. Estado: ${workspaceStatusLabel(state)}.`;
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+/** Discarded FaceCheck candidates leave the graph; accepted ones lead, unreviewed ones follow. */
+function facecheckGroupReview(leaves: readonly WorkspaceNode[], latest: ReadonlyMap<string, string>) {
+  const status = (node: WorkspaceNode) => latest.get(node.evidence!.id);
+  const score = (node: WorkspaceNode) => { const value = node.evidence?.finding?.extra.score; return typeof value === "number" ? value : 0; };
+  leaves = [...leaves].sort((left, right) => score(right) - score(left));
+  const accepted = leaves.filter((node) => status(node) === "accepted");
+  const pending = leaves.filter((node) => status(node) !== "accepted" && status(node) !== "rejected");
+  const discarded = leaves.length - accepted.length - pending.length;
+  const title = accepted.length > 0 && pending.length > 0
+    ? `${plural(accepted.length, "aceptado", "aceptados")} · ${pending.length} por revisar`
+    : accepted.length > 0 ? plural(accepted.length, "candidato aceptado", "candidatos aceptados")
+    : pending.length > 0 ? `${plural(pending.length, "candidato", "candidatos")} por revisar`
+    : "Ningún candidato aceptado";
+  return { title, visible: [...accepted, ...pending], discarded };
 }
 
 export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected: boolean | null = null): WorkspaceGraph {
@@ -253,19 +275,23 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
     leavesByAction.set(node.evidence.actionId, leaves);
   }
   const groupedIds = new Set<string>();
+  const latestDecision = new Map(investigation.validations.map((decision) => [decision.evidenceId, decision.status]));
   for (const [actionId, leaves] of leavesByAction) {
-    if (leaves.length < 2) continue;
+    const facecheck = leaves.every((leaf) => leaf.evidence?.sourceId === "facecheck:photo");
+    // FaceCheck candidates always collapse so that discarded ones never surface as loose nodes.
+    if (leaves.length < 2 && !facecheck) continue;
     const id = `leaf-group:${actionId}`;
-    const title = leaves.every((leaf) => leaf.evidence?.sourceId === "facecheck:photo")
-      ? `${leaves.length} candidatos de FaceCheck`
+    const review = facecheck ? facecheckGroupReview(leaves, latestDecision) : undefined;
+    const title = review !== undefined ? review.title
       : leaves.every((leaf) => leaf.profileSeed !== undefined)
       ? `${leaves.length} semillas de Gravatar` : `${leaves.length} resultados sin acciones`;
-    const members = leaves.map((node) => ({ ...node, groupId: id }));
-    for (const member of members) {
-      groupedIds.add(member.id);
-      visualSeedIds.set(findingSeedNodeId(member.evidence!.id), id);
+    const members = (review?.visible ?? leaves).map((node) => ({ ...node, groupId: id }));
+    for (const leaf of leaves) {
+      groupedIds.add(leaf.id);
+      visualSeedIds.set(findingSeedNodeId(leaf.evidence!.id), id);
     }
     nodes.push({ id, kind: "leaf-group", title, state: "leaf_group", members,
+      ...(review !== undefined ? { hiddenMembers: review.discarded } : {}),
       accessibleLabel: `Grupo de semillas: ${title}.`,
       x: 836, y: TOP, width: NODE_WIDTH, height: NODE_HEIGHT });
   }
