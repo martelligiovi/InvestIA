@@ -296,6 +296,8 @@
 .detail-warning, .detail-note { margin: var(--space-3) 0 0; padding: var(--space-3); border-left: 2px solid var(--red); background: var(--red-wash); font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
 .face-thumbnail { display: block; width: 128px; height: 128px; object-fit: cover; border-radius: var(--radius); border: 1px solid var(--line); }
 .detail-note { border-left-color: var(--line-strong); background: var(--linen); color: var(--ink-soft); }
+.decodo-page-content { max-height: min(45vh, 24rem); margin: var(--space-2) 0 0; padding: var(--space-3); overflow: auto; border: 1px solid var(--line); background: var(--linen); font: inherit; font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.decodo-page-links { display: grid; gap: var(--space-1); margin: 0; padding-left: var(--space-5); overflow-wrap: anywhere; }
 
 .detail-control .form-field { margin: var(--space-3) 0; }
 .detail-control .form-field textarea, .workspace-case-controls .form-field textarea { min-height: 72px; font-size: 17px; }

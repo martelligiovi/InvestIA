@@ -58,7 +58,7 @@ From the repository root, start the backend in one shell using the [backend setu
 pnpm --dir APP frontend:dev
 ```
 
-The Vite server is loopback-only and proxies `/investigations` to `127.0.0.1:4317`; set `INVESTIA_API_TARGET` (for example `http://127.0.0.1:4318` for a Docker app published on `APP_PORT=4318`) to proxy to another local backend. These commands are the same in Bash. Backend process environment variables, including `PYTHON`, must be set explicitly in the shell; Node does not automatically load `.env` or `.env.example`. Use the interpreter path appropriate to the host as shown above.
+The Vite server is loopback-only and proxies `/investigations` and `/settings` to `127.0.0.1:4317`; set `INVESTIA_API_TARGET` (for example `http://127.0.0.1:4318` for a Docker app published on `APP_PORT=4318`) to proxy to another local backend. These commands are the same in Bash. Backend process environment variables, including `PYTHON`, must be set explicitly in the shell; Node does not automatically load `.env` or `.env.example`. Use the interpreter path appropriate to the host as shown above.
 
 ## Build and same-origin serving
 
@@ -130,6 +130,12 @@ T2 writer checks passed: **59 frontend unit tests**, **2 Chromium scenarios**, w
 ## Historical independent MVP acceptance
 
 The independent acceptance record reports **110 TypeScript tests passed (0 failed, 0 skipped), 1 Chromium scenario passed, and all 4 workspace package typechecks passed**; all 5 database-gated checks ran and the named runtime reload was verified. The separate offline Python adapter suite has now passed all **5 tests**. The Chromium scenario demonstrates behavior, not identical visuals: corrected desktop/mobile screenshots were independently inspected, and title wrapping, CTA visibility, ornament spacing and linen texture passed MVP acceptance. This is a usable interpretation of the references; no pixel-identical claim is made.
+
+## Decodo page scraping
+
+Under **Ajustes de IA → Decodo**, set the token and choose Web Data API (Bearer, default) or Web Scraping API v2 (Basic). The frontend uses `/settings/decodo`; it shows only a masked hint of the saved token. An empty token field preserves the current token when saving a mode change. **Quitar token** deletes the token without changing the mode.
+
+Accepting a FaceCheck match queues its eligible public URL for Decodo, never its image or thumbnail. In automatic mode, a configured token, scoped authorization, an accepted match and an unpaused case let the server run it without another click. The graph keeps that match outside the candidate stack so its Decodo action and page evidence remain connected. The drawer shows extracted content as plain text and links only to validated public URLs; login-gated pages fail rather than yielding empty evidence.
 
 ## NVIDIA Build AI reports
 

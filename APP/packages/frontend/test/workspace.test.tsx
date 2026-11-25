@@ -114,6 +114,7 @@ describe("espacio de investigación factual", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/cola bloqueada/i);
     await openCaseControls(user);
     expect(screen.getByText(/avance automático/i)).toBeInTheDocument();
+    expect(screen.getByText(/Decodo.*URL.*FaceCheck.*aceptad.*nunca.*foto/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /ejecutar siguiente/i })).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/motivo para proponer/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /proponer comprobación/i })).not.toBeInTheDocument();

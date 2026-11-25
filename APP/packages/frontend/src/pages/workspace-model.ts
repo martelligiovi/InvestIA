@@ -63,6 +63,7 @@ const SOURCE_TOOLS: Readonly<Record<string, string>> = {
   "maigret:username": "Maigret",
   "ghunt:email": "GHunt",
   "facecheck:photo": "FaceCheck",
+  "decodo:url": "Decodo",
 };
 const GHUNT_CATEGORIES: Readonly<Record<string, string>> = {
   "Google account": "Cuenta Google",
@@ -79,11 +80,17 @@ function usernameNodeId(value: string): string {
 
 export function actionTitle(action: GitHubCatalogAction): string {
   if (action.spec.catalogId === "ghunt.email.v1") return "GHunt";
+  if (action.spec.catalogId === "decodo.url.v1") return `Decodo · ${hostOf(action.spec.seed.value)}`;
   return ACTION_TITLES[action.spec.provider] ?? "Comprobación de registro en GitHub";
 }
 
 function hostOf(value: string): string {
   try { return new URL(value).hostname; } catch { return "sin enlace"; }
+}
+
+export function decodoPageTitle(finding: NonNullable<EvidenceRecord["finding"]>): string {
+  const title = finding.extra.title;
+  return typeof title === "string" && title.trim() !== "" ? title.trim() : hostOf(finding.url);
 }
 
 export function evidenceHeading(evidence: EvidenceRecord): string {
@@ -117,7 +124,7 @@ function facecheckGroupReview(leaves: readonly WorkspaceNode[], latest: Readonly
   return { title, visible: [...accepted, ...pending], discarded };
 }
 
-export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected: boolean | null = null): WorkspaceGraph {
+export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected: boolean | null = null, decodoConfigured: boolean | null = null): WorkspaceGraph {
   const nodes: WorkspaceNode[] = [];
   const actionIds = new Set(investigation.actions.map((action) => action.id));
   const seedGraph = investigationSeedGraph(investigation);
@@ -159,7 +166,7 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
 
   investigation.actions.forEach((action, index) => {
     const title = actionTitle(action);
-    const state = actionDisplayState(investigation, action, ghuntConnected);
+    const state = actionDisplayState(investigation, action, ghuntConnected, decodoConfigured);
     nodes.push({
       id: `action:${action.id}`,
       kind: "action",
@@ -189,6 +196,8 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
       ? `GHunt · ${GHUNT_CATEGORIES[record.finding.category] ?? record.finding.category}`
       : record.finding && record.sourceId === "facecheck:photo"
       ? `FaceCheck · ${String(record.finding.extra.score ?? "?")} · ${hostOf(record.finding.url)}`
+      : record.finding && record.sourceId === "decodo:url"
+      ? `Decodo · ${decodoPageTitle(record.finding)}`
       : record.finding
       ? `${record.provider} · ${record.finding.target.value} · ${record.finding.upstreamStatus}`
       : `Observación de registro ${record.provider} · ${workspaceStatusLabel(record.status)}`;
@@ -278,7 +287,7 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
   const latestDecision = new Map(investigation.validations.map((decision) => [decision.evidenceId, decision.status]));
   for (const [actionId, leaves] of leavesByAction) {
     const facecheck = leaves.every((leaf) => leaf.evidence?.sourceId === "facecheck:photo");
-    // FaceCheck candidates always collapse so that discarded ones never surface as loose nodes.
+    // FaceCheck leaves always collapse so that discarded leaves never surface as loose nodes.
     if (leaves.length < 2 && !facecheck) continue;
     const id = `leaf-group:${actionId}`;
     const review = facecheck ? facecheckGroupReview(leaves, latestDecision) : undefined;

@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Investigation } from "@investia/core";
 import { ApiError, InvestigationApiClient } from "../api/client";
+import { actionDisplayState } from "./workspace-status";
 
 export type WorkspaceLoadPhase = "loading" | "ready" | "error" | "not-found";
 export type ReportKind = "factual" | "ai";
 
 export interface WorkspaceController {
   readonly investigation: Investigation | null;
+  readonly facecheckConfigured: boolean | null;
+  readonly decodoConfigured: boolean | null;
   readonly phase: WorkspaceLoadPhase;
   readonly loadError: string;
   readonly operationError: string;
@@ -50,6 +53,26 @@ function reportErrorFor(kind: ReportKind, error: unknown): string {
   if (kind === "factual") return `No se pudo obtener el informe: ${messageFor(error)}`;
   const known = error instanceof ApiError ? AI_REPORT_ERROR_MESSAGES[error.code] : undefined;
   return known ?? `No se pudo generar el informe con IA: ${messageFor(error)}`;
+}
+
+function useTokenConfigured(enabled: boolean, read: () => Promise<{ readonly tokenConfigured: boolean }>): boolean | null {
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!enabled) { setConfigured(null); return; }
+    let latestRequest = 0;
+    let active = true;
+    function load() {
+      const request = ++latestRequest;
+      void read().then(
+        (view) => { if (active && request === latestRequest) setConfigured(view.tokenConfigured); },
+        () => { if (active && request === latestRequest) setConfigured(null); },
+      );
+    }
+    load();
+    window.addEventListener("focus", load);
+    return () => { active = false; window.removeEventListener("focus", load); };
+  }, [enabled, read]);
+  return enabled ? configured : null;
 }
 
 export function useWorkspaceController(id: string): WorkspaceController {
@@ -286,11 +309,22 @@ export function useWorkspaceController(id: string): WorkspaceController {
   const loadReport = useCallback(() => fetchReport("factual"), [fetchReport]);
   const loadAiReport = useCallback(() => fetchReport("ai"), [fetchReport]);
 
+  const visibleInvestigation = investigationId === id ? investigation : null;
+  const visiblePhase = visibleInvestigation === null && phase === "ready" ? "loading" : phase;
+  const hasQueuedFacecheck = visibleInvestigation?.actions.some((action) => action.status === "queued" && action.spec.catalogId === "facecheck.photo.v1") === true;
+  const hasQueuedDecodo = visibleInvestigation?.actions.some((action) => action.status === "queued" && action.spec.catalogId === "decodo.url.v1") === true;
+  const readFacecheckSettings = useCallback(() => api.getFacecheckSettings(), [api]);
+  const readDecodoSettings = useCallback(() => api.getDecodoSettings(), [api]);
+  const facecheckConfigured = useTokenConfigured(hasQueuedFacecheck, readFacecheckSettings);
+  const decodoConfigured = useTokenConfigured(hasQueuedDecodo, readDecodoSettings);
+
   useEffect(() => {
-    if (investigationId !== id || investigation === null || stale || phase !== "ready" ||
-      !investigation.actions.some((action) => action.status === "claimed" ||
-        (action.status === "queued" && investigation.advancementMode === "automatic" &&
-          investigation.authorization?.granted === true && !investigation.paused))) return;
+    if (visibleInvestigation === null || stale || phase !== "ready") return;
+    const { actions, advancementMode, authorization, paused } = visibleInvestigation;
+    const hasWork = actions.some((action) => action.status === "claimed" ||
+      (action.status === "queued" && advancementMode === "automatic" && authorization?.granted === true && !paused &&
+        (action.spec.catalogId !== "decodo.url.v1" || actionDisplayState(visibleInvestigation, action, null, decodoConfigured) === "queued")));
+    if (!hasWork) return;
     const activeGeneration = generation.current;
     const timer = window.setInterval(() => {
       if (!takeLock(activeGeneration)) return;
@@ -302,13 +336,12 @@ export function useWorkspaceController(id: string): WorkspaceController {
       }).finally(() => releaseLock(activeGeneration));
     }, 5_000);
     return () => window.clearInterval(timer);
-  }, [id, investigation, investigationId, isCurrent, phase, readLatest, releaseLock, stale, takeLock]);
-
-  const visibleInvestigation = investigationId === id ? investigation : null;
-  const visiblePhase = visibleInvestigation === null && phase === "ready" ? "loading" : phase;
+  }, [decodoConfigured, id, isCurrent, phase, readLatest, releaseLock, stale, takeLock, visibleInvestigation]);
 
   return {
     investigation: visibleInvestigation,
+    facecheckConfigured,
+    decodoConfigured,
     phase: visiblePhase,
     loadError,
     operationError,

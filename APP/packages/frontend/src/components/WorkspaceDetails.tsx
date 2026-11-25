@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react";
-import { authorizationCovers, type Investigation, type ValidationStatus } from "@investia/core";
-import { actionTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
+import { authorizationCovers, isActionEligibleByParentValidation, isSafePublicHttpUrl, type ScannerFinding, type Investigation, type ValidationStatus } from "@investia/core";
+import { actionTitle, decodoPageTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 import { facecheckReviewState } from "./FacecheckReview";
 
@@ -9,6 +9,8 @@ export interface WorkspaceDetailsProps {
   readonly node: WorkspaceNode | null;
   readonly disabled: boolean;
   readonly ghuntConnected?: boolean | null;
+  readonly facecheckConfigured?: boolean | null;
+  readonly decodoConfigured?: boolean | null;
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
   readonly onApproveGravatar?: (actionId: string, reason: string) => Promise<boolean>;
@@ -61,7 +63,8 @@ function MediaValue({ value }: { readonly value: string }) {
   return <span>{value}</span>;
 }
 
-function SafeLink({ value }: { readonly value: string }) {
+function SafeLink({ value, publicOnly = false }: { readonly value: string; readonly publicOnly?: boolean }) {
+  if (publicOnly && !isSafePublicHttpUrl(value)) return <span>{value}</span>;
   try {
     const url = new URL(value);
     if (["https:", "http:"].includes(url.protocol) && !url.username && !url.password) {
@@ -69,6 +72,36 @@ function SafeLink({ value }: { readonly value: string }) {
     }
   } catch { /* Untrusted or relative URLs are displayed only as text. */ }
   return <span>{value}</span>;
+}
+
+const DECODO_PAGE_FIELDS = new Set(["title", "status_code", "description", "content", "content_truncated", "preview", "links"]);
+const TARGET_LABELS: Readonly<Record<ScannerFinding["target"]["kind"], string>> = { email: "Email", photo: "Foto", username: "Usuario", url: "URL" };
+
+function DecodoPageDetails({ finding }: { readonly finding: ScannerFinding }) {
+  const { status_code: status, description, content, content_truncated: truncated, links } = finding.extra;
+  const publicLinks = typeof links === "string"
+    ? [...new Set(links.split("\n").map((link) => link.trim()).filter(isSafePublicHttpUrl))]
+    : [];
+  return (
+    <section className="detail-fact" aria-labelledby="decodo-page-heading">
+      <h3 id="decodo-page-heading">Página recopilada por Decodo</h3>
+      <dl className="fact-list">
+        <dt>Título</dt><dd>{decodoPageTitle(finding)}</dd>
+        <dt>URL final</dt><dd><SafeLink value={finding.url} publicOnly /></dd>
+        {typeof status === "number" && <><dt>Estado HTTP</dt><dd>{status}</dd></>}
+        {typeof description === "string" && description !== "" && <><dt>Descripción</dt><dd>{description}</dd></>}
+      </dl>
+      {typeof content === "string" && content !== "" && <>
+        <h4 id="decodo-content-heading">Texto recopilado</h4>
+        {truncated === true && <p className="detail-note">El contenido se guardó truncado por el límite de tamaño.</p>}
+        <pre className="decodo-page-content" aria-labelledby="decodo-content-heading" tabIndex={0}>{content}</pre>
+      </>}
+      {publicLinks.length > 0 && <>
+        <h4>Enlaces públicos extraídos</h4>
+        <ul className="decodo-page-links">{publicLinks.map((url) => <li key={url}><SafeLink value={url} publicOnly /></li>)}</ul>
+      </>}
+    </section>
+  );
 }
 
 /** The FaceCheck search behind a candidate group, a single candidate or the search action itself. */
@@ -126,10 +159,12 @@ function LeafGroupDetails({ node, investigation, onSelectNode }: { readonly node
   );
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, onValidate, onSelectNode, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
+export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, facecheckConfigured, decodoConfigured, onValidate, onSelectNode, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
+  const decodoFinding = node?.evidence?.sourceId === "decodo:url" ? node.evidence.finding : undefined;
+  const isDecodoAction = node?.action?.spec.catalogId === "decodo.url.v1";
 
   async function validate(evidenceId: string, status: ValidationStatus) {
     if (validationReason.trim() === "") {
@@ -185,7 +220,8 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                 <h3 id="selected-action-heading">{actionTitle(node.action)}</h3>
                 <dl className="fact-list">
                   <dt>Proveedor</dt><dd>{node.action.spec.provider}</dd>
-                  <dt>Semilla</dt><dd className="break-value">{node.action.spec.seed.value}</dd>
+                  <dt>{isDecodoAction ? "URL objetivo" : "Semilla"}</dt><dd className="break-value">{isDecodoAction
+                    ? <SafeLink value={node.action.spec.seed.value} publicOnly /> : node.action.spec.seed.value}</dd>
                   <dt>Estado de la acción</dt><dd><StateValue value={node.state} /></dd>
                 </dl>
                 <details className="detail-provenance">
@@ -212,6 +248,13 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                   {!authorizationCovers(investigation.authorization, node.action.spec.catalogId) && <p className="detail-note">Es necesario renovar la autorización para GHunt desde Controles del expediente.</p>}
                   {ghuntConnected === false && <p className="detail-note"><span className="workspace-state-value">Requiere login</span> · <a href="#/ajustes?seccion=ghunt">Conectar Google</a></p>}
                   {ghuntConnected === null && <p className="detail-note">No se pudo confirmar la conexión de Google.</p>}
+                </>}
+                {node.action.spec.catalogId === "facecheck.photo.v1" && node.action.status === "queued" && facecheckConfigured === false &&
+                  <p className="detail-note">Falta el token de FaceCheck. <a href="#/ajustes">Configurar FaceCheck</a></p>}
+                {isDecodoAction && node.action.status === "queued" && <>
+                  {!authorizationCovers(investigation.authorization, node.action.spec.catalogId) && <p className="detail-note">Es necesario renovar la autorización para Decodo desde Controles del expediente.</p>}
+                  {decodoConfigured === false && <p className="detail-note">Falta el token de Decodo. <a href="#/ajustes">Configurar Decodo</a></p>}
+                  {!isActionEligibleByParentValidation(investigation, node.action) && <p className="detail-note">La coincidencia de FaceCheck ya no está aceptada. Decodo espera a que vuelvas a aceptarla.</p>}
                 </>}
                 {node.action.status === "claimed" && (
                   <p className="detail-warning" role="note">Acción reclamada: efecto externo incierto o aún en curso. Esta interfaz no la vuelve a ejecutar.</p>
@@ -261,6 +304,7 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                 <p className="detail-note">Semilla descubierta en {node.evidence.provider}. Seleccionarla no ejecuta nuevas búsquedas. No confirma identidad ni titularidad.</p>
                 <p className="detail-note">La validación de abajo corresponde a la observación original completa, no a este campo por separado.</p>
               </section>}
+              {decodoFinding !== undefined && <DecodoPageDetails finding={decodoFinding} />}
               <section className="detail-fact" aria-labelledby="selected-evidence-heading">
                 <h3 id="selected-evidence-heading">{evidenceHeading(node.evidence)}</h3>
                 <dl className="fact-list">
@@ -272,22 +316,27 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                   <dt>Semilla observada</dt><dd className="break-value">{node.evidence.seed.value}</dd>
                   <dt>Registrada</dt><dd>{formatDate(node.evidence.recordedAt)}</dd>
                   {node.evidence.finding && <>
-                    <dt>Tipo de objetivo descubierto</dt><dd>{node.evidence.finding.target.kind === "email" ? "Email" : node.evidence.finding.target.kind === "photo" ? "Foto" : "Usuario"}</dd>
-                    <dt>Objetivo observado</dt><dd className="break-value">{node.evidence.finding.target.value}</dd>
+                    <dt>Tipo de objetivo descubierto</dt><dd>{TARGET_LABELS[node.evidence.finding.target.kind]}</dd>
+                    <dt>Objetivo observado</dt><dd className="break-value">{node.evidence.finding.target.kind === "url"
+                      ? <SafeLink value={node.evidence.finding.target.value} publicOnly /> : node.evidence.finding.target.value}</dd>
                     <dt>Estado original de la herramienta</dt><dd>{node.evidence.finding.upstreamStatus}</dd>
-                    <dt>Enlace</dt><dd className="break-value"><SafeLink value={node.evidence.finding.url} /></dd>
+                    {decodoFinding === undefined && <><dt>Enlace</dt><dd className="break-value"><SafeLink value={node.evidence.finding.url} /></dd></>}
                     <dt>Categoría</dt><dd>{node.evidence.finding.category}</dd>
-                    <dt>Motivo informado</dt><dd className="break-value">{node.evidence.finding.reason}</dd>
+                    {decodoFinding === undefined && <><dt>Motivo informado</dt><dd className="break-value">{node.evidence.finding.reason}</dd></>}
                   </>}
                 </dl>
                 {node.evidence.finding && <>
                   <h4>Metadatos y procedencia</h4>
-                  <dl className="fact-list">{Object.entries(node.evidence.finding.extra).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value">{String(value)}</dd></Fragment>)}</dl>
-                  <h4>Referencias multimedia</h4>
-                  <dl className="fact-list">{Object.entries(node.evidence.finding.media).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value"><MediaValue value={value} /></dd></Fragment>)}</dl>
+                  <dl className="fact-list">{Object.entries(node.evidence.finding.extra)
+                    .filter(([key]) => decodoFinding === undefined || !DECODO_PAGE_FIELDS.has(key))
+                    .map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value">{String(value)}</dd></Fragment>)}</dl>
+                  {decodoFinding === undefined && <>
+                    <h4>Referencias multimedia</h4>
+                    <dl className="fact-list">{Object.entries(node.evidence.finding.media).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value"><MediaValue value={value} /></dd></Fragment>)}</dl>
+                  </>}
                 </>}
                 {node.evidence.sourceId === "facecheck:photo" && <p className="detail-warning">
-                  Este resultado es un candidato: FaceCheck encontró una cara parecida a la foto de perfil, no necesariamente la misma persona. Necesita que confirmes o rechaces si es esa persona.
+                  Este resultado es un candidato: FaceCheck encontró una cara parecida a la foto de perfil, no necesariamente la misma persona. Necesita que confirmes o rechaces si es esa persona. Si lo aceptás, se encola el scraping de su URL pública con Decodo, nunca de la foto ni de la miniatura. En avance automático no necesitás ejecutar otra acción.
                   {node.evidence.finding?.extra.testing_mode === true && " Se encontró en modo prueba (solo 100.000 caras), así que es poco fiable."}
                 </p>}
                 <p className="detail-warning">La herramienta reportó un hallazgo positivo para el objetivo observado. No confirma identidad ni titularidad y puede contener errores. La confianza informada por la herramienta no es una validación humana.</p>

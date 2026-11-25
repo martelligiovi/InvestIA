@@ -141,6 +141,7 @@ describe("creación nombrada y recuperación", () => {
     const first = render(<App />);
     const consent = screen.getByRole("checkbox", { name: /autorizar consultas/i });
     expect(consent).not.toBeChecked();
+    expect(consent).toHaveAccessibleDescription(/Decodo.*URL.*FaceCheck.*aceptad.*nunca.*foto/i);
     await user.click(consent);
     await user.type(screen.getByLabelText(/nombre de la investigación/i), "Consentido");
     await user.type(screen.getByLabelText(/intención de la investigación/i), "Revisar exposición");
@@ -149,6 +150,7 @@ describe("creación nombrada y recuperación", () => {
     expect(await screen.findByText(/no se pudo confirmar la autorización/i)).toBeInTheDocument();
     expect(calls.map(requestPath)).toEqual(["/investigations", "/investigations/case-1/authorization"]);
     expect(bodyOf(calls[1]!)).toMatchObject({ granted: true, reason: expect.stringMatching(/semillas actuales y futuras/i) });
+    expect(bodyOf(calls[1]!)).toMatchObject({ reason: expect.stringMatching(/Decodo.*URL.*FaceCheck.*aceptad/i) });
     expect(JSON.parse(window.sessionStorage.getItem("investia.creation-recovery.v1")!)).toMatchObject({ consent: true });
     first.unmount();
     render(<App />);

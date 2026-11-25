@@ -8,7 +8,7 @@ import { WorkspaceDetails } from "../components/WorkspaceDetails";
 import { FacecheckReview } from "../components/FacecheckReview";
 import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
-import { hasCatalogAuthorization, workspaceHeadline } from "./workspace-status";
+import { actionDisplayState, hasCatalogAuthorization, workspaceHeadline } from "./workspace-status";
 
 function revealElement(element: HTMLElement) {
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -77,8 +77,8 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     const element = reportErrorRef.current;
     if (element !== null && controller.reportError !== "") revealElement(element);
   }, [controller.reportError]);
-  const investigation = controller.investigation;
-  const graph = useMemo(() => investigation === null ? null : buildWorkspaceGraph(investigation, ghuntConnected), [investigation, ghuntConnected]);
+  const { investigation, decodoConfigured, facecheckConfigured } = controller;
+  const graph = useMemo(() => investigation === null ? null : buildWorkspaceGraph(investigation, ghuntConnected, decodoConfigured), [investigation, ghuntConnected, decodoConfigured]);
 
   useEffect(() => {
     // Header disclosures behave as popovers: interacting elsewhere or pressing Escape dismisses them.
@@ -138,7 +138,12 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const automatic = investigation.advancementMode === "automatic";
   const queuedActions = investigation.actions.filter((action) => action.status === "queued" && (action.queuedByCatalog === true || action.approval !== undefined));
   const claimedActions = investigation.actions.filter((action) => action.status === "claimed");
-  const dispatchEligible = !automatic && !investigation.paused && authorizationGranted && queuedActions.some((action) => action.spec.catalogId !== "ghunt.email.v1" || ghuntConnected === true) && !controller.stale && !controller.busy;
+  const hasDispatchableAction = queuedActions.some((action) => {
+    if (action.spec.catalogId === "ghunt.email.v1") return ghuntConnected === true;
+    if (action.spec.catalogId === "decodo.url.v1") return actionDisplayState(investigation, action, ghuntConnected, decodoConfigured) === "queued";
+    return true;
+  });
+  const dispatchEligible = !automatic && !investigation.paused && authorizationGranted && hasDispatchableAction && !controller.stale && !controller.busy;
   const controlsDisabled = controller.busy || controller.stale;
   const usernameProposalCount = usernameProposals(investigation).length;
   const investigationPaused = investigation.paused;
@@ -233,7 +238,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             <div className="workspace-title-row">
               <h1 id="workspace-title">{investigation.name ?? "Investigación"}</h1>
               <span className={`workspace-state-tag status-chip${investigation.paused ? " is-paused status-chip--muted" : ""}`}>
-                {controller.stale ? "Estado desactualizado" : workspaceHeadline(investigation, ghuntConnected)}
+                {controller.stale ? "Estado desactualizado" : workspaceHeadline(investigation, ghuntConnected, decodoConfigured)}
               </span>
             </div>
           </div>
@@ -247,7 +252,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
                 {controller.busy ? "Actualizando…" : "Actualizar expediente"}
               </button>
               <p>{investigation.authorization === undefined ? "Sin autorización registrada" : authorizationGranted ? "Autorización otorgada" : investigation.authorization.granted ? "Autorización previa: requiere consentimiento para las herramientas nuevas del catálogo" : "Autorización revocada"}</p>
-              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, la consulta del perfil público de Gravatar, la búsqueda de usernames aceptados con Maigret en unos 500 sitios GHunt para correos Gmail y la búsqueda facial con FaceCheck.id, que envía la foto de perfil de Google encontrada a facecheck.id y gasta créditos fuera del modo prueba. Revocar o pausar no cancela una ejecución en curso.</p>
+              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, la consulta del perfil público de Gravatar, la búsqueda de usernames aceptados con Maigret en unos 500 sitios, GHunt para correos Gmail y la búsqueda facial con FaceCheck.id, que envía la foto de perfil de Google a facecheck.id y gasta créditos fuera del modo prueba. Decodo recibe la URL pública de cada coincidencia de FaceCheck aceptada, nunca la foto ni la miniatura. Revocar o pausar no cancela una ejecución en curso.</p>
               <label className="form-field">
                 <span>Motivo de autorización</span>
                 <textarea value={authorizationReason} maxLength={2_000} onChange={(event) => { setAuthorizationReason(event.currentTarget.value); setFormError(""); }} disabled={controlsDisabled} rows={2} />
@@ -376,6 +381,8 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             onSelectNode={(id) => { const node = findWorkspaceNode(graph, id); if (node) selectNode(node); }}
             disabled={controlsDisabled}
             ghuntConnected={ghuntConnected}
+            facecheckConfigured={facecheckConfigured}
+            decodoConfigured={decodoConfigured}
             onValidate={validate}
             onApproveGravatar={(actionId, reason) => controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason))}
             onReviewFacecheck={setFacecheckReview}
