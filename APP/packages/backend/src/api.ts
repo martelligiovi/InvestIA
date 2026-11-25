@@ -26,7 +26,7 @@ import { NvidiaProviderError, type NvidiaBuildGateway } from "./nvidia-build.ts"
 import type { InvestigationProjector } from "./neo4j-investigation-projector.ts";
 import type { GhuntSession } from "../../adapter-ghunt/src/index.ts";
 import { isLocalSameOriginRequest, registerGhuntRoutes } from "./ghunt-routes.ts";
-import { DECODO_API_MODES, isPublicDecodoFailure } from "../../adapter-decodo/src/index.ts";
+import { DECODO_API_MODES, isPublicDecodoFailure, normalizeDecodoToken } from "../../adapter-decodo/src/index.ts";
 import { isValidDecodoToken, type DecodoSettingsRecord, type DecodoSettingsStore } from "./decodo-settings-store.ts";
 import type { FacecheckSettingsRecord, FacecheckSettingsStore } from "./facecheck-settings-store.ts";
 import { registerFrontend } from "./serve-frontend.ts";
@@ -416,8 +416,15 @@ function registerDecodoRoutes(app: FastifyInstance, settings: DecodoSettingsStor
   app.get("/settings/decodo", localOnly, async () => decodoView(await settings.load()));
   app.put("/settings/decodo", localOnly, async (request) => {
     const body = input(DecodoSettingsBody, request.body);
-    await settings.update(body);
-    if (body.token !== undefined) wakeAutomaticRunner?.();
+    if (body.token !== undefined) {
+      const effectiveMode = body.apiMode ?? (await settings.load()).apiMode;
+      const normalized = normalizeDecodoToken(body.token, effectiveMode);
+      if (!("token" in normalized)) throw new HttpError(400, "INVALID_REQUEST", "Invalid request");
+      await settings.update({ ...body, token: normalized.token });
+      wakeAutomaticRunner?.();
+    } else {
+      await settings.update(body);
+    }
     return decodoView(await settings.load());
   });
   app.delete("/settings/decodo/token", localOnly, async () => {

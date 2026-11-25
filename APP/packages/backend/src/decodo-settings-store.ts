@@ -19,6 +19,7 @@ export interface DecodoSettingsStore {
 
 const DEFAULT_API_MODE: DecodoApiMode = "web_data";
 const MIGRATION_URL = new URL("../migrations/004_decodo_settings.sql", import.meta.url);
+const SCHEME_PREFIX = /^(?:Bearer|Basic)(?:\s|$)/i;
 
 export function isValidDecodoToken(value: unknown, apiMode?: DecodoApiMode): value is string {
   return "token" in normalizeDecodoToken(value, apiMode);
@@ -42,9 +43,15 @@ export class PostgresDecodoSettingsStore implements DecodoSettingsStore {
 
   async update({ token, apiMode }: DecodoSettingsChanges): Promise<void> {
     if (apiMode !== undefined && !isDecodoApiMode(apiMode)) throw new Error("Invalid Decodo API mode");
-    if (token !== undefined && !isValidDecodoToken(token, apiMode)) throw new Error("Invalid Decodo API token");
     if (token === undefined && apiMode === undefined) return;
-    await this.write(token, apiMode);
+    let normalizedToken: string | undefined;
+    if (token !== undefined) {
+      const effectiveMode = apiMode ?? (SCHEME_PREFIX.test(token.trimStart()) ? (await this.load()).apiMode : undefined);
+      const normalized = normalizeDecodoToken(token, effectiveMode);
+      if (!("token" in normalized)) throw new Error("Invalid Decodo API token");
+      normalizedToken = normalized.token;
+    }
+    await this.write(normalizedToken, apiMode);
   }
 
   async clearToken(): Promise<void> {

@@ -275,6 +275,14 @@ test("an HTML login form is terminal even with marketing copy on the original pr
   assert.equal(calls.length, 1);
 });
 
+test("Decodo rejects a members-only password gate on the original profile URL", async () => {
+  const content = '<main><h1>Members only</h1><p>Enter your credentials to continue reading.</p>'
+    + '<form><label>Password <input type="password"></label><button>Sign in</button></form></main>';
+  const { adapter, calls } = fixture([() => scraped(content, { url: seed.value })]);
+  await assertFailure(adapter.execute(seed), "Decodo target requires login");
+  assert.equal(calls.length, 1);
+});
+
 test("bounds title, description, preview, content and links without storing partial URLs", async () => {
   const article = `<title>${"T".repeat(300)}</title><meta name="description" content="${"D".repeat(500)}"><p>${"x".repeat(6500)}</p>`;
   const urls = Array.from({ length: 14 }, (_, i) => `https://example.org/${i}/${"z".repeat(140)}`);

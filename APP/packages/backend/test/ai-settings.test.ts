@@ -233,6 +233,18 @@ for (const payload of invalidDecodoCredentials) {
   });
 }
 
+test("Decodo rejects a token-only write with the wrong scheme for the saved mode", async (t) => {
+  const harness = decodoSettingsHarness();
+  t.after(() => harness.app.close());
+  await harness.decodo.update({ token: KEY, apiMode: "scraping_v2" });
+  const before = await harness.decodo.load();
+  const response = await harness.request("PUT", { token: "Bearer dGVzdA==" });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.json(), { error: "INVALID_REQUEST", message: "Invalid request" });
+  assert.equal(harness.writes, 1);
+  assert.deepEqual(await harness.decodo.load(), before);
+});
+
 test("Decodo settings migrate under the shared lock and persist independent updates", async () => {
   const { PostgresDecodoSettingsStore } = await import("../src/decodo-settings-store.ts");
   class Pool implements PgPoolLike {

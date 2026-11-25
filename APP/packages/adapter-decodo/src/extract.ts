@@ -89,7 +89,9 @@ function scanMarkup(source: string, html: boolean, base: string, addLink: (url: 
   let passwordField = false;
   let passwordForm = false;
   let loginHeading = false;
+  let loginAction = false;
   let heading: { name: string; start: number } | undefined;
+  let buttonStart: number | undefined;
   let cursor = 0;
   const tags = /<!--[\s\S]*?(?:-->|$)|<!doctype[^>]*>|<(https?:\/\/[^<>\s]+)>|<(\/?)([a-z][\w:-]*)(?=[\s/>])((?:[^<>"']|"[^"]*"|'[^']*')*)>/gi;
   const emit = (value: string) => {
@@ -136,6 +138,13 @@ function scanMarkup(source: string, html: boolean, base: string, addLink: (url: 
         heading = undefined;
       }
     }
+    if (!inHead && name === "button" && chrome.includes("form")) {
+      if (!closing) buttonStart = text.length;
+      else if (buttonStart !== undefined) {
+        loginAction ||= GATE_HEADING.test(text.slice(buttonStart).join("").trim());
+        buttonStart = undefined;
+      }
+    }
     if (!inHead && BLOCK_TAG.test(name)) emit("\n");
     if (closing) continue;
     if (name === "meta") {
@@ -152,16 +161,22 @@ function scanMarkup(source: string, html: boolean, base: string, addLink: (url: 
       }
     } else if (name === "a" && !inHead) {
       addLink(decodeEntities(attributes(attrs).get("href") ?? "").trim());
-    } else if (!inHead && name === "input" && attributes(attrs).get("type")?.toLowerCase() === "password") {
-      passwordField = true;
-      passwordForm ||= chrome.includes("form");
+    } else if (!inHead && name === "input") {
+      const fields = attributes(attrs);
+      const type = fields.get("type")?.toLowerCase();
+      if (type === "password") {
+        passwordField = true;
+        passwordForm ||= chrome.includes("form");
+      } else if (type === "submit" && chrome.includes("form")) {
+        loginAction ||= GATE_HEADING.test(textFromHtml(fields.get("value") ?? "").trim());
+      }
     }
   }
   emitText(source.slice(cursor));
   const lines = (parts: string[]) => parts.join("").split("\n").map((line) => scalar(line, Infinity)).filter(Boolean).join("\n");
   return {
     text: html ? lines(text) : escapeTagStarts(text.join("").replace(/[ \t]+(?=\n|$)/g, "").trim()),
-    main: html ? lines(main) : "", passwordField, passwordForm, loginHeading, canonical,
+    main: html ? lines(main) : "", passwordField, passwordForm, loginHeading, loginAction, canonical,
     title: clip(metadata.get("og:title") ?? metadata.get("title") ?? title, 240),
     description: metadata.get("description") ?? metadata.get("og:description") ?? "",
   };
@@ -176,11 +191,11 @@ export function extractPage(raw: string, base: string, target: string) {
   const html = HTML_START.test(source.replace(/^(?:<!--[\s\S]*?-->\s*)+/, ""));
   const { add, links } = linkCollector(target, base);
   const parsed = scanMarkup(source, html, base, add);
-  const { text, canonical, passwordField, passwordForm, loginHeading } = parsed;
+  const { text, canonical, passwordField, passwordForm, loginHeading, loginAction } = parsed;
   const hasLoginForm = passwordForm && (loginHeading || GATE_HEADING.test(parsed.title));
   if (html) {
     return {
-      format: "html" as const, title: parsed.title, description: parsed.description, canonical, links, passwordField, hasLoginForm,
+      format: "html" as const, title: parsed.title, description: parsed.description, canonical, links, passwordField, passwordForm, loginAction, hasLoginForm,
       preview: scalar((parsed.main || text).split("\n", 1)[0] ?? "", 400),
       content: clip(text, 6000), contentLength: text.length, main: parsed.main,
     };
@@ -202,7 +217,7 @@ export function extractPage(raw: string, base: string, target: string) {
   const content = /[^\s#*`_~>-]/.test(main) ? text : "";
   return {
     format: "markdown" as const, title: scalar(markdownText(heading ?? ""), 240), description: preview, preview,
-    canonical, links, passwordField, hasLoginForm, content: clip(content, 6000), contentLength: content.length, main,
+    canonical, links, passwordField, passwordForm, loginAction, hasLoginForm, content: clip(content, 6000), contentLength: content.length, main,
   };
 }
 
@@ -220,5 +235,6 @@ export function isLoginGate(page: ReturnType<typeof extractPage>, ...urls: strin
   if (!page.passwordField && !GATE_HEADING.test(page.title) && !lines.some((line) => GATE_HEADING.test(line))) return false;
   // A navigation sign-in label is not a gate if there is separate page/profile content.
   const substantive = lines.filter((line) => !GATE_HEADING.test(line) && !GATE_COPY.test(line));
+  if (page.passwordForm && page.loginAction && substantive.join(" ").length < 250) return true;
   return !substantive.some((line) => line.split(/\s+/).length >= 5) && substantive.length < 2;
 }
