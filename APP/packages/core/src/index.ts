@@ -1,4 +1,4 @@
-export { isGooglePhotoUrl, USERNAME_SEED_PATTERN, type EmailSeed, type PhotoSeed, type Seed, type UsernameSeed } from "./domain/seed.ts";
+export { isGooglePhotoUrl, isSafePublicHttpUrl, urlSeed, USERNAME_SEED_PATTERN, type EmailSeed, type PhotoSeed, type Seed, type UrlSeed, type UsernameSeed } from "./domain/seed.ts";
 export { isScannerFinding } from "./domain/observation.ts";
 export type {
   ScannerFinding,
@@ -20,7 +20,9 @@ export {
   CATALOG_INPUT_KINDS,
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
+  isActionEligibleByParentValidation,
   isScopedCatalogId,
+  latestValidationStatus,
   SCOPED_CATALOG_IDS,
   type ScopedCatalogId,
   INVESTIGATION_NAME_MAX_LENGTH,
@@ -30,6 +32,7 @@ export {
   type AuditEvent,
   type AuditKind,
   type AuthorizationRecord,
+  type DecodoActionSpec,
   type EvidenceId,
   type EvidenceRecord,
   type FacecheckActionSpec,

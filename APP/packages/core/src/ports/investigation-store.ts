@@ -72,7 +72,7 @@ export interface InvestigationStore {
     id: InvestigationId,
     operation: (current: Investigation) => InvestigationTransaction<T>,
   ): Promise<T>;
-  /** Atomically checks persisted authorization, catalog eligibility or historical approval, mode, and pause state while claiming. */
+  /** Atomically checks authorization, catalog eligibility or approval, parent validation, mode, and pause state while claiming. */
   claimNextAction(input: ClaimActionRequest): Promise<ActionClaim | undefined>;
   /** Atomically records a terminal outcome only for the matching in-flight claim. */
   completeAction(input: CompleteActionInput): Promise<Investigation>;

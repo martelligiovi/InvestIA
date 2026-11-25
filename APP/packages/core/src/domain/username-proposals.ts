@@ -23,9 +23,11 @@ export function usernameProposals(investigation: Investigation): readonly Userna
   const seen = new Set((investigation.usernameSeeds ?? []).map((record) => record.value));
   const proposals: UsernameProposal[] = [];
   for (const evidence of investigation.evidence) {
-    // Face-match candidates are not pivots, even if their metadata contains usernames.
-    if (evidence.seed.kind === "photo" || evidence.finding === undefined || evidence.finding.target.kind === "photo") continue;
-    for (const value of candidates(evidence.finding.target, evidence.finding.extra.discovered_usernames)) {
+    const { seed, finding } = evidence;
+    // Face matches and scraped URLs are not username pivots, even if their metadata contains usernames.
+    if (finding === undefined || seed.kind === "photo" || seed.kind === "url" ||
+      finding.target.kind === "photo" || finding.target.kind === "url") continue;
+    for (const value of candidates(finding.target, finding.extra.discovered_usernames)) {
       if (seen.has(value)) continue;
       seen.add(value);
       proposals.push({ value, evidenceId: evidence.id, provider: evidence.provider });

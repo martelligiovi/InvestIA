@@ -1,4 +1,5 @@
-import type { EmailSeed, PhotoSeed, UsernameSeed } from "./seed.ts";
+import type { EmailSeed, PhotoSeed, UrlSeed, UsernameSeed } from "./seed.ts";
+import { findingSeedNodeId } from "./seed-graph.ts";
 import type { RegistrationStatus, ScannerFinding } from "./observation.ts";
 export type { RegistrationStatus } from "./observation.ts";
 
@@ -57,15 +58,18 @@ export interface ActionApproval {
 }
 
 /** Catalog tools that run only under an explicit, per-tool consent scope. */
-export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1" | "maigret.username.v1" | "ghunt.email.v1" | "facecheck.photo.v1";
-export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze(["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1"]);
+export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1" | "maigret.username.v1" | "ghunt.email.v1" | "facecheck.photo.v1" | "decodo.url.v1";
+export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze([
+  "user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1", "decodo.url.v1",
+]);
 /** Seed kind each scoped tool accepts. */
-export const CATALOG_INPUT_KINDS: Readonly<Record<ScopedCatalogId, "email" | "username" | "photo">> = Object.freeze({
+export const CATALOG_INPUT_KINDS: Readonly<Record<ScopedCatalogId, "email" | "username" | "photo" | "url">> = Object.freeze({
   "user-scanner.email.v1": "email",
   "gravatar.email.v1": "email",
   "maigret.username.v1": "username",
   "ghunt.email.v1": "email",
   "facecheck.photo.v1": "photo",
+  "decodo.url.v1": "url",
 });
 /** GHunt only applies to Google consumer accounts. */
 export const GHUNT_EMAIL_DOMAINS: readonly string[] = Object.freeze(["gmail.com", "googlemail.com"]);
@@ -137,10 +141,16 @@ export interface FacecheckActionSpec {
   readonly seed: PhotoSeed;
 }
 
+export interface DecodoActionSpec {
+  readonly catalogId: "decodo.url.v1";
+  readonly provider: "decodo";
+  readonly seed: UrlSeed;
+}
+
 /** Historical export name retained for consumers; it covers every catalog action spec. */
 export interface GitHubCatalogAction {
   readonly id: InvestigationActionId;
-  readonly spec: GitHubActionSpec | UserScannerActionSpec | GravatarActionSpec | MaigretActionSpec | GhuntActionSpec | FacecheckActionSpec;
+  readonly spec: GitHubActionSpec | UserScannerActionSpec | GravatarActionSpec | MaigretActionSpec | GhuntActionSpec | FacecheckActionSpec | DecodoActionSpec;
   /**
    * Explicit input seed reference (see seed-graph.ts). Absent on historical actions and on
    * actions whose input is the operator email embedded in their spec.
@@ -161,8 +171,8 @@ export interface GitHubCatalogAction {
 export interface EvidenceRecord {
   readonly id: EvidenceId;
   readonly actionId: InvestigationActionId;
-  /** Seed of the action that produced it: an email, confirmed username or profile photo. */
-  readonly seed: EmailSeed | UsernameSeed | PhotoSeed;
+  /** Seed of the producing action: an email, confirmed username, profile photo or page URL. */
+  readonly seed: EmailSeed | UsernameSeed | PhotoSeed | UrlSeed;
   readonly provider: string;
   readonly status: RegistrationStatus;
   /** Absent on historical registration observations. */
@@ -232,6 +242,26 @@ export interface Investigation {
   readonly evidence: readonly EvidenceRecord[];
   readonly validations: readonly ValidationDecision[];
   readonly audit: readonly AuditEvent[];
+}
+
+export function latestValidationStatus(investigation: Investigation, evidenceId: EvidenceId): ValidationStatus | undefined {
+  for (let index = investigation.validations.length - 1; index >= 0; index--) {
+    const decision = investigation.validations[index]!;
+    if (decision.evidenceId === evidenceId) return decision.status;
+  }
+  return undefined;
+}
+
+export function facecheckParentEvidence(investigation: Investigation, sourceSeedId: string | undefined): EvidenceRecord | undefined {
+  if (sourceSeedId === undefined) return undefined;
+  return investigation.evidence.find((record) => record.sourceId === "facecheck:photo" && findingSeedNodeId(record.id) === sourceSeedId);
+}
+
+/** Recheck against the persisted snapshot when claiming a linked scrape. */
+export function isActionEligibleByParentValidation(investigation: Investigation, action: GitHubCatalogAction): boolean {
+  if (action.spec.catalogId !== "decodo.url.v1") return true;
+  const parent = facecheckParentEvidence(investigation, action.sourceSeedId);
+  return parent === undefined || latestValidationStatus(investigation, parent.id) === "accepted";
 }
 
 export interface InvestigationSummary {
