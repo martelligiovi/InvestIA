@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  authorizationCovers,
+  createCatalogExecutor,
   createInvestigationService,
+  isActionEligibleByParentValidation,
   type ActionClaim,
   type ClaimActionRequest,
   type CompleteActionInput,
@@ -11,7 +14,9 @@ import {
   type InvestigationTransaction,
 } from "@investia/core";
 import { MemorySaver } from "@langchain/langgraph";
+import type { DecodoApiMode } from "../../adapter-decodo/src/index.ts";
 import { createBackendApp } from "../src/api.ts";
+import { AutomaticInvestigationRunner } from "../src/automatic-investigation-runner.ts";
 import { createInvestigationRunGraph } from "../src/investigation-run-graph.ts";
 
 class MemoryStore implements InvestigationStore {
@@ -46,8 +51,12 @@ class MemoryStore implements InvestigationStore {
 
   async claimNextAction(input: ClaimActionRequest): Promise<ActionClaim | undefined> {
     const current = this.#items.get(input.investigationId);
-    if (current === undefined || current.paused || current.authorization?.granted !== true) return undefined;
-    const action = current.actions.find((item) => item.status === "queued" && item.approval !== undefined);
+    if (current === undefined || current.paused || current.authorization?.granted !== true ||
+      (input.automaticOnly === true && current.advancementMode !== "automatic")) return undefined;
+    const action = current.actions.find((item) => item.status === "queued" && (item.approval !== undefined ||
+      (item.spec.catalogId === "decodo.url.v1" && item.queuedByCatalog === true &&
+        !(input.deferredCatalogIds ?? []).includes(item.spec.catalogId) && authorizationCovers(current.authorization, item.spec.catalogId) &&
+        isActionEligibleByParentValidation(current, item))));
     if (action === undefined) return undefined;
     const claimed = {
       ...action,
@@ -294,6 +303,100 @@ test("HTTP workflow persists operator decisions and only runs the approved actio
   assert.match(report.headers["content-type"] ?? "", /text\/markdown/);
   assert.match(report.body, /Identity attribution is unsupported/);
   assert.match(report.body, /rejected/);
+});
+
+test("FaceCheck acceptance and Decodo token updates wake eligible scrapes without claiming rejected matches", async (t) => {
+  const store = new MemoryStore();
+  const seen: unknown[] = [];
+  let settings = { token: undefined as string | undefined, apiMode: "web_data" as DecodoApiMode };
+  const decodo = {
+    async load() { return { ...settings }; },
+    async update(update: { token?: string; apiMode?: DecodoApiMode }) { settings = { ...settings, ...update }; },
+    async clearToken() { settings = { ...settings, token: undefined }; },
+  };
+  let sequence = 0;
+  const service = createInvestigationService({
+    store, urlCatalog: ["decodo.url.v1"],
+    deferredCatalogIds: async () => settings.token === undefined ? ["decodo.url.v1"] : [],
+    executor: createCatalogExecutor({ "decodo.url.v1": {
+      id: "decodo:url", inputKind: "url", async execute(seed) {
+        seen.push(seed);
+        return [{ kind: "scanner_finding", seed, provider: "Decodo", status: "registered", finding: {
+          target: seed, upstreamStatus: "Found", url: seed.value, category: "Web page", reason: "Public profile",
+          extra: { source: "decodo", content: "Offline excerpt" }, media: {},
+        } }];
+      },
+    } }),
+    clock: () => "2025-02-01T00:00:00.000Z", createId: (kind) => `${kind}-${++sequence}`,
+  });
+  const runner = new AutomaticInvestigationRunner(service);
+  let sweep = Promise.resolve();
+  let wakes = 0;
+  const server = createBackendApp(service, {
+    actionRunner: createInvestigationRunGraph(service, new MemorySaver()),
+    projector: { project: async ({ revision }) => ({ revision, status: "applied" }) },
+    decodo,
+    wakeAutomaticRunner: () => { wakes++; sweep = runner.drain(); },
+  });
+  t.after(async () => { await runner.stop(); await server.close(); });
+  const photo = { kind: "photo" as const, value: "https://lh3.googleusercontent.com/profile-photo" };
+  const seedCase = async (url: string) => {
+    const created = await server.inject({ method: "POST", url: "/investigations" });
+    assert.equal(created.statusCode, 201);
+    const investigation = created.json<Investigation>();
+    const path = `/investigations/${investigation.id}`;
+    assert.equal((await server.inject({ method: "POST", url: `${path}/authorization`, payload: { granted: true, reason: "Authorize the enabled tools" } })).statusCode, 200);
+    await store.transact(investigation.id, (current) => ({ next: { ...current, revision: current.revision + 1, evidence: [{
+      id: "match", actionId: "facecheck", seed: photo, provider: "FaceCheck", status: "registered", sourceId: "facecheck:photo", recordedAt: current.createdAt,
+      finding: { target: photo, upstreamStatus: "Found", url, category: "Face match", reason: "Candidate", extra: {}, media: { thumbnail: "data:image/webp;base64,YWJj" } },
+    }] }, result: undefined }));
+    return {
+      decide: (status: string) => server.inject({ method: "POST", url: `${path}/evidence/match/validation`, payload: { status, reason: "Reviewed this match" } }),
+      run: () => server.inject({ method: "POST", url: `${path}/actions/run` }),
+      load: async () => (await server.inject({ method: "GET", url: path })).json<Investigation>(),
+    };
+  };
+  const approvedUrl = "https://www.linkedin.com/in/example-profile";
+  const disputedUrl = "https://example.org/profile";
+  const approved = await seedCase(approvedUrl);
+  const disputed = await seedCase(disputedUrl);
+  for (const [entry, url] of [[approved, approvedUrl], [disputed, disputedUrl]] as const) {
+    const decision = await entry.decide("accepted");
+    assert.equal(decision.statusCode, 201);
+    assert.deepEqual(decision.json<Investigation>().actions.map(({ spec, status }) => [spec.catalogId, status, spec.seed]),
+      [["decodo.url.v1", "queued", { kind: "url", value: url }]]);
+    await sweep;
+    const before = await entry.load();
+    const deferred = await entry.run();
+    assert.equal(deferred.statusCode, 200);
+    assert.deepEqual(deferred.json(), { action: null });
+    assert.deepEqual(await entry.load(), before);
+  }
+  assert.deepEqual(seen, []);
+  assert.equal((await disputed.decide("rejected")).statusCode, 201);
+  assert.equal(wakes, 2);
+  const rejected = await disputed.load();
+  const configured = await server.inject({ method: "PUT", url: "/settings/decodo", headers: { host: "127.0.0.1:4317" }, payload: { token: "offline-token" } });
+  assert.equal(configured.statusCode, 200);
+  assert.equal(wakes, 3);
+  await sweep;
+  assert.deepEqual(seen, [{ kind: "url", value: approvedUrl }]);
+  assert.deepEqual(await disputed.load(), rejected);
+  const blocked = await disputed.run();
+  assert.equal(blocked.statusCode, 200);
+  assert.deepEqual(blocked.json(), { action: null });
+  assert.deepEqual(await disputed.load(), rejected);
+  const completed = await approved.load();
+  assert.equal(completed.actions[0]?.status, "succeeded");
+  assert.deepEqual(completed.evidence.slice(1).map(({ sourceId, seed, finding }) => [sourceId, seed, finding?.target, finding?.extra.content]),
+    [["decodo:url", { kind: "url", value: approvedUrl }, { kind: "url", value: approvedUrl }, "Offline excerpt"]]);
+  assert.equal((await disputed.decide("accepted")).statusCode, 201);
+  assert.equal(wakes, 4);
+  await sweep;
+  assert.deepEqual(seen, [{ kind: "url", value: approvedUrl }, { kind: "url", value: disputedUrl }]);
+  const reaccepted = await disputed.load();
+  assert.deepEqual(reaccepted.actions.map(({ id, status }) => [id, status]), [[rejected.actions[0]!.id, "succeeded"]]);
+  assert.deepEqual(reaccepted.evidence.map(({ sourceId }) => sourceId), ["facecheck:photo", "decodo:url"]);
 });
 
 test("projection outages do not fail a committed run and can be reconciled from PostgreSQL state", async (t) => {

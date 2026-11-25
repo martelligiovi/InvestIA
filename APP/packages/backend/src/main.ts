@@ -6,6 +6,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import neo4j from "neo4j-driver";
 import { Pool } from "pg";
+import { createDecodoAdapter } from "../../adapter-decodo/src/index.ts";
 import { createFacecheckBox } from "../../adapter-facecheck/src/index.ts";
 import { createGhuntBox, createGhuntProcessRunner, createGhuntSession, createSessionBoundRunner, type GhuntSession } from "../../adapter-ghunt/src/index.ts";
 import { createGravatarBox } from "../../adapter-gravatar/src/index.ts";
@@ -20,6 +21,7 @@ import {
   type ScopedCatalogId,
 } from "@investia/core";
 import { PostgresAiSettingsStore } from "./ai-settings-store.ts";
+import { PostgresDecodoSettingsStore } from "./decodo-settings-store.ts";
 import { PostgresFacecheckSettingsStore } from "./facecheck-settings-store.ts";
 import { createBackendApp } from "./api.ts";
 import { AutomaticInvestigationRunner } from "./automatic-investigation-runner.ts";
@@ -43,11 +45,16 @@ export interface BackendStartOptions {
   readonly frontendDistPath?: string;
 }
 
-/** Tools whose queued actions wait: GHunt until a Google session is connected, FaceCheck until a token is saved. */
-export function deferredTools(readiness: { readonly ghuntConnected: boolean; readonly facecheckTokenConfigured: boolean }): ScopedCatalogId[] {
+/** Keep queued work deferred until its provider session or token is available. */
+export function deferredTools(readiness: {
+  readonly ghuntConnected: boolean;
+  readonly facecheckTokenConfigured: boolean;
+  readonly decodoTokenConfigured: boolean;
+}): ScopedCatalogId[] {
   return [
     ...(readiness.ghuntConnected ? [] : ["ghunt.email.v1" as const]),
     ...(readiness.facecheckTokenConfigured ? [] : ["facecheck.photo.v1" as const]),
+    ...(readiness.decodoTokenConfigured ? [] : ["decodo.url.v1" as const]),
   ];
 }
 
@@ -81,6 +88,8 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     await aiSettings.migrate();
     const facecheckSettings = new PostgresFacecheckSettingsStore(pool);
     await facecheckSettings.migrate();
+    const decodoSettings = new PostgresDecodoSettingsStore(pool);
+    await decodoSettings.migrate();
     const ghuntSession = options.ghuntSession ?? (config.ghuntSessionHome === undefined ? undefined : createGhuntSession({
       sessionHome: config.ghuntSessionHome,
       ...(config.ghuntPython === undefined ? {} : { pythonExecutable: config.ghuntPython }),
@@ -104,14 +113,17 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
           const { token, testingMode } = await facecheckSettings.load();
           return token === undefined ? undefined : { token, testingMode };
         } }),
+        "decodo.url.v1": createDecodoAdapter({ settings: () => decodoSettings.load() }),
         ...(ghuntBox === undefined ? {} : { "ghunt.email.v1": ghuntBox }),
       }),
       seedCatalog: SCOPED_CATALOG_IDS.filter((catalogId) => CATALOG_INPUT_KINDS[catalogId] === "email" &&
         (catalogId !== "ghunt.email.v1" || ghuntAvailable)),
       photoCatalog: ["facecheck.photo.v1"],
+      urlCatalog: ["decodo.url.v1"],
       deferredCatalogIds: async () => deferredTools({
         ghuntConnected: ghuntAvailable && (await ghuntSession!.status()).state === "connected",
         facecheckTokenConfigured: (await facecheckSettings.load()).token !== undefined,
+        decodoTokenConfigured: (await decodoSettings.load()).token !== undefined,
       }),
       clock: () => new Date().toISOString(),
       createId: (kind) => `${kind}-${randomUUID()}`,
@@ -134,6 +146,8 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
       },
       ghunt: { session: ghuntSession },
       facecheck: facecheckSettings,
+      decodo: decodoSettings,
+      wakeAutomaticRunner: () => { void automaticRunner?.drain().catch(() => undefined); },
     }, {
       frontendDistPath: options.frontendDistPath,
       onFrontendUnavailable: () => console.info(

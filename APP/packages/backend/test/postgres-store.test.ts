@@ -186,6 +186,82 @@ test("FaceCheck photo actions and evidence round-trip and defer independently", 
   }
 });
 
+const scrapeSeed = { kind: "url" as const, value: "https://example.org/public-profile" };
+const faceSeed = { kind: "photo" as const, value: "https://lh3.googleusercontent.com/profile-photo" };
+
+async function makeScrapeCase() {
+  const database = new FakePostgres();
+  const store = new PostgresInvestigationStore(database);
+  let sequence = 0;
+  const service = createInvestigationService({
+    store, executor: { id: "offline-decodo", async execute() { return []; } }, urlCatalog: ["decodo.url.v1"],
+    clock: () => "2025-03-01T00:00:00.000Z", createId: (kind) => `${kind}-${++sequence}`,
+  });
+  const { id } = await service.createInvestigation();
+  await service.authorize(id, true, "Authorize tools");
+  await store.transact(id, (current) => ({ next: { ...current, revision: current.revision + 1, evidence: [{
+    id: "candidate", actionId: "face", seed: faceSeed, provider: "FaceCheck", status: "registered", sourceId: "facecheck:photo", recordedAt: current.updatedAt,
+    finding: { target: faceSeed, upstreamStatus: "Found", url: scrapeSeed.value, category: "Face match", reason: "Candidate", extra: {}, media: {} },
+  }] }, result: undefined }));
+  const decide = (status: "accepted" | "rejected" | "inconclusive") => service.validateEvidence(id, "candidate", status, "Reviewed match");
+  const accepted = await decide("accepted");
+  const request: ClaimActionRequest = { investigationId: id, claimId: "scrape-claim", claimedAt: accepted.updatedAt, auditEvent: auditEvent("claim", "action_claimed"), automaticOnly: true };
+  return { database, store, id, decide, accepted, request };
+}
+
+test("Decodo snapshot validation round-trips URL actions and evidence and rejects unsafe URL seeds and targets", async () => {
+  const { store, id, accepted, request } = await makeScrapeCase();
+  assert.deepEqual(await store.get(id), accepted);
+  const claim = await store.claimNextAction(request);
+  assert.deepEqual(claim?.action.spec, { catalogId: "decodo.url.v1", provider: "decodo", seed: scrapeSeed });
+  const completed = await store.completeAction({
+    investigationId: id, actionId: claim!.action.id, claimId: request.claimId, completedAt: accepted.updatedAt, auditEvent: auditEvent("success", "action_succeeded"),
+    result: { kind: "success", unsupportedObservationCount: 0, evidence: [{
+      id: "page", actionId: claim!.action.id, seed: scrapeSeed, provider: "Decodo", status: "registered", sourceId: "decodo:url", recordedAt: accepted.updatedAt,
+      finding: { target: scrapeSeed, upstreamStatus: "Found", url: scrapeSeed.value, category: "Web page", reason: "Profile", extra: { content: "Offline excerpt" }, media: {} },
+    }] },
+  });
+  assert.deepEqual(await store.get(id), completed);
+  assert.deepEqual(await store.list(), [completed]);
+  assert.equal(completed.evidence.at(-1)?.sourceId, "decodo:url");
+  assert.deepEqual(completed.evidence.at(-1)?.finding?.target, scrapeSeed);
+  for (const value of ["https://user:password@example.org/", "http://127.0.0.1/", "http://10.0.0.1/", "http://169.254.1.2/", "ftp://example.org/"]) {
+    const seed = { ...scrapeSeed, value };
+    const action = completed.actions[0]!;
+    const record = completed.evidence[1]!;
+    for (const change of [
+      { actions: [{ ...action, spec: { ...action.spec, seed } }] },
+      { evidence: [completed.evidence[0]!, { ...record, seed }] },
+      { evidence: [completed.evidence[0]!, { ...record, finding: { ...record.finding!, target: seed } }] },
+    ]) {
+      const next = { ...completed, ...change, revision: completed.revision + 1 } as Investigation;
+      await assert.rejects(store.transact(id, () => ({ next, result: undefined })), { message: "Investigation snapshot is invalid." });
+      assert.deepEqual(await store.get(id), completed);
+    }
+  }
+});
+
+test("PostgreSQL checks the current FaceCheck validation inside the Decodo claim transaction", async () => {
+  const { database, store, id, decide, accepted, request } = await makeScrapeCase();
+  assert.equal(accepted.actions.length, 1);
+  for (const status of ["rejected", "inconclusive"] as const) {
+    const before = await decide(status);
+    const cursor = database.history.length;
+    assert.equal(await store.claimNextAction(request), undefined);
+    const queries = database.history.slice(cursor).map(({ sql }) => sql);
+    assert.equal(queries[0], "BEGIN");
+    assert.match(queries[1]!, /FOR UPDATE/);
+    assert.ok(!queries.some((sql) => /UPDATE investigations/.test(sql)));
+    assert.deepEqual(await store.get(id), before);
+  }
+  const reaccepted = await decide("accepted");
+  assert.deepEqual(reaccepted.actions, accepted.actions);
+  const claim = await store.claimNextAction(request);
+  assert.equal(claim?.action.id, accepted.actions[0]?.id);
+  assert.equal(claim?.action.status, "claimed");
+  assert.equal((await store.get(id))?.revision, reaccepted.revision + 1);
+});
+
 test("offline SQL fake verifies versioned JSON migration and parameterized adapter behavior", async () => {
   const { database, store } = makeStoreHarness();
   await store.migrate();
@@ -311,13 +387,15 @@ test("legacy authorization cannot silently broaden into a loud cross-scan", asyn
   assert.ok(await store.claimNextAction(input));
 });
 
+const currentGrant = ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1", "decodo.url.v1"];
+
 test("per-tool consent scopes round-trip, unknown scopes never write and empty scopes never claim", async () => {
   const { database, store, service } = makeStoreHarness();
   const created = await service.createInvestigation();
   await service.addEmailSeed(created.id, "seed@example.org");
   const granted = await service.authorize(created.id, true, "Authorize the listed tools");
-  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1"]);
-  assert.deepEqual((await store.get(created.id))?.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1"]);
+  assert.deepEqual(granted.authorization?.catalogScopes, currentGrant);
+  assert.deepEqual((await store.get(created.id))?.authorization?.catalogScopes, currentGrant);
 
   const before = structuredClone(database.records.get(created.id));
   for (const catalogScopes of [["unknown.tool.v1"], ["user-scanner.email.v1", "user-scanner.email.v1"], "user-scanner.email.v1"]) {
@@ -344,7 +422,7 @@ test("a scanner-only grant never claims an approved Gravatar proposal", async ()
   ]);
   assert.deepEqual(await store.get(created.id), seeded);
   const granted = await service.authorize(created.id, true, "Authorize the listed tools");
-  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1"]);
+  assert.deepEqual(granted.authorization?.catalogScopes, currentGrant);
 
   assert.equal((await service.executeNextAction(created.id))?.status, "succeeded");
   const proposal = (await store.get(created.id))!.actions.find((action) => action.spec.catalogId === "gravatar.email.v1")!;
@@ -570,7 +648,7 @@ test("a grant recorded before Maigret was added never claims a Maigret action", 
   const created = await service.createInvestigation();
   await service.addUsernameSeed(created.id, "anaexample", "Username supplied by the operator.");
   const granted = await service.authorize(created.id, true, "Authorize the listed tools");
-  assert.deepEqual(granted.authorization?.catalogScopes, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1"]);
+  assert.deepEqual(granted.authorization?.catalogScopes, currentGrant);
   const row = database.records.get(created.id)!;
   row.document = { ...row.document, authorization: { ...row.document.authorization!, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] } };
   const before = structuredClone(row);

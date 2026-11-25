@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   AI_MAX_TOKENS_RANGE,
@@ -8,6 +8,7 @@ import {
   composeAiReport,
   countOmittedAiReportFindings,
   DEFAULT_AI_REPORT_SETTINGS,
+  findingSeedNodeId,
   INVESTIGATION_NAME_MAX_LENGTH,
   USERNAME_SEED_PATTERN,
   normalizeAiReportSettings,
@@ -25,6 +26,8 @@ import { NvidiaProviderError, type NvidiaBuildGateway } from "./nvidia-build.ts"
 import type { InvestigationProjector } from "./neo4j-investigation-projector.ts";
 import type { GhuntSession } from "../../adapter-ghunt/src/index.ts";
 import { isLocalSameOriginRequest, registerGhuntRoutes } from "./ghunt-routes.ts";
+import { DECODO_API_MODES } from "../../adapter-decodo/src/index.ts";
+import { isValidDecodoToken, type DecodoSettingsRecord, type DecodoSettingsStore } from "./decodo-settings-store.ts";
 import type { FacecheckSettingsRecord, FacecheckSettingsStore } from "./facecheck-settings-store.ts";
 import { registerFrontend } from "./serve-frontend.ts";
 
@@ -75,6 +78,11 @@ const FacecheckSettingsBody = z.object({
   token: z.string().trim().min(1).max(512).regex(/^\S+$/).optional(),
   testingMode: z.boolean().optional(),
 }).strict().refine((body) => body.token !== undefined || body.testingMode !== undefined);
+
+const DecodoSettingsBody = z.object({
+  token: z.string().refine(isValidDecodoToken).optional(),
+  apiMode: z.enum(DECODO_API_MODES).optional(),
+}).strict().refine((body) => body.token !== undefined || body.apiMode !== undefined);
 
 const PROVIDER_ERRORS = {
   unauthorized: new HttpError(502, "AI_PROVIDER_UNAUTHORIZED", "NVIDIA Build rejected the API key"),
@@ -174,6 +182,9 @@ export interface BackendAppAdapters {
   /** GHunt Google session routes; `session` is absent when GHunt is not installed. */
   readonly ghunt?: { readonly session?: GhuntSession };
   readonly facecheck?: FacecheckSettingsStore;
+  readonly decodo?: DecodoSettingsStore;
+  /** Request an automatic sweep without waiting for provider work in the HTTP response. */
+  readonly wakeAutomaticRunner?: () => void;
 }
 
 export interface BackendAppOptions {
@@ -314,6 +325,10 @@ export function createBackendApp(
       const { id, evidenceId } = input(EvidenceParams, request.params);
       const body = input(ValidationBody, request.body);
       const investigation = await serviceCall(() => service.validateEvidence(id, evidenceId, body.status, body.reason));
+      if (body.status === "accepted" && investigation.actions.some((action) => action.status === "queued" &&
+        action.spec.catalogId === "decodo.url.v1" && action.sourceSeedId === findingSeedNodeId(evidenceId))) {
+        adapters.wakeAutomaticRunner?.();
+      }
       await projectPersistedState(id);
       return reply.code(201).send(publicInvestigation(investigation));
     },
@@ -357,6 +372,7 @@ export function createBackendApp(
   if (ai !== undefined) registerAiRoutes(app, service, ai);
   if (adapters.ghunt !== undefined) registerGhuntRoutes(app, adapters.ghunt.session);
   if (adapters.facecheck !== undefined) registerFacecheckRoutes(app, adapters.facecheck);
+  if (adapters.decodo !== undefined) registerDecodoRoutes(app, adapters.decodo, adapters.wakeAutomaticRunner);
 
   return app;
 }
@@ -383,6 +399,29 @@ function registerFacecheckRoutes(app: FastifyInstance, settings: FacecheckSettin
     guard(request.headers);
     await settings.clearToken();
     return facecheckView(await settings.load());
+  });
+}
+
+function decodoView(record: DecodoSettingsRecord) {
+  return { tokenConfigured: record.token !== undefined, tokenHint: record.token === undefined ? null : apiKeyHint(record.token), apiMode: record.apiMode };
+}
+
+function registerDecodoRoutes(app: FastifyInstance, settings: DecodoSettingsStore, wakeAutomaticRunner?: () => void): void {
+  const localOnly = { onRequest: async (request: FastifyRequest) => {
+    if (!isLocalSameOriginRequest(request.headers)) {
+      throw new HttpError(403, "FORBIDDEN", "Decodo settings can only be managed from this computer's InvestIA page");
+    }
+  } };
+  app.get("/settings/decodo", localOnly, async () => decodoView(await settings.load()));
+  app.put("/settings/decodo", localOnly, async (request) => {
+    const body = input(DecodoSettingsBody, request.body);
+    await settings.update(body);
+    if (body.token !== undefined) wakeAutomaticRunner?.();
+    return decodoView(await settings.load());
+  });
+  app.delete("/settings/decodo/token", localOnly, async () => {
+    await settings.clearToken();
+    return decodoView(await settings.load());
   });
 }
 

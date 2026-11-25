@@ -4,8 +4,10 @@ import {
   DEFAULT_INVESTIGATION_NAME,
   findingSeedNodeId,
   gravatarFindingTargetsEmail,
+  isActionEligibleByParentValidation,
   isScannerFinding,
   isGooglePhotoUrl,
+  isSafePublicHttpUrl,
   isScopedCatalogId,
   USERNAME_SEED_PATTERN,
   normalizeInvestigationName,
@@ -113,6 +115,18 @@ async function inTransaction<T>(pool: PgPoolLike, operation: (client: PgClientLi
   }
 }
 
+export async function migrateBackendSchema(pool: PgPoolLike, migrationUrl: URL, version: number): Promise<void> {
+  const migration = await readFile(migrationUrl, "utf8");
+  await inTransaction(pool, async (client) => {
+    await client.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK_ID]);
+    await client.query(migration);
+    await client.query(
+      "INSERT INTO backend_schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING",
+      [version],
+    );
+  });
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -154,6 +168,10 @@ function isPhotoSeed(value: unknown): boolean {
   return isRecord(value) && value.kind === "photo" && isGooglePhotoUrl(value.value);
 }
 
+function isUrlSeed(value: unknown): boolean {
+  return isRecord(value) && value.kind === "url" && isSafePublicHttpUrl(value.value);
+}
+
 function isEmailSeed(value: unknown): boolean {
   return isRecord(value) && value.kind === "email" && isNonEmptyString(value.value);
 }
@@ -181,6 +199,7 @@ const ACTION_SPECS: Readonly<Record<string, { readonly provider: string; readonl
   "maigret.username.v1": { provider: "maigret", seed: isUsernameSeed },
   "ghunt.email.v1": { provider: "ghunt", seed: isEmailSeed },
   "facecheck.photo.v1": { provider: "facecheck", seed: isPhotoSeed },
+  "decodo.url.v1": { provider: "decodo", seed: isUrlSeed },
 };
 
 function isStoredAction(value: unknown): boolean {
@@ -209,12 +228,11 @@ function isStoredAction(value: unknown): boolean {
 }
 
 function isStoredEvidence(value: unknown): boolean {
-  // Historical schema-v1 registration records had no finding payload. Do not rewrite them, but every
-  // username evidence carries a finding, so a finding-less record may only belong to an email seed.
+  // Historical schema-v1 registration records had no finding payload; only email seeds used that form.
   if (!isRecord(value)) return false;
   if (value.finding === undefined) return value.seed === undefined || isEmailSeed(value.seed);
   return isScannerFinding(value.finding) && isNonEmptyString(value.id) && isNonEmptyString(value.actionId) &&
-    (isEmailSeed(value.seed) || isUsernameSeed(value.seed) || isPhotoSeed(value.seed)) &&
+    (isEmailSeed(value.seed) || isUsernameSeed(value.seed) || isPhotoSeed(value.seed) || isUrlSeed(value.seed)) &&
     isNonEmptyString(value.provider) && isNonEmptyString(value.sourceId) && isTimestamp(value.recordedAt) &&
     ["registered", "not_registered", "rate_limited", "error", "unknown"].includes(String(value.status));
 }
@@ -304,16 +322,8 @@ export class PostgresInvestigationStore implements InvestigationStore {
     this.pool = pool;
   }
 
-  async migrate(): Promise<void> {
-    const migration = await readFile(MIGRATION_URL, "utf8");
-    await inTransaction(this.pool, async (client) => {
-      await client.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK_ID]);
-      await client.query(migration);
-      await client.query(
-        "INSERT INTO backend_schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING",
-        [MIGRATION_VERSION],
-      );
-    });
+  migrate(): Promise<void> {
+    return migrateBackendSchema(this.pool, MIGRATION_URL, MIGRATION_VERSION);
   }
 
   async create(investigation: Investigation): Promise<void> {
@@ -385,7 +395,8 @@ export class PostgresInvestigationStore implements InvestigationStore {
         (candidate.queuedByCatalog === true || candidate.approval !== undefined) &&
         (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) &&
         !(input.deferredCatalogIds ?? []).includes(candidate.spec.catalogId) &&
-        authorizationCovers(current.authorization, candidate.spec.catalogId));
+        authorizationCovers(current.authorization, candidate.spec.catalogId) &&
+        isActionEligibleByParentValidation(current, candidate));
       if (action === undefined) {
         return changed ? { next: revise(current, input.claimedAt, { actions, audit: [...current.audit, ...proposedEvents] }), result: undefined }
           : { result: undefined };
