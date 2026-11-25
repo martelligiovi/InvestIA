@@ -1168,10 +1168,10 @@ test("an operator can queue Decodo once for an older accepted FaceCheck match wi
 test("manual Decodo queueing rejects ineligible evidence, invalid reasons and a disabled catalog without changes", async () => {
   const { service: legacy, createService, id, before, parent, executed, issuedIds } = await caseWithDecodo(undefined, false);
   const service = createService(["decodo.url.v1"]);
-  async function rejects(evidenceId: string, message: string, target = service, reason?: string) {
+  async function rejects(evidenceId: string, message: string, target = service, reason?: string, caseId = id) {
     const snapshot = await service.loadInvestigation(id);
     const ids = issuedIds();
-    await assert.rejects(() => target.queueDecodoAction(id, evidenceId, reason), { message });
+    await assert.rejects(() => target.queueDecodoAction(caseId, evidenceId, reason), { message });
     assert.deepEqual(await service.loadInvestigation(id), snapshot);
     assert.equal(issuedIds(), ids);
   }
@@ -1186,6 +1186,8 @@ test("manual Decodo queueing rejects ineligible evidence, invalid reasons and a 
   await legacy.validateEvidence(id, other, "accepted", "Reviewed photo.");
   await rejects(other, unaccepted);
   await rejects("unknown", "Evidence not found: unknown");
+  await rejects("unknown", "Evidence not found: unknown", legacy);
+  await rejects(parent.id, "Investigation not found: unknown", legacy, undefined, "unknown");
   assert.equal(executed.length, 2);
 
   const unsafe = await caseWithDecodo("http://127.0.0.1/profile");

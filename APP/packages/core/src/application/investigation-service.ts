@@ -487,12 +487,12 @@ export class InvestigationService {
     evidenceId: string,
     reason = "Operator requested Decodo scraping for an accepted FaceCheck match.",
   ): Promise<Investigation> {
-    if (!this.urlCatalog.includes("decodo.url.v1")) throw new Error("Decodo scraping is not enabled");
     const why = reasonText(reason);
     const at = timestamp(this.dependencies.clock);
     return this.dependencies.store.transact(id, (current) => {
       const record = current.evidence.find((candidate) => candidate.id === evidenceId);
       if (record === undefined) throw new Error(`Evidence not found: ${evidenceId}`);
+      if (!this.urlCatalog.includes("decodo.url.v1")) throw new Error("Decodo scraping is not enabled");
       if (record.sourceId !== "facecheck:photo" || latestValidationStatus(current, record.id) !== "accepted") {
         throw new Error("Only an accepted FaceCheck match can queue a Decodo scrape");
       }

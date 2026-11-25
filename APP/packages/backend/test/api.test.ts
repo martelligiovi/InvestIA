@@ -484,6 +484,8 @@ test("HTTP queues Decodo on already accepted FaceCheck matches, then wakes and p
     [409, conflict, ["match", undefined, disabled]],
     [404, { error: "NOT_FOUND", message: "Record not found" }, ["unknown"]],
     [404, { error: "NOT_FOUND", message: "Investigation not found" }, ["match", undefined, server, "unknown"]],
+    [404, { error: "NOT_FOUND", message: "Investigation not found" }, ["match", undefined, disabled, "unknown"]],
+    [404, { error: "NOT_FOUND", message: "Record not found" }, ["unknown", undefined, disabled]],
     [400, invalid, ["match", { reason: " " }]],
     [400, invalid, ["match", { reason: 7 }]],
     [400, invalid, ["match", { url }]],
