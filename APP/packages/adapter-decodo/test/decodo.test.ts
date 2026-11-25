@@ -1,0 +1,256 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { isScannerFinding } from "../../core/src/index.ts";
+import { createDecodoAdapter, DECODO_API_MODES, isDecodoApiMode, type DecodoAdapterOptions } from "../src/index.ts";
+
+const seed = { kind: "url", value: "https://example.org/profile" } as const;
+const TOKEN = "test-token-not-for-errors";
+const PRIVATE_BODY = "private upstream response body";
+const MARKDOWN = `# Public Profile\n\nA public biography.\n\n[Projects](https://example.org/projects)\n[Duplicate](https://example.org/projects#history)\n[Profile](${seed.value}#top)\n[Private](http://127.0.0.1/info)`;
+const WEB_DATA = "https://data.decodo.com/v1/scrape";
+const V2 = "https://scraper-api.decodo.com/v2/scrape";
+
+function scraped(content: string, fields = {}) {
+  return Response.json({ results: [{ status_code: 200, content, ...fields }] });
+}
+
+function fixture(replies: Array<() => Response>, overrides: Partial<DecodoAdapterOptions> = {}) {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const fetcher: typeof fetch = async (input, init = {}) => {
+    const next = replies[calls.length];
+    calls.push({ url: String(input), init });
+    assert.ok(next, "unexpected fetch");
+    return next();
+  };
+  const adapter = createDecodoAdapter({
+    fetch: fetcher,
+    settings: async () => ({ token: TOKEN, apiMode: "web_data" }),
+    ...overrides,
+  });
+  return { adapter, calls };
+}
+
+function assertRequest(call: ReturnType<typeof fixture>["calls"][number], endpoint: string, authorization: string, headless = true) {
+  assert.equal(call.url, endpoint);
+  assert.equal(call.init.method, "POST");
+  assert.equal(call.init.redirect, "error");
+  assert.ok(call.init.signal instanceof AbortSignal);
+  const headers = new Headers(call.init.headers);
+  assert.equal(headers.get("authorization"), authorization);
+  assert.equal(headers.get("accept"), "application/json");
+  assert.equal(headers.get("content-type"), "application/json");
+  assert.deepEqual(JSON.parse(String(call.init.body)), { url: seed.value, ...(headless ? { headless: "html" } : {}), markdown: true });
+}
+
+async function assertFailure(work: Promise<unknown>, message: string) {
+  await assert.rejects(work, (error: Error) => {
+    assert.equal(error.message, message);
+    assert.equal(error.cause, undefined);
+    assert.doesNotMatch(String(error.stack), new RegExp(`${TOKEN}|${PRIVATE_BODY}`));
+    return true;
+  });
+}
+
+function syntheticHttpStatus(status: number) {
+  // Fetch's Response constructor rejects Decodo's nonstandard HTTP status codes.
+  return Object.defineProperty(new Response(`${PRIVATE_BODY}: Bearer ${TOKEN}`, { status: 500 }), "status", { value: status });
+}
+
+test("Web Data scrapes Markdown using a normalized Bearer token and returns one valid finding", async () => {
+  assert.deepEqual(DECODO_API_MODES, ["web_data", "scraping_v2"]);
+  for (const mode of DECODO_API_MODES) assert.equal(isDecodoApiMode(mode), true);
+  for (const invalid of [null, undefined, "WEB_DATA", "other", {}]) assert.equal(isDecodoApiMode(invalid), false);
+  const { adapter, calls } = fixture([() => scraped(MARKDOWN, { task_id: "task-1" })], {
+    settings: async () => ({ apiMode: "web_data", token: `  bEaReR ${TOKEN}  ` }),
+  });
+  assert.equal(adapter.id, "decodo:url");
+  assert.equal(adapter.inputKind, "url");
+  const observations = await adapter.execute(seed);
+  assert.equal(calls.length, 1);
+  assertRequest(calls[0]!, WEB_DATA, `Bearer ${TOKEN}`);
+  assert.deepEqual(observations, [{
+    kind: "scanner_finding", provider: "Decodo", seed, status: "registered",
+    finding: {
+      target: seed, upstreamStatus: "Found", url: seed.value, category: "Web page", reason: "Public Profile",
+      media: {}, extra: {
+        source: "decodo", api_mode: "web_data", status_code: 200, task_id: "task-1", content_format: "markdown",
+        title: "Public Profile", description: "A public biography.", preview: "A public biography.",
+        content: MARKDOWN, content_length: MARKDOWN.length, content_truncated: false,
+        links: "https://example.org/projects", extracted_links_count: 1,
+      },
+    },
+  }]);
+  assert.equal(isScannerFinding(observations[0]?.finding), true);
+});
+
+test("Scraping API v2 scrapes HTML using normalized Basic auth and retains only safe text and URLs", async () => {
+  const html = `<!doctype html><html><head>
+    <title>Browser Title</title><meta content="Profile &amp; Work" property="og:title">
+    <meta name="description" content="Developer&nbsp;and designer &#x2014; based in Oslo.">
+    <link rel="canonical" href="https://example.org/canonical?one=1&amp;two=2">
+    </head><body><main><h1>Public Profile</h1><p>Hello &amp; welcome &#33;</p>
+    <script>discard-script</script><style>discard-style</style><noscript>discard-noscript</noscript>
+    <svg><a href="/discard-link">discard-svg</a></svg><template><template>discard-template</template>discard-outer</template>
+    <a title="value > value" href="/projects">Projects</a> <a href="/projects#other">Duplicate</a>
+    <a href="javascript:alert(1)">Script link</a> <a href="https://user:pass@example.org/private">Credentials</a>
+    <a href="http://169.254.169.254/">Local</a></main></body></html>`;
+  const { adapter, calls } = fixture([() => scraped(html, { url: "https://example.org/redirected" })], {
+    settings: async () => ({ apiMode: "scraping_v2", token: ` bAsIc ${TOKEN} ` }),
+  });
+  const [observation] = await adapter.execute(seed);
+  assert.equal(calls.length, 1);
+  assertRequest(calls[0]!, V2, `Basic ${TOKEN}`);
+  assert.equal(isScannerFinding(observation?.finding), true);
+  const { url, reason, extra } = observation!.finding;
+  assert.equal(url, "https://example.org/canonical?one=1&two=2");
+  assert.equal(reason, "Profile & Work");
+  assert.equal(extra.api_mode, "scraping_v2");
+  assert.equal(extra.title, reason);
+  assert.equal(extra.description, "Developer and designer — based in Oslo.");
+  assert.equal(extra.content_format, "html");
+  assert.equal(extra.content, "Public Profile\nHello & welcome !\nProjects Duplicate Script link Credentials Local");
+  assert.equal(extra.content_length, String(extra.content).length);
+  assert.equal(extra.content_truncated, false);
+  assert.equal(extra.links, "https://example.org/projects");
+  assert.equal(extra.extracted_links_count, 1);
+});
+
+test("HTML falls back to title and safe response URL; Markdown never stores embedded raw HTML", async () => {
+  const { adapter } = fixture([
+    () => scraped('<title>Page &copy;</title><link rel="canonical" href="http://192.168.1.2/private"><p>Readable body</p>', { url: "https://example.org/final" }),
+    () => scraped('# Notes\n\nSome <b>public text</b>. <script>discard-me</script>\n\nSee <https://example.org/more>.'),
+  ]);
+  const [html] = await adapter.execute(seed);
+  assert.equal(html?.finding.url, "https://example.org/final");
+  assert.equal(html?.finding.extra.title, "Page ©");
+  assert.equal(html?.finding.extra.content, "Readable body");
+  const [markdown] = await adapter.execute(seed);
+  assert.equal(markdown?.finding.extra.content_format, "markdown");
+  assert.equal(markdown?.finding.extra.content, "# Notes\n\nSome public text.\n\nSee https://example.org/more.");
+  assert.equal(markdown?.finding.extra.links, "https://example.org/more");
+});
+
+test("rejects unsafe URLs before reading settings or sending anything", async () => {
+  let settingsReads = 0;
+  const { adapter, calls } = fixture([], { settings: async () => { settingsReads++; return { apiMode: "web_data", token: TOKEN }; } });
+  for (const value of ["not a URL", "ftp://example.org/file", "http://localhost/", "http://127.1/", "https://[::1]/", "http://10.20.30.40/", "http://169.254.169.254/", "https://user:pass@example.org/"]) {
+    await assertFailure(adapter.execute({ kind: "url", value }), "A valid public HTTP URL seed is required");
+  }
+  assert.equal(settingsReads, 0);
+  assert.deepEqual(calls, []);
+});
+
+test("does not expose a settings failure or send any request", async () => {
+  for (const settings of [() => { throw new Error(TOKEN); }, async () => { throw new Error(TOKEN); }]) {
+    const { adapter, calls } = fixture([], { settings });
+    await assertFailure(adapter.execute(seed), "Decodo settings could not be loaded");
+    assert.deepEqual(calls, []);
+  }
+});
+
+test("rejects missing or invalid tokens without a fetch", async () => {
+  for (const [token, message] of [
+    [undefined, "Decodo API token is not configured"], ["  ", "Decodo API token is not configured"],
+    [" Bearer  ", "Decodo API token is not configured"], [`Bearer ${TOKEN}\n`, "Decodo API token contains control characters"],
+    [`${TOKEN}\x00`, "Decodo API token contains control characters"], [`${TOKEN}\u0085`, "Decodo API token contains control characters"],
+  ] as const) {
+    const { adapter, calls } = fixture([], { settings: async () => ({ apiMode: "web_data", token }) });
+    await assertFailure(adapter.execute(seed), message);
+    assert.deepEqual(calls, []);
+  }
+});
+
+for (const [name, blocked] of [
+  ["target status", () => scraped(PRIVATE_BODY, { status_code: 999 })],
+  ["Decodo HTTP status", () => syntheticHttpStatus(999)],
+] as const) {
+  test(`retries once without headless on 999 ${name} and returns the fallback finding`, async () => {
+    const { adapter, calls } = fixture([blocked, () => scraped(MARKDOWN)]);
+    const observations = await adapter.execute(seed);
+    assert.equal(observations.length, 1);
+    assert.equal(observations[0]?.finding.extra.status_code, 200);
+    assert.equal(calls.length, 2);
+    assertRequest(calls[0]!, WEB_DATA, `Bearer ${TOKEN}`);
+    assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+  });
+}
+
+test("a second 999 is terminal and never sends a third request", async () => {
+  const { adapter, calls } = fixture([() => syntheticHttpStatus(999), () => scraped(TOKEN, { status_code: 999 })]);
+  await assertFailure(adapter.execute(seed), "Decodo scrape blocked by anti-bot protection (999)");
+  assert.equal(calls.length, 2);
+  assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+});
+
+for (const [status, message] of [
+  [401, "Decodo API credentials were rejected"], [403, "Decodo API credentials were rejected"],
+  [429, "Decodo API rate limit or quota exceeded"], [400, "Decodo API rejected the scrape request"],
+  [422, "Decodo API rejected the scrape request"], [500, "Decodo service failure (HTTP 500)"],
+  [524, "Decodo request timed out"], [612, "Decodo service failure (HTTP 612)"], [613, "Decodo service failure (HTTP 613)"],
+] as const) {
+  test(`maps HTTP ${status} without exposing secrets or retrying`, async () => {
+    const { adapter, calls } = fixture([() => syntheticHttpStatus(status)]);
+    await assertFailure(adapter.execute(seed), message);
+    assert.equal(calls.length, 1);
+  });
+}
+
+for (const [name, reply, message] of [
+  ["malformed JSON", () => new Response(`${PRIVATE_BODY}: ${TOKEN}`), "Unexpected Decodo response"],
+  ["missing results", () => Response.json({ private: TOKEN }), "Unexpected Decodo response"],
+  ["missing status", () => Response.json({ results: [{ content: TOKEN }] }), "Unexpected Decodo response"],
+  ["empty content", () => scraped("<html><body><script>discard</script> &nbsp; </body></html>"), "Decodo returned empty page content"],
+  ["target 404", () => scraped(TOKEN, { status_code: 404 }), "Decodo target returned HTTP 404"],
+  ["network failure", () => { throw new Error(TOKEN); }, "Decodo request failed"],
+  ["aborted fetch", () => { throw new DOMException(TOKEN, "AbortError"); }, "Decodo request timed out"],
+  ["timed-out fetch", () => { throw new DOMException(TOKEN, "TimeoutError"); }, "Decodo request timed out"],
+  ["aborted body", () => new Response(new ReadableStream({ start(controller) { controller.error(new DOMException(TOKEN, "AbortError")); } })), "Decodo request timed out"],
+] as const) {
+  test(`fails on ${name} without exposing secrets or retrying`, async () => {
+    const { adapter, calls } = fixture([reply]);
+    await assertFailure(adapter.execute(seed), message);
+    assert.equal(calls.length, 1);
+  });
+}
+
+test("rejects authwalls and login/sign-up pages, but not a LinkedIn profile with a sign-in link", async () => {
+  const profile = { kind: "url", value: "https://www.linkedin.com/in/public-profile/" } as const;
+  const { adapter, calls } = fixture([
+    () => scraped("# Welcome\n\nA generic page", { url: "https://www.linkedin.com/authwall?trk=profile" }),
+    () => scraped(`[LinkedIn](https://www.linkedin.com/)\n\n# Sign in to LinkedIn\n\nStay updated on your professional world\n\nEmail or phone\n\nPassword\n\nShow\n\n[Forgot password?](https://www.linkedin.com/reset)\n\nNew to LinkedIn? Join now\n\nLinkedIn © 2026`),
+    () => scraped('<title>Sign Up | LinkedIn</title><nav>Home</nav><main><h1>Join LinkedIn</h1><p>Make the most of your professional life</p><form><label>Email or phone</label><label>Password</label><button>Join now</button></form></main>'),
+    () => scraped('<title>Public Profile | LinkedIn</title><nav><a href="/login">Sign in</a></nav><main><h1>Jamie Example</h1><p>Software engineer building research tools.</p><h2>Experience</h2><p>Research Engineer at Example Studio</p></main>'),
+    () => scraped('[Sign in](https://www.linkedin.com/login)\n\n# Jamie Example\n\nSoftware engineer\n\n## Experience\n\nResearch Engineer at Example Studio'),
+  ]);
+  for (let i = 0; i < 3; i++) await assertFailure(adapter.execute(profile), "Decodo target requires login");
+  for (let i = 0; i < 2; i++) {
+    const [observation] = await adapter.execute(profile);
+    assert.equal(observation?.finding.url, profile.value);
+    assert.match(String(observation?.finding.extra.content), /Research Engineer at Example Studio/);
+  }
+  assert.equal(calls.length, 5);
+});
+
+test("bounds title, description, preview, content and links without storing partial URLs", async () => {
+  const article = `<title>${"T".repeat(300)}</title><meta name="description" content="${"D".repeat(500)}"><p>${"x".repeat(6500)}</p>`;
+  const urls = Array.from({ length: 14 }, (_, i) => `https://example.org/${i}/${"z".repeat(140)}`);
+  const { adapter } = fixture([
+    () => scraped(article + urls.map((url) => `<a href="${url}">Link</a>`).join(" ")),
+    () => scraped(urls.map((_, i) => `[Link ${i}](https://example.org/${i})`).join("\n")),
+  ]);
+  const [observation] = await adapter.execute(seed);
+  const extra = observation!.finding.extra;
+  assert.equal(extra.title, "T".repeat(240));
+  assert.equal(extra.description, "D".repeat(400));
+  assert.equal(extra.preview, "x".repeat(400));
+  assert.equal(extra.content, "x".repeat(6000));
+  assert.equal(extra.content_truncated, true);
+  assert.equal(extra.content_length, 6570);
+  assert.ok(String(extra.links).length <= 1200);
+  const links = String(extra.links).split("\n");
+  assert.deepEqual(links, urls.slice(0, 7));
+  assert.equal(extra.extracted_links_count, links.length);
+  const [short] = await adapter.execute(seed);
+  assert.equal(short?.finding.extra.extracted_links_count, 10);
+  assert.deepEqual(String(short?.finding.extra.links).split("\n"), Array.from({ length: 10 }, (_, i) => `https://example.org/${i}`));
+});
