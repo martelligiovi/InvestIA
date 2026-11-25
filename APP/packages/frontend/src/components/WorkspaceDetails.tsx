@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { authorizationCovers, isActionEligibleByParentValidation, isSafePublicHttpUrl, type ScannerFinding, type Investigation, type ValidationStatus } from "@investia/core";
+import { authorizationCovers, findingSeedNodeId, isActionEligibleByParentValidation, isSafePublicHttpUrl, latestValidationStatus, type EvidenceRecord, type ScannerFinding, type Investigation, type ValidationStatus } from "@investia/core";
 import { actionTitle, decodoPageTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 import { facecheckReviewState } from "./FacecheckReview";
@@ -13,6 +13,7 @@ export interface WorkspaceDetailsProps {
   readonly decodoConfigured?: boolean | null;
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
+  readonly onQueueDecodo?: (evidenceIds: readonly string[]) => Promise<boolean>;
   readonly onApproveGravatar?: (actionId: string, reason: string) => Promise<boolean>;
   /** Opens the card review for the candidates of one FaceCheck search. */
   readonly onReviewFacecheck?: (actionId: string) => void;
@@ -125,25 +126,59 @@ function facecheckGroupHeading(members: readonly WorkspaceNode[], investigation:
   return "Ningún candidato aceptado";
 }
 
-function LeafGroupDetails({ node, investigation, onSelectNode }: { readonly node: WorkspaceNode; readonly investigation: Investigation; readonly onSelectNode?: (id: string) => void }) {
+function canQueueDecodo(investigation: Investigation, evidence: EvidenceRecord | undefined): evidence is EvidenceRecord {
+  if (evidence?.sourceId !== "facecheck:photo" || latestValidationStatus(investigation, evidence.id) !== "accepted" ||
+    !isSafePublicHttpUrl(evidence.finding?.url)) return false;
+  const sourceSeedId = findingSeedNodeId(evidence.id);
+  return !investigation.actions.some((action) => action.spec.catalogId === "decodo.url.v1" && action.sourceSeedId === sourceSeedId);
+}
+
+function DecodoReadinessNotes({ investigation, decodoConfigured }: Pick<WorkspaceDetailsProps, "investigation" | "decodoConfigured">) {
+  return <>
+    {!authorizationCovers(investigation.authorization, "decodo.url.v1") && <p className="detail-note">Es necesario renovar la autorización para Decodo desde Controles del expediente.</p>}
+    {decodoConfigured === false && <p className="detail-note">Falta el token de Decodo. <a href="#/ajustes">Configurar Decodo</a></p>}
+  </>;
+}
+
+type LeafGroupDetailsProps = Pick<WorkspaceDetailsProps, "investigation" | "disabled" | "decodoConfigured" | "onSelectNode" | "onQueueDecodo"> & {
+  readonly node: WorkspaceNode;
+};
+
+function LeafGroupDetails({ node, investigation, disabled, decodoConfigured, onSelectNode, onQueueDecodo }: LeafGroupDetailsProps) {
   const [page, setPage] = useState(0);
   const members = node.members ?? [];
   const lastPage = Math.max(0, Math.ceil(members.length / GRAPH_PAGE_SIZE) - 1);
   const currentPage = Math.min(page, lastPage);
   const start = currentPage * GRAPH_PAGE_SIZE;
   const facecheck = node.hiddenMembers !== undefined;
+  const eligibleIds = new Set(facecheck && onQueueDecodo !== undefined
+    ? members.flatMap(({ evidence }) => canQueueDecodo(investigation, evidence) ? [evidence.id] : [])
+    : []);
   return (
     <section className="detail-fact" aria-labelledby="group-heading">
       <h3 id="group-heading">{facecheck ? facecheckGroupHeading(members, investigation) : `Semillas agrupadas · ${members.length} resultados`}</h3>
       {facecheck
         ? <p className="detail-note">{node.hiddenMembers! > 0 && `Los ${node.hiddenMembers} descartados no se muestran en el grafo; siguen en la pestaña Descartados de la revisión. `}Abrir un candidato no ejecuta ninguna acción.</p>
         : <p className="detail-note">Son semillas producidas por la misma acción, sin acciones asociadas por ahora. Abrir un resultado no ejecuta ninguna acción ni expande el grafo.</p>}
+      {eligibleIds.size > 0 && <>
+        <p className="detail-note">Podés encolar el scraping de las URL públicas aceptadas sin volver a ejecutar FaceCheck.</p>
+        <DecodoReadinessNotes investigation={investigation} decodoConfigured={decodoConfigured} />
+        <button type="button" className="workspace-button" disabled={disabled} onClick={() => void onQueueDecodo?.([...eligibleIds])}>
+          {eligibleIds.size === 1 ? "Aplicar Decodo" : `Aplicar Decodo a aceptados (${eligibleIds.size})`}
+        </button>
+      </>}
       <ul className="leaf-group-members">
-        {members.slice(start, start + GRAPH_PAGE_SIZE).map((member) => (
-          <li key={member.id}><button type="button" className="workspace-button"
-            aria-label={`Ver resultado: ${member.title}`} disabled={onSelectNode === undefined}
-            onClick={() => onSelectNode?.(member.id)}>{member.title}</button></li>
-        ))}
+        {members.slice(start, start + GRAPH_PAGE_SIZE).map((member) => {
+          const evidenceId = member.evidence?.id;
+          const canQueue = evidenceId !== undefined && eligibleIds.has(evidenceId);
+          return <li key={member.id} className={canQueue ? "leaf-group-member--with-action" : undefined}>
+            <button type="button" className="workspace-button"
+              aria-label={`Ver resultado: ${member.title}`} disabled={onSelectNode === undefined}
+              onClick={() => onSelectNode?.(member.id)}>{member.title}</button>
+            {canQueue && <button type="button" className="workspace-button" aria-label={`Aplicar Decodo a ${member.title}`}
+              disabled={disabled} onClick={() => void onQueueDecodo?.([evidenceId])}>Decodo</button>}
+          </li>;
+        })}
       </ul>
       {lastPage > 0 && <nav className="graph-pagination" aria-label="Páginas del grupo">
         <p role="status">Resultados {start + 1}–{Math.min(start + GRAPH_PAGE_SIZE, members.length)} de {members.length}</p>
@@ -159,7 +194,7 @@ function LeafGroupDetails({ node, investigation, onSelectNode }: { readonly node
   );
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, facecheckConfigured, decodoConfigured, onValidate, onSelectNode, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
+export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, facecheckConfigured, decodoConfigured, onValidate, onSelectNode, onQueueDecodo, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
@@ -195,7 +230,8 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
         <div className="detail-content" key={node.id}>
           {onReviewFacecheck !== undefined && facecheckActionOf(node) !== undefined &&
             <FacecheckReviewCall investigation={investigation} actionId={facecheckActionOf(node)!} onReview={onReviewFacecheck} />}
-          {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} investigation={investigation} onSelectNode={onSelectNode} />}
+          {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} investigation={investigation} disabled={disabled}
+            decodoConfigured={decodoConfigured} onSelectNode={onSelectNode} onQueueDecodo={onQueueDecodo} />}
           {node.groupId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
             onClick={() => onSelectNode(node.groupId!)}>Volver al grupo</button>}
           {node.relatedParentId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
@@ -252,8 +288,7 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                 {node.action.spec.catalogId === "facecheck.photo.v1" && node.action.status === "queued" && facecheckConfigured === false &&
                   <p className="detail-note">Falta el token de FaceCheck. <a href="#/ajustes">Configurar FaceCheck</a></p>}
                 {isDecodoAction && node.action.status === "queued" && <>
-                  {!authorizationCovers(investigation.authorization, node.action.spec.catalogId) && <p className="detail-note">Es necesario renovar la autorización para Decodo desde Controles del expediente.</p>}
-                  {decodoConfigured === false && <p className="detail-note">Falta el token de Decodo. <a href="#/ajustes">Configurar Decodo</a></p>}
+                  <DecodoReadinessNotes investigation={investigation} decodoConfigured={decodoConfigured} />
                   {!isActionEligibleByParentValidation(investigation, node.action) && <p className="detail-note">La coincidencia de FaceCheck ya no está aceptada. Decodo espera a que vuelvas a aceptarla.</p>}
                 </>}
                 {node.action.status === "claimed" && (
@@ -341,6 +376,13 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                 </p>}
                 <p className="detail-warning">La herramienta reportó un hallazgo positivo para el objetivo observado. No confirma identidad ni titularidad y puede contener errores. La confianza informada por la herramienta no es una validación humana.</p>
               </section>
+              {onQueueDecodo !== undefined && canQueueDecodo(investigation, node.evidence) && <section className="detail-control" aria-labelledby="decodo-action-heading">
+                <h3 id="decodo-action-heading">Acción de Decodo</h3>
+                <p className="detail-note">Agrega a la cola el scraping de esta URL pública. No vuelve a ejecutar FaceCheck.</p>
+                <DecodoReadinessNotes investigation={investigation} decodoConfigured={decodoConfigured} />
+                <button type="button" className="workspace-button" disabled={disabled}
+                  onClick={() => void onQueueDecodo([node.evidence!.id])}>Aplicar scraping con Decodo</button>
+              </section>}
               <section className="detail-control" aria-labelledby="validation-heading">
                 <h3 id="validation-heading">Validación humana</h3>
                 <label className="form-field">

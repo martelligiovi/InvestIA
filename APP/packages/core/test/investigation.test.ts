@@ -948,7 +948,7 @@ function facecheckHarness(
   const store = new MemoryInvestigationStore();
   let id = 0;
   const executed: string[] = [];
-  const service = createInvestigationService({
+  const createService = (urlCatalog = options.urlCatalog) => createInvestigationService({
     store,
     executor: {
       id: "fake",
@@ -969,10 +969,10 @@ function facecheckHarness(
     clock: () => "2025-01-01T00:00:00.000Z", createId: (kind) => `${kind}-${++id}`,
     seedCatalog: ["ghunt.email.v1"],
     ...(photoCatalog === undefined ? {} : { photoCatalog }),
-    ...(options.urlCatalog === undefined ? {} : { urlCatalog: options.urlCatalog }),
+    ...(urlCatalog === undefined ? {} : { urlCatalog }),
     deferredCatalogIds: async () => deferred(),
   });
-  return { store, service, executed };
+  return { store, service: createService(), createService, executed, issuedIds: () => id };
 }
 
 test("a GHunt profile photo queues FaceCheck fed by that finding, and each candidate is separate evidence", async () => {
@@ -1088,9 +1088,9 @@ test("photo catalog rejects unknown, duplicate and non-photo tools while allowin
 
 const PUBLIC_PROFILE_URL = "https://linkedin.com/in/example?view=public";
 
-async function caseWithDecodo(rawUrl = "https://LinkedIn.com:443/in/example?view=public#bio") {
+async function caseWithDecodo(rawUrl = "https://LinkedIn.com:443/in/example?view=public#bio", enabled = true) {
   const harness = facecheckHarness([ghuntPhoto(PROFILE_PHOTO)], ["facecheck.photo.v1"], undefined, {
-    urlCatalog: ["decodo.url.v1"], matches: [faceMatch(91, rawUrl)],
+    ...(enabled ? { urlCatalog: ["decodo.url.v1"] } : {}), matches: [faceMatch(91, rawUrl)],
   });
   const { service } = harness;
   const { id } = await service.createInvestigation();
@@ -1133,6 +1133,68 @@ test("accepting FaceCheck evidence atomically queues Decodo for only its page UR
   assert.deepEqual(repeated.actions, accepted.actions);
   assert.deepEqual(repeated.audit.slice(accepted.audit.length).map((event) => event.kind), ["evidence_validated"]);
   assert.deepEqual(executed, ["ghunt.email.v1 email:ana@gmail.com", `facecheck.photo.v1 photo:${PROFILE_PHOTO}`]);
+});
+
+test("an operator can queue Decodo once for an older accepted FaceCheck match without repeating the search", async () => {
+  const { service: legacy, createService, id, before, parent, executed, issuedIds } = await caseWithDecodo(undefined, false);
+  const accepted = await legacy.validateEvidence(id, parent.id, "accepted", "Same person.");
+  assert.deepEqual(accepted.actions, before.actions);
+  const service = createService(["decodo.url.v1"]);
+  const queued = await service.queueDecodoAction(id, parent.id);
+  const action = queued.actions.at(-1)!;
+  assert.deepEqual(action, {
+    id: action.id, status: "queued", queuedByCatalog: true, sourceSeedId: findingSeedNodeId(parent.id),
+    proposedAt: queued.updatedAt, proposalReason: "Catalog policy queued a Decodo scrape for the accepted FaceCheck result URL.",
+    spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: PUBLIC_PROFILE_URL } },
+  });
+  assert.deepEqual(queued, {
+    ...accepted, revision: accepted.revision + 1, updatedAt: action.proposedAt, actions: [...accepted.actions, action],
+    audit: [...accepted.audit, {
+      id: queued.audit.at(-1)!.id, at: action.proposedAt, actor: "operator", kind: "action_queued",
+      reason: "Operator requested Decodo scraping for an accepted FaceCheck match.", actionId: action.id, evidenceId: parent.id,
+    }],
+  });
+  assert.equal(investigationSeedGraph(queued).actionInputs.get(action.id), findingSeedNodeId(parent.id));
+  const ids = issuedIds();
+  await assert.rejects(() => service.queueDecodoAction(id, parent.id), { message: "A Decodo scrape action already exists for this FaceCheck match" });
+  assert.equal(issuedIds(), ids);
+  assert.deepEqual(await service.loadInvestigation(id), queued);
+  const reaccepted = await service.validateEvidence(id, parent.id, "accepted", "Match confirmed again.");
+  assert.deepEqual(reaccepted.actions, queued.actions);
+  assert.deepEqual(reaccepted.audit.slice(queued.audit.length).map(({ kind }) => kind), ["evidence_validated"]);
+  assert.deepEqual(executed, ["ghunt.email.v1 email:ana@gmail.com", `facecheck.photo.v1 photo:${PROFILE_PHOTO}`]);
+});
+
+test("manual Decodo queueing rejects ineligible evidence, invalid reasons and a disabled catalog without changes", async () => {
+  const { service: legacy, createService, id, before, parent, executed, issuedIds } = await caseWithDecodo(undefined, false);
+  const service = createService(["decodo.url.v1"]);
+  async function rejects(evidenceId: string, message: string, target = service, reason?: string) {
+    const snapshot = await service.loadInvestigation(id);
+    const ids = issuedIds();
+    await assert.rejects(() => target.queueDecodoAction(id, evidenceId, reason), { message });
+    assert.deepEqual(await service.loadInvestigation(id), snapshot);
+    assert.equal(issuedIds(), ids);
+  }
+  const unaccepted = "Only an accepted FaceCheck match can queue a Decodo scrape";
+  await rejects(parent.id, unaccepted);
+  await legacy.validateEvidence(id, parent.id, "accepted", "Initially confirmed.");
+  await rejects(parent.id, "Decodo scraping is not enabled", legacy);
+  await rejects(parent.id, "A non-empty reason is required", service, " ");
+  await legacy.validateEvidence(id, parent.id, "rejected", "Incorrect match.");
+  await rejects(parent.id, unaccepted);
+  const other = before.evidence[0]!.id;
+  await legacy.validateEvidence(id, other, "accepted", "Reviewed photo.");
+  await rejects(other, unaccepted);
+  await rejects("unknown", "Evidence not found: unknown");
+  assert.equal(executed.length, 2);
+
+  const unsafe = await caseWithDecodo("http://127.0.0.1/profile");
+  const accepted = await unsafe.service.validateEvidence(unsafe.id, unsafe.parent.id, "accepted", "Reviewed match.");
+  const ids = unsafe.issuedIds();
+  await assert.rejects(() => unsafe.service.queueDecodoAction(unsafe.id, unsafe.parent.id), { message: "FaceCheck match does not have a valid public HTTP URL" });
+  assert.deepEqual(await unsafe.service.loadInvestigation(unsafe.id), accepted);
+  assert.equal(unsafe.issuedIds(), ids);
+  assert.equal(unsafe.executed.length, 2);
 });
 
 test("overturning FaceCheck acceptance blocks a Decodo claim until re-acceptance", async () => {

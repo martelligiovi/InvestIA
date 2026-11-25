@@ -137,6 +137,8 @@ Under **Ajustes de IA → Decodo**, set the token and choose Web Data API (Beare
 
 Accepting a FaceCheck match queues its eligible public URL for Decodo, never its image or thumbnail. In automatic mode, a configured token, scoped authorization, an accepted match and an unpaused case let the server run it without another click. The graph keeps that match outside the candidate stack so its Decodo action and page evidence remain connected. The drawer shows extracted content as plain text and links only to validated public URLs; login-gated pages fail rather than yielding empty evidence.
 
+For previously accepted FaceCheck matches without a Decodo action, use **Decodo** beside one candidate, **Aplicar Decodo a aceptados (N)** for the eligible group, or **Aplicar scraping con Decodo** in the match detail. These controls queue only eligible public URLs, require no new validation reason, and do not rerun FaceCheck. The same authorization, token, and advancement rules still apply.
+
 ## NVIDIA Build AI reports
 
 **Ajustes de IA** (`#/ajustes`, linked from the header on every other page) configures the optional AI-written report:

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Investigation } from "@investia/core";
+import { latestValidationStatus, type Investigation } from "@investia/core";
 import { ApiError, InvestigationApiClient } from "../api/client";
 import { actionDisplayState } from "./workspace-status";
 
@@ -26,6 +26,7 @@ export interface WorkspaceController {
   readonly refresh: () => Promise<boolean>;
   readonly retryLoad: () => Promise<void>;
   readonly mutate: (operation: (api: InvestigationApiClient, id: string) => Promise<unknown>, dispatch?: boolean) => Promise<boolean>;
+  readonly queueDecodo: (evidenceIds: readonly string[]) => Promise<boolean>;
   readonly loadReport: () => Promise<void>;
   readonly loadAiReport: () => Promise<void>;
 }
@@ -276,6 +277,16 @@ export function useWorkspaceController(id: string): WorkspaceController {
     return mutationError === undefined && refreshError === undefined;
   }, [api, id, investigationId, isCurrent, readLatest, releaseLock, stale, takeLock]);
 
+  const queueDecodo = useCallback((evidenceIds: readonly string[]): Promise<boolean> => {
+    const activeGeneration = generation.current;
+    return mutate(async (client, investigationId) => {
+      for (const evidenceId of evidenceIds) {
+        if (!isCurrent(investigationId, activeGeneration)) return;
+        await client.queueDecodoScrape(investigationId, evidenceId);
+      }
+    });
+  }, [isCurrent, mutate]);
+
   const fetchReport = useCallback(async (kind: ReportKind) => {
     const activeGeneration = generation.current;
     if (investigationId !== id || stale || !takeLock(activeGeneration)) return;
@@ -313,10 +324,12 @@ export function useWorkspaceController(id: string): WorkspaceController {
   const visiblePhase = visibleInvestigation === null && phase === "ready" ? "loading" : phase;
   const hasQueuedFacecheck = visibleInvestigation?.actions.some((action) => action.status === "queued" && action.spec.catalogId === "facecheck.photo.v1") === true;
   const hasQueuedDecodo = visibleInvestigation?.actions.some((action) => action.status === "queued" && action.spec.catalogId === "decodo.url.v1") === true;
+  const hasAcceptedFacecheck = visibleInvestigation?.evidence.some((evidence) => evidence.sourceId === "facecheck:photo" &&
+    latestValidationStatus(visibleInvestigation, evidence.id) === "accepted") === true;
   const readFacecheckSettings = useCallback(() => api.getFacecheckSettings(), [api]);
   const readDecodoSettings = useCallback(() => api.getDecodoSettings(), [api]);
   const facecheckConfigured = useTokenConfigured(hasQueuedFacecheck, readFacecheckSettings);
-  const decodoConfigured = useTokenConfigured(hasQueuedDecodo, readDecodoSettings);
+  const decodoConfigured = useTokenConfigured(hasQueuedDecodo || hasAcceptedFacecheck, readDecodoSettings);
 
   useEffect(() => {
     if (visibleInvestigation === null || stale || phase !== "ready") return;
@@ -356,6 +369,7 @@ export function useWorkspaceController(id: string): WorkspaceController {
     refresh,
     retryLoad,
     mutate,
+    queueDecodo,
     loadReport,
     loadAiReport,
   };

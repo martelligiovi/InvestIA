@@ -376,3 +376,4 @@
 .graph-node--leaf-group .graph-node-card { filter: drop-shadow(0 2px 2px rgb(35 32 30 / 12%)); }
 .leaf-group-members { display: grid; gap: 8px; margin: 16px 0; padding: 0; list-style: none; }
 .leaf-group-members button { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.leaf-group-member--with-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); align-items: center; }

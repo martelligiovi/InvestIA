@@ -4,6 +4,7 @@ import {
   authorizationCovers,
   createCatalogExecutor,
   createInvestigationService,
+  findingSeedNodeId,
   isActionEligibleByParentValidation,
   type ActionClaim,
   type ClaimActionRequest,
@@ -19,6 +20,7 @@ import type { DecodoApiMode } from "../../adapter-decodo/src/index.ts";
 import { createBackendApp } from "../src/api.ts";
 import { AutomaticInvestigationRunner } from "../src/automatic-investigation-runner.ts";
 import { createInvestigationRunGraph } from "../src/investigation-run-graph.ts";
+import { InvestigationNotFoundError } from "../src/postgres-investigation-store.ts";
 
 class MemoryStore implements InvestigationStore {
   readonly #items = new Map<string, Investigation>();
@@ -43,7 +45,7 @@ class MemoryStore implements InvestigationStore {
     operation: (current: Investigation) => InvestigationTransaction<T>,
   ): Promise<T> {
     const current = this.#items.get(id);
-    if (current === undefined) throw new Error("Investigation not found");
+    if (current === undefined) throw new InvestigationNotFoundError(id);
     const { next, result } = operation(structuredClone(current));
     assert.equal(next.revision, current.revision + 1);
     this.#items.set(id, structuredClone(next));
@@ -398,6 +400,102 @@ test("FaceCheck acceptance and Decodo token updates wake eligible scrapes withou
   const reaccepted = await disputed.load();
   assert.deepEqual(reaccepted.actions.map(({ id, status }) => [id, status]), [[rejected.actions[0]!.id, "succeeded"]]);
   assert.deepEqual(reaccepted.evidence.map(({ sourceId }) => sourceId), ["facecheck:photo", "decodo:url"]);
+});
+
+test("HTTP queues Decodo on already accepted FaceCheck matches, then wakes and projects the persisted queue", async (t) => {
+  const store = new MemoryStore();
+  let sequence = 0;
+  let executions = 0;
+  const dependencies = {
+    store,
+    executor: { id: "offline", async execute() { executions++; return []; } },
+    clock: () => "2025-02-01T00:00:00.000Z",
+    createId: (kind: string) => `${kind}-${++sequence}`,
+  };
+  const legacy = createInvestigationService(dependencies);
+  const service = createInvestigationService({ ...dependencies, urlCatalog: ["decodo.url.v1"] });
+  const { id } = await legacy.createInvestigation();
+  const url = "https://example.org/candidate";
+  const photo = { kind: "photo", value: "https://lh3.googleusercontent.com/profile-photo" } as const;
+  await store.transact(id, (current) => ({ next: { ...current, revision: current.revision + 1,
+    evidence: ["match", "reason", "empty", "pending", "rejected", "unsafe"].map((evidenceId) => ({
+      id: evidenceId, actionId: "facecheck", seed: photo, provider: "FaceCheck", status: "registered", sourceId: "facecheck:photo", recordedAt: current.createdAt,
+      finding: { target: photo, upstreamStatus: "Found", url: evidenceId === "unsafe" ? "http://127.0.0.1/profile" : url,
+        category: "Face match", reason: "Candidate", extra: {}, media: {} },
+    })),
+  }, result: undefined }));
+  for (const evidenceId of ["match", "reason", "empty", "unsafe", "rejected"]) {
+    await legacy.validateEvidence(id, evidenceId, "accepted", "Reviewed this match");
+  }
+  const before = await legacy.validateEvidence(id, "rejected", "rejected", "Not the same person");
+  const effects: { kind: string; snapshot: Investigation | undefined }[] = [];
+  const wakeReads: Promise<void>[] = [];
+  const adapters = {
+    actionRunner: createInvestigationRunGraph(service, new MemorySaver()),
+    projector: { async project(snapshot: Investigation) {
+      effects.push({ kind: "project", snapshot });
+      return { revision: snapshot.revision, status: "applied" as const };
+    } },
+    wakeAutomaticRunner: () => {
+      const wake = { kind: "wake", snapshot: undefined as Investigation | undefined };
+      effects.push(wake);
+      wakeReads.push(service.loadInvestigation(id).then((snapshot) => { wake.snapshot = snapshot; }));
+    },
+  };
+  const server = createBackendApp(service, adapters);
+  const disabled = createBackendApp(legacy, adapters);
+  t.after(async () => { await server.close(); await disabled.close(); });
+  const load = async () => (await server.inject({ method: "GET", url: `/investigations/${id}` })).json<Investigation>();
+  const queue = (evidenceId: string, payload?: object, target = server, caseId = id) => target.inject({ method: "POST",
+    url: `/investigations/${caseId}/evidence/${evidenceId}/decodo`, ...(payload === undefined ? {} : { payload }),
+  });
+  assert.deepEqual(await load(), before);
+  let previous = before;
+  for (const [evidenceId, payload, reason] of [
+    ["match", undefined, "Operator requested Decodo scraping for an accepted FaceCheck match."],
+    ["reason", { reason: "  Scrape this public profile.  " }, "Scrape this public profile."],
+    ["empty", {}, "Operator requested Decodo scraping for an accepted FaceCheck match."],
+  ] as const) {
+    const start = effects.length;
+    const response = await queue(evidenceId, payload);
+    assert.equal(response.statusCode, 201, response.body);
+    const queued = response.json<Investigation>();
+    const action = queued.actions.at(-1)!;
+    assert.deepEqual(action, { id: action.id, status: "queued", queuedByCatalog: true, sourceSeedId: findingSeedNodeId(evidenceId),
+      proposedAt: queued.updatedAt, proposalReason: "Catalog policy queued a Decodo scrape for the accepted FaceCheck result URL.",
+      spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: url } } });
+    assert.deepEqual(queued, { ...previous, revision: previous.revision + 1, updatedAt: action.proposedAt, actions: [...previous.actions, action],
+      audit: [...previous.audit, { id: queued.audit.at(-1)!.id, at: action.proposedAt, actor: "operator", kind: "action_queued", actionId: action.id, evidenceId, reason }],
+    });
+    await Promise.all(wakeReads);
+    assert.deepEqual(effects.slice(start), [{ kind: "wake", snapshot: queued }, { kind: "project", snapshot: queued }]);
+    assert.deepEqual(await load(), queued);
+    previous = queued;
+  }
+
+  const conflict = { error: "CONFLICT", message: "Operation conflicts with the current investigation state" };
+  const invalid = { error: "INVALID_REQUEST", message: "Invalid request" };
+  const ids = sequence;
+  for (const [status, body, [evidenceId, payload, target, caseId]] of [
+    [409, conflict, ["match"]],
+    [409, conflict, ["pending"]],
+    [409, conflict, ["rejected"]],
+    [409, conflict, ["unsafe"]],
+    [409, conflict, ["match", undefined, disabled]],
+    [404, { error: "NOT_FOUND", message: "Record not found" }, ["unknown"]],
+    [404, { error: "NOT_FOUND", message: "Investigation not found" }, ["match", undefined, server, "unknown"]],
+    [400, invalid, ["match", { reason: " " }]],
+    [400, invalid, ["match", { reason: 7 }]],
+    [400, invalid, ["match", { url }]],
+  ] as const) {
+    const response = await queue(evidenceId, payload, target, caseId);
+    assert.equal(response.statusCode, status, response.body);
+    assert.deepEqual(response.json(), body);
+    assert.deepEqual(await load(), previous);
+    assert.equal(sequence, ids);
+    assert.equal(effects.length, 6);
+  }
+  assert.equal(executions, 0);
 });
 
 test("projection outages do not fail a committed run and can be reconciled from PostgreSQL state", async (t) => {

@@ -386,6 +386,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             facecheckConfigured={facecheckConfigured}
             decodoConfigured={decodoConfigured}
             onValidate={validate}
+            onQueueDecodo={controller.queueDecodo}
             onApproveGravatar={(actionId, reason) => controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason))}
             onReviewFacecheck={setFacecheckReview}
           />

@@ -107,6 +107,7 @@ After `pnpm --dir APP build`, the backend serves the built frontend at `/` and i
 - `POST /investigations/:id/actions/:actionId/approval`
 - `POST /investigations/:id/actions/run`
 - `POST /investigations/:id/evidence/:evidenceId/validation` with `accepted`, `rejected`, or `inconclusive`
+- `POST /investigations/:id/evidence/:evidenceId/decodo` with no body or a strict `{ reason?: string }` body. Queues Decodo for an already-accepted FaceCheck match and returns `201` with the updated investigation. Returns `409` when Decodo is disabled, the match is ineligible, or an action already exists; returns `404` for a missing investigation or evidence record.
 - `POST /investigations/:id/evidence/:evidenceId/rejection`
 - `POST /investigations/:id/pause`, `POST /investigations/:id/resume`
 - `GET /investigations/:id/report` (factual Markdown from persisted state)

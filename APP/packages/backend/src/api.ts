@@ -59,6 +59,7 @@ const UsernameBody = ReasonBody.extend({ username: z.string().trim().regex(USERN
 const UsernameDecisionBody = UsernameBody.extend({ decision: z.enum(["accepted", "rejected"]) }).strict();
 const AuthorizationBody = ReasonBody.extend({ granted: z.boolean() }).strict();
 const ValidationBody = ReasonBody.extend({ status: z.enum(["accepted", "rejected", "inconclusive"]) }).strict();
+const QueueDecodoBody = ReasonBody.partial().optional();
 const EmptyBody = z.object({}).strict().optional();
 const InvestigationParams = z.object({ id: z.string().min(1).max(200) }).strict();
 const ActionParams = InvestigationParams.extend({ actionId: z.string().min(1).max(200) }).strict();
@@ -141,6 +142,10 @@ function publicError(error: unknown): unknown {
       "Scanner actions require an email seed already recorded in this investigation",
       "A scanner catalog action already exists for this email seed",
       "Only a proposed action can be approved",
+      "A Decodo scrape action already exists for this FaceCheck match",
+      "Only an accepted FaceCheck match can queue a Decodo scrape",
+      "FaceCheck match does not have a valid public HTTP URL",
+      "Decodo scraping is not enabled",
     ].includes(error.message)) return new HttpError(409, "CONFLICT", "Operation conflicts with the current investigation state");
   }
   return error;
@@ -330,6 +335,18 @@ export function createBackendApp(
         action.spec.catalogId === "decodo.url.v1" && action.sourceSeedId === findingSeedNodeId(evidenceId))) {
         adapters.wakeAutomaticRunner?.();
       }
+      await projectPersistedState(id);
+      return reply.code(201).send(publicInvestigation(investigation));
+    },
+  );
+
+  app.post<{ Params: { id: string; evidenceId: string } }>(
+    "/investigations/:id/evidence/:evidenceId/decodo",
+    async (request, reply) => {
+      const { id, evidenceId } = input(EvidenceParams, request.params);
+      const reason = input(QueueDecodoBody, request.body)?.reason;
+      const investigation = await serviceCall(() => service.queueDecodoAction(id, evidenceId, reason));
+      adapters.wakeAutomaticRunner?.();
       await projectPersistedState(id);
       return reply.code(201).send(publicInvestigation(investigation));
     },

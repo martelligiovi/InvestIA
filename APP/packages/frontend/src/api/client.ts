@@ -166,6 +166,10 @@ export class InvestigationApiClient {
     );
   }
 
+  async queueDecodoScrape(id: string, evidenceId: string): Promise<Investigation> {
+    return this.post<Investigation>(`/investigations/${pathPart(id)}/evidence/${pathPart(evidenceId)}/decodo`);
+  }
+
   async rejectEvidence(id: string, evidenceId: string, reason: string): Promise<Investigation> {
     return this.post<Investigation>(
       `/investigations/${pathPart(id)}/evidence/${pathPart(evidenceId)}/rejection`,

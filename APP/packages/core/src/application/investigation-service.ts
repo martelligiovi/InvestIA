@@ -9,6 +9,7 @@ import {
   DEFAULT_INVESTIGATION_NAME,
   isGhuntEligibleEmail,
   isScopedCatalogId,
+  latestValidationStatus,
   SCOPED_CATALOG_IDS,
   type ScopedCatalogId,
   type UsernameSeedRecord,
@@ -466,14 +467,8 @@ export class InvestigationService {
       const url = record.finding?.url;
       if (status === "accepted" && this.urlCatalog.includes(catalogId) &&
         record.sourceId === "facecheck:photo" && isSafePublicHttpUrl(url)) {
-        const sourceSeedId = findingSeedNodeId(record.id);
-        if (!actions.some((action) => action.spec.catalogId === catalogId && action.sourceSeedId === sourceSeedId)) {
-          const action: GitHubCatalogAction = {
-            id: newId(this.dependencies.createId, "action"),
-            spec: { catalogId, provider: CATALOG_PROVIDERS[catalogId], seed: urlSeed(url) },
-            sourceSeedId, status: "queued", queuedByCatalog: true, proposedAt: at,
-            proposalReason: QUEUE_REASONS[catalogId],
-          };
+        const action = this.newDecodoAction(current, record.id, url, at);
+        if (action !== undefined) {
           actions = [...actions, action];
           events.push(auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id }));
         }
@@ -485,6 +480,42 @@ export class InvestigationService {
       });
       return { next, result: next };
     });
+  }
+
+  async queueDecodoAction(
+    id: string,
+    evidenceId: string,
+    reason = "Operator requested Decodo scraping for an accepted FaceCheck match.",
+  ): Promise<Investigation> {
+    if (!this.urlCatalog.includes("decodo.url.v1")) throw new Error("Decodo scraping is not enabled");
+    const why = reasonText(reason);
+    const at = timestamp(this.dependencies.clock);
+    return this.dependencies.store.transact(id, (current) => {
+      const record = current.evidence.find((candidate) => candidate.id === evidenceId);
+      if (record === undefined) throw new Error(`Evidence not found: ${evidenceId}`);
+      if (record.sourceId !== "facecheck:photo" || latestValidationStatus(current, record.id) !== "accepted") {
+        throw new Error("Only an accepted FaceCheck match can queue a Decodo scrape");
+      }
+      const url = record.finding?.url;
+      if (!isSafePublicHttpUrl(url)) throw new Error("FaceCheck match does not have a valid public HTTP URL");
+      const action = this.newDecodoAction(current, record.id, url, at);
+      if (action === undefined) throw new Error("A Decodo scrape action already exists for this FaceCheck match");
+      const event = auditEvent(this.dependencies.createId, at, "operator", "action_queued", why, { actionId: action.id, evidenceId: record.id });
+      const next = withRevision(current, at, { actions: [...current.actions, action], audit: [...current.audit, event] });
+      return { next, result: next };
+    });
+  }
+
+  private newDecodoAction(current: Investigation, evidenceId: string, url: string, at: string): GitHubCatalogAction | undefined {
+    const catalogId = "decodo.url.v1";
+    const sourceSeedId = findingSeedNodeId(evidenceId);
+    if (current.actions.some((action) => action.spec.catalogId === catalogId && action.sourceSeedId === sourceSeedId)) return undefined;
+    return {
+      id: newId(this.dependencies.createId, "action"),
+      spec: { catalogId, provider: CATALOG_PROVIDERS[catalogId], seed: urlSeed(url) },
+      sourceSeedId, status: "queued", queuedByCatalog: true, proposedAt: at,
+      proposalReason: QUEUE_REASONS[catalogId],
+    };
   }
 
   async executeNextAction(id: string, automaticOnly = false): Promise<GitHubCatalogAction | undefined> {
