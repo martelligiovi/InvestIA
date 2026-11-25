@@ -8,6 +8,7 @@ import {
   type ActionClaim,
   type ClaimActionRequest,
   type CompleteActionInput,
+  type GitHubCatalogAction,
   type Investigation,
   type InvestigationExecutor,
   type InvestigationStore,
@@ -465,6 +466,61 @@ test("sanitizes executor failure details in load, run, and report responses", as
   const report = await harness.app.inject({ method: "GET", url: `/investigations/${id}/report` });
   assert.match(report.body, /Execution failed/);
   for (const response of [run, loaded, report]) assert.doesNotMatch(response.body, /credentials|private/i);
+});
+
+test("exposes only allowlisted Decodo failures in run, load, and report responses", async (t) => {
+  const store = new MemoryStore();
+  const service = createInvestigationService({
+    store, executor: { id: "offline", async execute() { return []; } },
+    clock: () => "2025-02-01T00:00:00.000Z", createId: () => "failure-case",
+  });
+  const investigation = await service.createInvestigation();
+  const path = `/investigations/${investigation.id}`;
+  const loginFailure = "Decodo target requires login";
+  const decodoSpec = { catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: "https://example.org/profile" } } as const;
+  const scannerSpec = { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: { kind: "email", value: "person@example.org" } } as const;
+  const failures = [
+    [decodoSpec, loginFailure, loginFailure],
+    [decodoSpec, "Decodo scrape blocked by anti-bot protection (999)", "Decodo scrape blocked by anti-bot protection (999)"],
+    [decodoSpec, "Decodo API credentials were rejected", "Decodo API credentials were rejected"],
+    [decodoSpec, "Decodo API rate limit or quota exceeded", "Decodo API rate limit or quota exceeded"],
+    [decodoSpec, "Decodo request timed out", "Decodo request timed out"],
+    [decodoSpec, "Decodo returned empty page content", "Decodo returned empty page content"],
+    [decodoSpec, "Decodo target returned HTTP 404", "Decodo target returned HTTP 404"],
+    [decodoSpec, "Decodo service failure (HTTP 612)", "Decodo service failure (HTTP 612)"],
+    [decodoSpec, "Decodo request failed (HTTP 407)", "Decodo request failed (HTTP 407)"],
+    [decodoSpec, `${loginFailure}: offline-secret`, "Execution failed."],
+    [decodoSpec, "Decodo target returned HTTP 404\noffline-secret", "Execution failed."],
+    [decodoSpec, "Decodo target returned HTTP 40412345678", "Execution failed."],
+    [scannerSpec, loginFailure, "Execution failed."],
+  ] as const;
+  const actions: GitHubCatalogAction[] = failures.map(([spec, failure], index) => ({
+    id: `action-${index}`, spec, status: "failed", failure,
+    proposedAt: investigation.createdAt, proposalReason: "Offline fixture", completedAt: investigation.updatedAt,
+  }));
+  await store.transact(investigation.id, (current) => ({ next: { ...current, actions, revision: current.revision + 1 }, result: undefined }));
+  const before = await store.get(investigation.id);
+  let runIndex = 0;
+  const app = createBackendApp(service, {
+    actionRunner: { async run() { return actions[runIndex++]; } },
+    projector: { project: async ({ revision }) => ({ revision, status: "applied" }) },
+  });
+  t.after(() => app.close());
+
+  for (const [index, [,, failure]] of failures.entries()) {
+    const run = await app.inject({ method: "POST", url: `${path}/actions/run` });
+    assert.equal(run.statusCode, 200);
+    assert.deepEqual(run.json(), { action: { ...actions[index], failure } });
+  }
+  const loaded = await app.inject({ method: "GET", url: path });
+  assert.equal(loaded.statusCode, 200);
+  assert.deepEqual(loaded.json<Investigation>().actions, actions.map((action, index) => ({ ...action, failure: failures[index]![2] })));
+  const report = await app.inject({ method: "GET", url: `${path}/report` });
+  assert.equal(report.statusCode, 200);
+  assert.match(report.body, /Decodo target requires login/);
+  assert.match(report.body, /Execution failed/);
+  assert.doesNotMatch(report.body, /offline-secret|40412345678/);
+  assert.deepEqual(await store.get(investigation.id), before);
 });
 
 test("creates named investigations with strict bounded input while keeping bodyless creation", async (t) => {

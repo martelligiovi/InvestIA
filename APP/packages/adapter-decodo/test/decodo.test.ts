@@ -160,6 +160,30 @@ test("rejects missing or invalid tokens without a fetch", async () => {
   }
 });
 
+for (const [apiMode, token] of [
+  ["web_data", "Bearer"], ["scraping_v2", "Basic"],
+  ["web_data", "  bEaReR  "], ["scraping_v2", " bAsIc "],
+  ["web_data", "Basic"], ["scraping_v2", "Bearer"],
+] as const) {
+  test(`rejects scheme-only credentials for ${apiMode}: ${JSON.stringify(token)}`, async () => {
+    const { adapter, calls } = fixture([], { settings: async () => ({ apiMode, token }) });
+    await assertFailure(adapter.execute(seed), "Decodo API token is not configured");
+    assert.deepEqual(calls, []);
+  });
+}
+
+for (const [apiMode, token, message] of [
+  ["web_data", "two words", "Decodo API token contains whitespace"],
+  ["scraping_v2", "Basic two\u00a0words", "Decodo API token contains whitespace"],
+  ["web_data", "Bearer two\twords", "Decodo API token contains control characters"],
+] as const) {
+  test(`rejects malformed credentials for ${apiMode}: ${JSON.stringify(token)}`, async () => {
+    const { adapter, calls } = fixture([], { settings: async () => ({ apiMode, token }) });
+    await assertFailure(adapter.execute(seed), message);
+    assert.deepEqual(calls, []);
+  });
+}
+
 for (const [name, blocked] of [
   ["target status", () => scraped(PRIVATE_BODY, { status_code: 999 })],
   ["Decodo HTTP status", () => syntheticHttpStatus(999)],
@@ -229,6 +253,26 @@ test("rejects authwalls and login/sign-up pages, but not a LinkedIn profile with
     assert.match(String(observation?.finding.extra.content), /Research Engineer at Example Studio/);
   }
   assert.equal(calls.length, 5);
+});
+
+test("a standalone sign-in link does not make a sparse Markdown profile a login gate", async () => {
+  const content = "# Jane Doe\n\n[Sign in](https://example.org/login)";
+  const { adapter, calls } = fixture([() => scraped(content, { url: seed.value })]);
+  const findings = await adapter.execute(seed);
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.finding.url, seed.value);
+  assert.equal(findings[0]?.finding.extra.title, "Jane Doe");
+  assert.equal(findings[0]?.finding.extra.content, content);
+  assert.equal(calls.length, 1);
+});
+
+test("an HTML login form is terminal even with marketing copy on the original profile URL", async () => {
+  const { adapter, calls } = fixture([() => scraped(
+    '<main><p>Explore local news and discover new communities.</p><form><h1>Sign in</h1><label>Password <input type="password"></label></form></main>',
+    { url: seed.value },
+  )]);
+  await assertFailure(adapter.execute(seed), "Decodo target requires login");
+  assert.equal(calls.length, 1);
 });
 
 test("bounds title, description, preview, content and links without storing partial URLs", async () => {

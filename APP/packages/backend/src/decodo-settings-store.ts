@@ -1,4 +1,4 @@
-import { isDecodoApiMode, type DecodoApiMode } from "../../adapter-decodo/src/index.ts";
+import { isDecodoApiMode, normalizeDecodoToken, type DecodoApiMode } from "../../adapter-decodo/src/index.ts";
 import { migrateBackendSchema, type PgPoolLike } from "./postgres-investigation-store.ts";
 
 export interface DecodoSettingsRecord {
@@ -20,8 +20,8 @@ export interface DecodoSettingsStore {
 const DEFAULT_API_MODE: DecodoApiMode = "web_data";
 const MIGRATION_URL = new URL("../migrations/004_decodo_settings.sql", import.meta.url);
 
-export function isValidDecodoToken(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && !/[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(value);
+export function isValidDecodoToken(value: unknown, apiMode?: DecodoApiMode): value is string {
+  return "token" in normalizeDecodoToken(value, apiMode);
 }
 
 export class PostgresDecodoSettingsStore implements DecodoSettingsStore {
@@ -41,8 +41,8 @@ export class PostgresDecodoSettingsStore implements DecodoSettingsStore {
   }
 
   async update({ token, apiMode }: DecodoSettingsChanges): Promise<void> {
-    if (token !== undefined && !isValidDecodoToken(token)) throw new Error("Invalid Decodo API token");
     if (apiMode !== undefined && !isDecodoApiMode(apiMode)) throw new Error("Invalid Decodo API mode");
+    if (token !== undefined && !isValidDecodoToken(token, apiMode)) throw new Error("Invalid Decodo API token");
     if (token === undefined && apiMode === undefined) return;
     await this.write(token, apiMode);
   }

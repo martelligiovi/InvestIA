@@ -132,6 +132,45 @@ it("explains all queued Decodo blockers and links to the source page and token s
   expect(await detail.findByRole("link", { name: "Configurar Decodo" })).toHaveAttribute("href", "#/ajustes");
 });
 
+it("keeps manual dispatch enabled for a covered action after Decodo is queued without consent", async () => {
+  const seed = { kind: "email", value: "fixture@example.org" } as const;
+  const scanner: GitHubCatalogAction = {
+    id: "scanner", spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed },
+    status: "queued", queuedByCatalog: true, proposedAt: at, proposalReason: "Email seed",
+  };
+  let current = snapshot({ advancementMode: "manual", emailSeeds: [seed], actions: [facecheck, scanner],
+    authorization: { ...authorization, catalogScopes: ["facecheck.photo.v1", "user-scanner.email.v1"] } });
+  const runNext = vi.fn(() => {
+    const completed = { ...scanner, status: "succeeded" as const, completedAt: at };
+    current = { ...current, revision: current.revision + 1, actions: [facecheck, decodo, completed] };
+    return json({ action: completed });
+  });
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (init?.method === undefined && path === "/investigations/case") return json(current);
+    if (init?.method === undefined && path === "/settings/decodo") return decodoStatus(true);
+    if (init?.method === "POST" && path === "/investigations/case/actions/run") return runNext();
+    throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+  }));
+  render(<WorkspacePage id="case" />);
+  const refresh = await screen.findByText("Actualizar expediente", { selector: "button" });
+  const controls = refresh.closest("details")!;
+  controls.open = true;
+  const dispatch = within(controls).getByRole("button", { name: "Ejecutar siguiente acción en cola" });
+  expect(dispatch).toBeEnabled();
+
+  current = { ...current, revision: current.revision + 1, actions: [facecheck, decodo, scanner] };
+  await act(async () => { fireEvent.click(refresh); });
+  const graph = screen.getByRole("group", { name: /grafo factual/i });
+  fireEvent.click(within(graph).getByRole("button", { name: /Acción: scrape\./i }));
+  expect(within(screen.getByRole("complementary")).getByText(/renovar la autorización.*Decodo/i)).toBeInTheDocument();
+  expect(dispatch).toBeEnabled();
+  expect(runNext).not.toHaveBeenCalled();
+  await act(async () => { fireEvent.click(dispatch); });
+  expect(runNext).toHaveBeenCalledTimes(1);
+  expect(dispatch).toBeDisabled();
+});
+
 it.each([
   ["the token is missing", snapshot(), false],
   ["the old grant does not cover Decodo", snapshot({ authorization: { ...authorization, catalogScopes: ["facecheck.photo.v1"] } }), true],

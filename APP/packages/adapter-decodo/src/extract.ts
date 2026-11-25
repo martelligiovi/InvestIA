@@ -87,6 +87,9 @@ function scanMarkup(source: string, html: boolean, base: string, addLink: (url: 
   let title = "";
   let inHead = false;
   let passwordField = false;
+  let passwordForm = false;
+  let loginHeading = false;
+  let heading: { name: string; start: number } | undefined;
   let cursor = 0;
   const tags = /<!--[\s\S]*?(?:-->|$)|<!doctype[^>]*>|<(https?:\/\/[^<>\s]+)>|<(\/?)([a-z][\w:-]*)(?=[\s/>])((?:[^<>"']|"[^"]*"|'[^']*')*)>/gi;
   const emit = (value: string) => {
@@ -126,6 +129,13 @@ function scanMarkup(source: string, html: boolean, base: string, addLink: (url: 
       if (closing) { if (chrome.at(-1) === name) chrome.pop(); }
       else chrome.push(name);
     }
+    if (!inHead && /^h[1-6]$/.test(name)) {
+      if (!closing) heading = { name, start: text.length };
+      else if (heading?.name === name) {
+        loginHeading ||= GATE_HEADING.test(text.slice(heading.start).join("").trim());
+        heading = undefined;
+      }
+    }
     if (!inHead && BLOCK_TAG.test(name)) emit("\n");
     if (closing) continue;
     if (name === "meta") {
@@ -142,15 +152,16 @@ function scanMarkup(source: string, html: boolean, base: string, addLink: (url: 
       }
     } else if (name === "a" && !inHead) {
       addLink(decodeEntities(attributes(attrs).get("href") ?? "").trim());
-    } else if (name === "input" && attributes(attrs).get("type")?.toLowerCase() === "password") {
+    } else if (!inHead && name === "input" && attributes(attrs).get("type")?.toLowerCase() === "password") {
       passwordField = true;
+      passwordForm ||= chrome.includes("form");
     }
   }
   emitText(source.slice(cursor));
   const lines = (parts: string[]) => parts.join("").split("\n").map((line) => scalar(line, Infinity)).filter(Boolean).join("\n");
   return {
     text: html ? lines(text) : escapeTagStarts(text.join("").replace(/[ \t]+(?=\n|$)/g, "").trim()),
-    main: html ? lines(main) : "", passwordField, canonical,
+    main: html ? lines(main) : "", passwordField, passwordForm, loginHeading, canonical,
     title: clip(metadata.get("og:title") ?? metadata.get("title") ?? title, 240),
     description: metadata.get("description") ?? metadata.get("og:description") ?? "",
   };
@@ -165,10 +176,11 @@ export function extractPage(raw: string, base: string, target: string) {
   const html = HTML_START.test(source.replace(/^(?:<!--[\s\S]*?-->\s*)+/, ""));
   const { add, links } = linkCollector(target, base);
   const parsed = scanMarkup(source, html, base, add);
-  const { text, canonical, passwordField } = parsed;
+  const { text, canonical, passwordField, passwordForm, loginHeading } = parsed;
+  const hasLoginForm = passwordForm && (loginHeading || GATE_HEADING.test(parsed.title));
   if (html) {
     return {
-      format: "html" as const, title: parsed.title, description: parsed.description, canonical, links, passwordField,
+      format: "html" as const, title: parsed.title, description: parsed.description, canonical, links, passwordField, hasLoginForm,
       preview: scalar((parsed.main || text).split("\n", 1)[0] ?? "", 400),
       content: clip(text, 6000), contentLength: text.length, main: parsed.main,
     };
@@ -177,13 +189,20 @@ export function extractPage(raw: string, base: string, target: string) {
     add(decodeEntities(match[1] ?? match[0].replace(/[.,;:!?]+$|\)+$/g, "").replace(/[.,;:!?]+$/, "")));
   }
   const [heading] = /^#\s+([^\n]+)/m.exec(text)?.slice(1) ?? [];
-  const main = markdownText(text).replace(/^\s{0,3}#{1,6}\s+/gm, "");
+  const hasPublicHeading = Array.from(text.matchAll(/^ {0,3}#{1,6}[ \t]+([^\n]+)/gm))
+    .some(([, value]) => !GATE_HEADING.test(markdownText(value!).trim()));
+  // Standalone login links are often navigation on otherwise sparse profiles.
+  const mainSource = hasPublicHeading ? text.split("\n").filter((line) => {
+    const trimmed = line.trim();
+    return !/^\[[^\]\n]+\]\((?:[^()\n]|\([^()\n]*\))*\)$/.test(trimmed) || !GATE_HEADING.test(markdownText(trimmed));
+  }).join("\n") : text;
+  const main = markdownText(mainSource).replace(/^\s{0,3}#{1,6}\s+/gm, "");
   const paragraph = text.split(/\n\s*\n/).map((block) => block.replace(/^\s{0,3}#{1,6}[ \t]+[^\n]*(?:\n|$)/gm, "").trim()).find(Boolean);
   const preview = scalar(markdownText(paragraph ?? ""), 400);
   const content = /[^\s#*`_~>-]/.test(main) ? text : "";
   return {
     format: "markdown" as const, title: scalar(markdownText(heading ?? ""), 240), description: preview, preview,
-    canonical, links, passwordField, content: clip(content, 6000), contentLength: content.length, main,
+    canonical, links, passwordField, hasLoginForm, content: clip(content, 6000), contentLength: content.length, main,
   };
 }
 
@@ -196,6 +215,7 @@ export function isLoginGate(page: ReturnType<typeof extractPage>, ...urls: strin
     if (/^\/authwall(?:\/|$)/i.test(pathname)) return true;
     if (/(?:^|\.)linkedin\.com\.?$/.test(hostname) && /^\/(?:login|signup|uas\/login|checkpoint\/lg\/login)(?:\/|$)/i.test(pathname)) return true;
   }
+  if (page.hasLoginForm) return true;
   const lines = page.main.split("\n").map((line) => line.trim()).filter(Boolean);
   if (!page.passwordField && !GATE_HEADING.test(page.title) && !lines.some((line) => GATE_HEADING.test(line))) return false;
   // A navigation sign-in label is not a gate if there is separate page/profile content.

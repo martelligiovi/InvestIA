@@ -26,7 +26,7 @@ import { NvidiaProviderError, type NvidiaBuildGateway } from "./nvidia-build.ts"
 import type { InvestigationProjector } from "./neo4j-investigation-projector.ts";
 import type { GhuntSession } from "../../adapter-ghunt/src/index.ts";
 import { isLocalSameOriginRequest, registerGhuntRoutes } from "./ghunt-routes.ts";
-import { DECODO_API_MODES } from "../../adapter-decodo/src/index.ts";
+import { DECODO_API_MODES, isPublicDecodoFailure } from "../../adapter-decodo/src/index.ts";
 import { isValidDecodoToken, type DecodoSettingsRecord, type DecodoSettingsStore } from "./decodo-settings-store.ts";
 import type { FacecheckSettingsRecord, FacecheckSettingsStore } from "./facecheck-settings-store.ts";
 import { registerFrontend } from "./serve-frontend.ts";
@@ -80,9 +80,9 @@ const FacecheckSettingsBody = z.object({
 }).strict().refine((body) => body.token !== undefined || body.testingMode !== undefined);
 
 const DecodoSettingsBody = z.object({
-  token: z.string().refine(isValidDecodoToken).optional(),
+  token: z.string().optional(),
   apiMode: z.enum(DECODO_API_MODES).optional(),
-}).strict().refine((body) => body.token !== undefined || body.apiMode !== undefined);
+}).strict().refine(({ token, apiMode }) => token === undefined ? apiMode !== undefined : isValidDecodoToken(token, apiMode));
 
 const PROVIDER_ERRORS = {
   unauthorized: new HttpError(502, "AI_PROVIDER_UNAUTHORIZED", "NVIDIA Build rejected the API key"),
@@ -155,7 +155,8 @@ async function serviceCall<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 function publicAction(action: GitHubCatalogAction): GitHubCatalogAction {
-  return action.failure === undefined ? action : { ...action, failure: "Execution failed." };
+  if (action.failure === undefined || (action.spec.catalogId === "decodo.url.v1" && isPublicDecodoFailure(action.failure))) return action;
+  return { ...action, failure: "Execution failed." };
 }
 
 function publicInvestigation(investigation: Investigation): Investigation {

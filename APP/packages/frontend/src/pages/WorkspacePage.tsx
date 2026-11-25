@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { usernameProposals, type ValidationStatus } from "@investia/core";
+import { authorizationCovers, usernameProposals, type ValidationStatus } from "@investia/core";
 import { InvestigationApiClient } from "../api/client";
 import { AsciiArt } from "../components/AsciiArt";
 import { InvestigationGraph } from "../components/InvestigationGraph";
@@ -137,13 +137,15 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const authorizationGranted = hasCatalogAuthorization(investigation);
   const automatic = investigation.advancementMode === "automatic";
   const queuedActions = investigation.actions.filter((action) => action.status === "queued" && (action.queuedByCatalog === true || action.approval !== undefined));
+  const coveredQueue = queuedActions.filter((action) => authorizationCovers(investigation.authorization, action.spec.catalogId));
+  const uncoveredCount = queuedActions.length - coveredQueue.length;
   const claimedActions = investigation.actions.filter((action) => action.status === "claimed");
-  const hasDispatchableAction = queuedActions.some((action) => {
+  const hasDispatchableAction = coveredQueue.some((action) => {
     if (action.spec.catalogId === "ghunt.email.v1") return ghuntConnected === true;
     if (action.spec.catalogId === "decodo.url.v1") return actionDisplayState(investigation, action, ghuntConnected, decodoConfigured) === "queued";
     return true;
   });
-  const dispatchEligible = !automatic && !investigation.paused && authorizationGranted && hasDispatchableAction && !controller.stale && !controller.busy;
+  const dispatchEligible = !automatic && !investigation.paused && hasDispatchableAction && !controller.stale && !controller.busy;
   const controlsDisabled = controller.busy || controller.stale;
   const usernameProposalCount = usernameProposals(investigation).length;
   const investigationPaused = investigation.paused;
@@ -261,7 +263,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
                 <button className="workspace-button" type="button" disabled={controlsDisabled || authorizationReason.trim() === "" || authorizationGranted} onClick={() => void updateAuthorization(true)}>Otorgar autorización</button>
                 <button className="workspace-button" type="button" disabled={controlsDisabled || authorizationReason.trim() === "" || investigation.authorization?.granted !== true} onClick={() => void updateAuthorization(false)}>Revocar autorización</button>
               </div>
-              <p>{queuedActions.length} acción{queuedActions.length === 1 ? "" : "es"} {authorizationGranted && !investigation.paused ? "en cola habilitada" : "en cola bloqueada"}.</p>
+              <p>{queuedActions.length} acción{queuedActions.length === 1 ? "" : "es"} en cola{investigation.paused || (uncoveredCount > 0 && coveredQueue.length === 0) ? " bloqueada" : uncoveredCount > 0 ? " con autorización parcial" : " habilitada"}.</p>
               {automatic ? (
                 <p className="dispatch-note">Avance automático: el servidor procesa la cola cuando el expediente está autorizado y sin pausa.</p>
               ) : (
@@ -272,7 +274,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
               )}
               <ul className="dispatch-gates" aria-label="Condiciones para ejecutar">
                 <li>Pausa: {investigation.paused ? "bloquea nuevas acciones" : "sin pausa"}</li>
-                <li>Autorización: {authorizationGranted ? "otorgada" : "no otorgada"}</li>
+                <li>Autorización: {authorizationGranted ? "otorgada" : coveredQueue.length > 0 ? "parcial" : "no otorgada"}</li>
                 <li>Catálogo: {queuedActions.length > 0 ? "acción disponible" : "sin acción en cola"}</li>
                 <li>Vista: {controller.stale ? "desactualizada" : "snapshot leído"}</li>
               </ul>
@@ -316,8 +318,8 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
       )}
 
 
-      {!authorizationGranted && queuedActions.length > 0 && (
-        <p className="workspace-claimed-warning" role="status">Esperando autorización: {queuedActions.length} acción{queuedActions.length === 1 ? "" : "es"} en cola bloqueada. No se ejecutan consultas hasta otorgar autorización explícita al expediente.</p>
+      {uncoveredCount > 0 && (
+        <p className="workspace-claimed-warning" role="status">Esperando autorización: {uncoveredCount} acción{uncoveredCount === 1 ? "" : "es"} en cola bloqueada. {coveredQueue.length > 0 ? "Las demás acciones conservan su autorización." : "No se ejecutan consultas hasta otorgar autorización explícita al expediente."}</p>
       )}
       {claimedActions.length > 0 && (
         <p className="workspace-claimed-warning" role="status">

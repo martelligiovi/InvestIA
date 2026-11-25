@@ -184,6 +184,12 @@ function decodoSettingsHarness() {
   return { app, decodo, request, get writes() { return writes; } };
 }
 
+const invalidDecodoCredentials = [
+  { token: "Bearer", apiMode: "web_data" }, { token: "Basic", apiMode: "scraping_v2" },
+  { token: " bEaReR  ", apiMode: "web_data" }, { token: "  bAsIc ", apiMode: "scraping_v2" },
+  { token: "two words", apiMode: "web_data" }, { token: "Basic two\u00a0words", apiMode: "scraping_v2" },
+  { token: "Bearer two\twords", apiMode: "web_data" },
+] as const;
 const invalidDecodoTokens = ["", "   ", "value\n", "\tvalue", "a\x00b", "a\x1fb", "a\x7fb", "a\x85b", "a\x9fb", "a\u2028b", "a\u2029b"];
 
 test("Decodo settings reject cross-origin requests and invalid bodies without writing", async (t) => {
@@ -213,6 +219,19 @@ test("Decodo settings reject cross-origin requests and invalid bodies without wr
   assert.equal(harness.writes, 1);
   assert.deepEqual(await harness.decodo.load(), before);
 });
+
+for (const payload of invalidDecodoCredentials) {
+  test(`Decodo settings reject malformed ${payload.apiMode} credentials: ${JSON.stringify(payload.token)}`, async (t) => {
+    const harness = decodoSettingsHarness();
+    t.after(() => harness.app.close());
+    await harness.decodo.update({ token: KEY, apiMode: "scraping_v2" });
+    const response = await harness.request("PUT", payload);
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(response.json(), { error: "INVALID_REQUEST", message: "Invalid request" });
+    assert.equal(harness.writes, 1);
+    assert.deepEqual(await harness.decodo.load(), { token: KEY, apiMode: "scraping_v2" });
+  });
+}
 
 test("Decodo settings migrate under the shared lock and persist independent updates", async () => {
   const { PostgresDecodoSettingsStore } = await import("../src/decodo-settings-store.ts");
@@ -255,7 +274,9 @@ test("Decodo settings migrate under the shared lock and persist independent upda
   assert.deepEqual(await store.load(), { token: KEY, apiMode: "scraping_v2" });
   const statementsBefore = pool.statements.length;
   await assert.rejects(store.update({ apiMode: "other" as never }), { message: "Invalid Decodo API mode" });
-  for (const token of invalidDecodoTokens) await assert.rejects(store.update({ token }), { message: "Invalid Decodo API token" });
+  for (const changes of [...invalidDecodoTokens.map((token) => ({ token })), ...invalidDecodoCredentials]) {
+    await assert.rejects(store.update(changes), { message: "Invalid Decodo API token" });
+  }
   assert.equal(pool.statements.length, statementsBefore);
   assert.deepEqual(await store.load(), { token: KEY, apiMode: "scraping_v2" });
   await store.clearToken();

@@ -46,6 +46,17 @@ test("URL seed validation rejects nonpublic hosts and malformed or ambiguous URL
   }
 });
 
+for (const value of [
+  "http://192.0.0.0/", "http://192.0.0.255/", "http://192.0.2.1/", "http://198.18.0.1/",
+  "http://198.19.255.255/", "http://198.51.100.1/", "http://203.0.113.1/", "http://[2001:db8::1]/",
+  "http://[2001:0DB8:ffff::1]/", "\nhttps://example.org/profile", "https://example.org/profile\r\n",
+]) {
+  test(`rejects reserved IPs and pre-trim controls: ${JSON.stringify(value)}`, () => {
+    assert.throws(() => urlSeed(value), { message: "A valid public HTTP URL seed is required" });
+    assert.equal(isSafePublicHttpUrl(value), false);
+  });
+}
+
 test("scanner findings require a safe URL when the target kind is URL", () => {
   const finding = {
     target: { kind: "url", value: "https://example.org/page" }, upstreamStatus: "Found",

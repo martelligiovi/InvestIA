@@ -1,4 +1,4 @@
-import { DEFAULT_INVESTIGATION_NAME, facecheckParentEvidence, type EvidenceRecord, type Investigation } from "../domain/investigation.ts";
+import { DEFAULT_INVESTIGATION_NAME, isActionEligibleByParentValidation, type EvidenceRecord, type Investigation } from "../domain/investigation.ts";
 import { usernameProposals } from "../domain/username-proposals.ts";
 
 function markdownText(value: string): string {
@@ -30,8 +30,7 @@ export function reportableEvidence(investigation: Investigation) {
   const evidence = investigation.evidence.filter((record) => {
     if (record.sourceId === "decodo:url") {
       const action = investigation.actions.find((candidate) => candidate.id === record.actionId);
-      const parent = facecheckParentEvidence(investigation, action?.sourceSeedId);
-      return parent === undefined || latest.get(parent.id) === "accepted";
+      return action === undefined || isActionEligibleByParentValidation(investigation, action);
     }
     if (record.sourceId !== "facecheck:photo") return true;
     const status = latest.get(record.id);

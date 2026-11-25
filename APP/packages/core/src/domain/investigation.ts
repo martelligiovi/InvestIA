@@ -259,9 +259,9 @@ export function facecheckParentEvidence(investigation: Investigation, sourceSeed
 
 /** Recheck against the persisted snapshot when claiming a linked scrape. */
 export function isActionEligibleByParentValidation(investigation: Investigation, action: GitHubCatalogAction): boolean {
-  if (action.spec.catalogId !== "decodo.url.v1") return true;
+  if (action.spec.catalogId !== "decodo.url.v1" || action.sourceSeedId === undefined) return true;
   const parent = facecheckParentEvidence(investigation, action.sourceSeedId);
-  return parent === undefined || latestValidationStatus(investigation, parent.id) === "accepted";
+  return parent !== undefined && latestValidationStatus(investigation, parent.id) === "accepted";
 }
 
 export interface InvestigationSummary {

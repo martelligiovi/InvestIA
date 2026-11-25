@@ -163,6 +163,34 @@ test("Decodo evidence reaches factual and AI reports only for FaceCheck parents 
   assert.ok(aiAppendix.includes("Scraped face\\-reaccepted"));
 });
 
+test("Decodo results with unresolved explicit parents are excluded from factual and AI evidence", () => {
+  const base = investigation();
+  const seed = { kind: "url", value: "https://example.org/public-profile" } as const;
+  const action: GitHubCatalogAction = {
+    id: "scrape", spec: { catalogId: "decodo.url.v1", provider: "decodo", seed },
+    status: "succeeded", proposedAt: base.createdAt, proposalReason: "Scrape result URL.",
+  };
+  const child: EvidenceRecord = {
+    id: "child", actionId: action.id, seed, provider: "Decodo", status: "registered",
+    sourceId: "decodo:url", recordedAt: base.updatedAt,
+    finding: { target: seed, upstreamStatus: "Found", url: seed.value, category: "Page", reason: "Public excerpt", extra: {}, media: {} },
+  };
+  const snapshot = { ...base, evidence: [...base.evidence, child] };
+  const unlinked = { ...snapshot, actions: [action] };
+  assert.match(compileInvestigationReport(unlinked), /\| child \| scrape \|/);
+  assert.ok(requestData(unlinked).findings.some(({ evidenceId }) => evidenceId === child.id));
+
+  for (const parentId of ["missing-parent", base.evidence[0]!.id]) {
+    const linked = { ...snapshot, actions: [{ ...action, sourceSeedId: findingSeedNodeId(parentId) }], validations: [
+      ...base.validations, { ...base.validations[0]!, evidenceId: parentId, status: "accepted" as const },
+    ] };
+    const withoutChild = { ...linked, evidence: base.evidence };
+    assert.equal(compileInvestigationReport(linked), compileInvestigationReport(withoutChild));
+    assert.deepEqual(requestData(linked), requestData(withoutChild));
+    assert.equal(countOmittedAiReportFindings(linked), countOmittedAiReportFindings(withoutChild));
+  }
+});
+
 test("rejected evidence from another provider remains in factual and AI reports", () => {
   const value = investigation();
   const report = compileInvestigationReport(value);

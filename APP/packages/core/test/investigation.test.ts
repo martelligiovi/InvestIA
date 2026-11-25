@@ -1162,6 +1162,28 @@ test("overturning FaceCheck acceptance blocks a Decodo claim until re-acceptance
   assert.deepEqual(usernameProposals(stored), []);
 });
 
+test("Decodo cannot claim when its explicit FaceCheck parent reference does not resolve", async () => {
+  const { service, store, id, parent, executed } = await caseWithDecodo();
+  const accepted = await service.validateEvidence(id, parent.id, "accepted", "Same person.");
+  const action = accepted.actions.find(({ spec }) => spec.catalogId === "decodo.url.v1")!;
+  const { sourceSeedId: _linkedParent, ...unlinked } = action;
+  assert.equal(isActionEligibleByParentValidation(accepted, unlinked), true);
+
+  const replaceEvidence = (evidence: Investigation["evidence"]) => store.transact(id, (current) => {
+    const next = { ...current, revision: current.revision + 1, evidence };
+    return { next, result: next };
+  });
+  for (const evidence of [
+    accepted.evidence.filter(({ id }) => id !== parent.id),
+    accepted.evidence.map((record) => record.id === parent.id ? { ...record, sourceId: "other:photo" } : record),
+  ]) {
+    const before = await replaceEvidence(evidence);
+    assert.equal(await service.executeNextAction(id, true), undefined);
+    assert.deepEqual(await service.loadInvestigation(id), before);
+    assert.equal(executed.length, 2);
+  }
+});
+
 test("unsafe FaceCheck URLs and non-FaceCheck evidence never queue Decodo", async () => {
   const { service, id, before, parent, executed } = await caseWithDecodo("http://127.0.0.1/profile");
   let previous = before;
