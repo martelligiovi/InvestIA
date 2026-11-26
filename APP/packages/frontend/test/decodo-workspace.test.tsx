@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { findingSeedNodeId, type EvidenceRecord, type GitHubCatalogAction, type Investigation, type ValidationDecision } from "@investia/core";
+import { findingSeedNodeId, type EvidenceAiNormalization, type EvidenceRecord, type GitHubCatalogAction, type Investigation, type ValidationDecision } from "@investia/core";
 import { WorkspaceDetails } from "../src/components/WorkspaceDetails";
 import { buildWorkspaceGraph } from "../src/pages/workspace-model";
 import { WorkspacePage } from "../src/pages/WorkspacePage";
@@ -53,8 +53,8 @@ function withPage(): Investigation {
   return { ...investigation, evidence: [...investigation.evidence, page] };
 }
 
-function json(value: unknown) {
-  return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+function json(value: unknown, status = 200) {
+  return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 }
 
 function decodoStatus(tokenConfigured: boolean) {
@@ -424,4 +424,193 @@ it("keeps existing scanner stack branch order with linked Gravatar work", () => 
   }));
   expect(graph.edges.filter(({ from }) => from === "action:scanner").map(({ to }) => to))
     .toEqual(["leaf-group:scanner", "evidence:c"]);
+});
+
+const normalizedPageFixture: EvidenceAiNormalization = {
+  evidenceId: page.id,
+  model: "nvidia/nemotron-3.5-super-vl-120b-a12b",
+  generatedAt: "2026-02-03T14:30:00.000Z",
+  sourceContentHash: "c".repeat(64),
+  data: {
+    summary: 'Public profile summary <script>alert("xss")</script>',
+    entityName: "Ana Ejemplo",
+    handles: ["@anaejemplo"],
+    rolesOrOccupations: ["Principal Engineer"],
+    organizations: ["Example Corp"],
+    education: ["Universidad de Buenos Aires"],
+    locationsMentioned: ["Buenos Aires"],
+    topicsOrInterests: ["Distributed systems"],
+    notableFacts: ["Published security research"],
+    relatedUrls: ["https://github.com/anaejemplo", privateLink],
+    limitations: ["Truncated source text"],
+  },
+};
+
+it("normalizes a Decodo page on demand via POST without altering raw page evidence", async () => {
+  const calls: string[] = [];
+  let releaseNormalize!: (response: Response) => void;
+  const pendingNormalize = new Promise<Response>((resolve) => { releaseNormalize = resolve; });
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    const request = `${init?.method ?? "GET"} ${path}`;
+    calls.push(request);
+    if (init?.method === undefined && path === "/investigations/case") return json(withPage());
+    if (init?.method === undefined && path === "/settings/decodo") return decodoStatus(true);
+    if (init?.method === undefined && path === "/investigations/case/normalizations") return json({ normalizations: [] });
+    if (init?.method === "POST" && path === "/investigations/case/evidence/page/normalize") {
+      expect(init.body).toBeUndefined();
+      return pendingNormalize;
+    }
+    throw new Error(`Unexpected request: ${request}`);
+  }));
+
+  render(<WorkspacePage id="case" />);
+  const graph = await screen.findByRole("group", { name: /grafo factual/i });
+  fireEvent.click(within(graph).getByRole("button", { name: /Evidencia: page\. Decodo/ }));
+
+  const detail = screen.getByRole("complementary");
+  const rawSection = within(within(detail).getByRole("region", { name: "Página recopilada por Decodo" }));
+  const aiSection = within(within(detail).getByRole("region", { name: "Resumen estructurado (asistido por IA)" }));
+
+  expect(calls.filter((call) => call.startsWith("POST "))).toEqual([]);
+  expect(calls).toContain("GET /investigations/case/normalizations");
+  const normalizeBtn = aiSection.getByRole("button", { name: "Normalizar con IA" });
+  expect(normalizeBtn).toBeEnabled();
+  expect(aiSection.queryByLabelText("JSON normalizado por IA")).not.toBeInTheDocument();
+
+  await act(async () => { fireEvent.click(normalizeBtn); });
+  expect(aiSection.getByRole("button", { name: "Normalizando con IA…" })).toBeDisabled();
+  expect(calls).toContain("POST /investigations/case/evidence/page/normalize");
+
+  await act(async () => { releaseNormalize(json(normalizedPageFixture)); });
+  expect(aiSection.getByRole("button", { name: "Volver a normalizar con IA" })).toBeEnabled();
+  expect(aiSection.getByText("nvidia/nemotron-3.5-super-vl-120b-a12b")).toBeInTheDocument();
+  expect(aiSection.getByText("Ana Ejemplo")).toBeInTheDocument();
+  expect(aiSection.getByText('Public profile summary <script>alert("xss")</script>')).toBeInTheDocument();
+  expect(aiSection.getByText("@anaejemplo")).toBeInTheDocument();
+  expect(aiSection.getByText("Principal Engineer")).toBeInTheDocument();
+  expect(aiSection.getByText("Example Corp")).toBeInTheDocument();
+  expect(aiSection.getByText("Universidad de Buenos Aires")).toBeInTheDocument();
+  expect(aiSection.getByText("Buenos Aires")).toBeInTheDocument();
+  expect(aiSection.getByText("Distributed systems")).toBeInTheDocument();
+  expect(aiSection.getByText("Published security research")).toBeInTheDocument();
+  expect(aiSection.getByText("Truncated source text")).toBeInTheDocument();
+
+  const relatedLinks = aiSection.getAllByRole("link");
+  expect(relatedLinks.map((link) => link.getAttribute("href"))).toEqual(["https://github.com/anaejemplo"]);
+  expect(relatedLinks[0]).toHaveAttribute("target", "_blank");
+  expect(relatedLinks[0]).toHaveAttribute("rel", "noopener noreferrer");
+  expect(aiSection.getByText(privateLink).tagName).toBe("SPAN");
+
+  const jsonPre = aiSection.getByLabelText("JSON normalizado por IA");
+  expect(jsonPre.tagName).toBe("PRE");
+  expect(jsonPre.children).toHaveLength(0);
+  expect(JSON.parse(jsonPre.textContent ?? "")).toEqual(normalizedPageFixture.data);
+  expect(detail.querySelector("script")).toBeNull();
+
+  expect(rawSection.getByText("Fixture profile")).toBeInTheDocument();
+  expect(rawSection.getByLabelText("Texto recopilado").textContent).toBe(content);
+});
+
+it("loads persisted AI normalizations via GET when opening a case with Decodo page evidence", async () => {
+  const calls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    const request = `${init?.method ?? "GET"} ${path}`;
+    calls.push(request);
+    if (init?.method === undefined && path === "/investigations/case") return json(withPage());
+    if (init?.method === undefined && path === "/settings/decodo") return decodoStatus(true);
+    if (init?.method === undefined && path === "/investigations/case/normalizations") {
+      return json({ normalizations: [normalizedPageFixture] });
+    }
+    throw new Error(`Unexpected request: ${request}`);
+  }));
+
+  render(<WorkspacePage id="case" />);
+  const graph = await screen.findByRole("group", { name: /grafo factual/i });
+  fireEvent.click(within(graph).getByRole("button", { name: /Evidencia: page\. Decodo/ }));
+
+  const aiSection = within(screen.getByRole("region", { name: "Resumen estructurado (asistido por IA)" }));
+  expect(await aiSection.findByRole("button", { name: "Volver a normalizar con IA" })).toBeEnabled();
+  expect(aiSection.getByText("Ana Ejemplo")).toBeInTheDocument();
+  expect(JSON.parse(aiSection.getByLabelText("JSON normalizado por IA").textContent ?? "")).toEqual(normalizedPageFixture.data);
+  expect(calls.filter((call) => call.startsWith("POST "))).toEqual([]);
+});
+
+it.each([
+  ["AI_NOT_CONFIGURED", 409, "Falta la API key de NVIDIA Build. Cargala en Ajustes de IA.", true],
+  ["AI_PROVIDER_INVALID_RESPONSE", 502, "NVIDIA Build devolvió una respuesta que no es JSON válido. Probá otro modelo o intentá de nuevo.", false],
+] as const)("displays a clear Spanish alert when evidence normalization fails with %s", async (code, status, expectedMessage, expectsSettingsLink) => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (init?.method === undefined && path === "/investigations/case") return json(withPage());
+    if (init?.method === undefined && path === "/settings/decodo") return decodoStatus(true);
+    if (init?.method === undefined && path === "/investigations/case/normalizations") return json({ normalizations: [] });
+    if (init?.method === "POST" && path === "/investigations/case/evidence/page/normalize") {
+      return json({ error: code, message: "provider detail" }, status);
+    }
+    throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+  }));
+
+  render(<WorkspacePage id="case" />);
+  const graph = await screen.findByRole("group", { name: /grafo factual/i });
+  fireEvent.click(within(graph).getByRole("button", { name: /Evidencia: page\. Decodo/ }));
+
+  const aiSection = within(screen.getByRole("region", { name: "Resumen estructurado (asistido por IA)" }));
+  await act(async () => { fireEvent.click(aiSection.getByRole("button", { name: "Normalizar con IA" })); });
+
+  const alert = await aiSection.findByRole("alert");
+  expect(alert).toHaveTextContent(expectedMessage);
+  if (expectsSettingsLink) {
+    expect(within(alert).getByRole("link", { name: "Ajustes de IA" })).toHaveAttribute("href", "#/ajustes");
+  } else {
+    expect(within(alert).queryByRole("link", { name: "Ajustes de IA" })).not.toBeInTheDocument();
+  }
+  expect(aiSection.getByRole("button", { name: "Normalizar con IA" })).toBeEnabled();
+  expect(screen.getByRole("region", { name: "Página recopilada por Decodo" })).toBeInTheDocument();
+});
+
+it("scopes normalization errors to the failed Decodo evidence node when switching nodes", async () => {
+  const secondSeed = { kind: "url", value: "https://example.org/other" } as const;
+  const secondAction: GitHubCatalogAction = {
+    id: "scrape-2", spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: secondSeed },
+    sourceSeedId: findingSeedNodeId("other"), status: "succeeded", queuedByCatalog: true,
+    proposedAt: at, completedAt: at, proposalReason: "Accepted candidate",
+  };
+  const secondPage: EvidenceRecord = {
+    ...page,
+    id: "page-2",
+    actionId: secondAction.id,
+    seed: secondSeed,
+    finding: { ...page.finding!, target: secondSeed, url: secondSeed.value, extra: { ...page.finding!.extra, title: "Second profile" } },
+  };
+  const twoPages: Investigation = {
+    ...withPage(),
+    actions: [...withPage().actions, secondAction],
+    validations: [decision("accepted", "match"), decision("accepted", "other")],
+    evidence: [...withPage().evidence, secondPage],
+  };
+
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (init?.method === undefined && path === "/investigations/case") return json(twoPages);
+    if (init?.method === undefined && path === "/settings/decodo") return decodoStatus(true);
+    if (init?.method === undefined && path === "/investigations/case/normalizations") return json({ normalizations: [] });
+    if (init?.method === "POST" && path === "/investigations/case/evidence/page/normalize") {
+      return json({ error: "AI_PROVIDER_INVALID_RESPONSE", message: "bad json" }, 502);
+    }
+    throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+  }));
+
+  render(<WorkspacePage id="case" />);
+  const graph = await screen.findByRole("group", { name: /grafo factual/i });
+  fireEvent.click(within(graph).getByRole("button", { name: /Evidencia: page\. Decodo/ }));
+
+  const firstAiSection = within(screen.getByRole("region", { name: "Resumen estructurado (asistido por IA)" }));
+  await act(async () => { fireEvent.click(firstAiSection.getByRole("button", { name: "Normalizar con IA" })); });
+  expect(await firstAiSection.findByRole("alert")).toHaveTextContent(/no es JSON válido/i);
+
+  fireEvent.click(within(graph).getByRole("button", { name: /Evidencia: page-2\. Decodo/ }));
+  const secondAiSection = within(screen.getByRole("region", { name: "Resumen estructurado (asistido por IA)" }));
+  expect(secondAiSection.queryByRole("alert")).not.toBeInTheDocument();
 });

@@ -300,6 +300,13 @@
 .detail-note { border-left-color: var(--line-strong); background: var(--linen); color: var(--ink-soft); }
 .decodo-page-content { max-height: min(45vh, 24rem); margin: var(--space-2) 0 0; padding: var(--space-3); overflow: auto; border: 1px solid var(--line); background: var(--linen); font: inherit; font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .decodo-page-links { display: grid; gap: var(--space-1); margin: 0; padding-left: var(--space-5); overflow-wrap: anywhere; }
+.decodo-ai-actions { margin-top: var(--space-3); }
+.detail-fact .workspace-alert { margin: var(--space-3) 0 0; padding: var(--space-3); }
+.decodo-ai-summary { margin-top: var(--space-3); }
+.decodo-ai-list { display: grid; gap: var(--space-1); margin: 0; padding-left: var(--space-4); overflow-wrap: anywhere; }
+.decodo-ai-json { margin-top: var(--space-3); }
+.decodo-ai-json summary { color: var(--muted); cursor: pointer; font-family: var(--font-mono); font-size: 12px; }
+.decodo-ai-json pre { max-height: min(40vh, 20rem); margin: var(--space-2) 0 0; padding: var(--space-3); overflow: auto; border: 1px solid var(--line); background: var(--linen); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .detail-control .form-field { margin: var(--space-3) 0; }
 .detail-control .form-field textarea { min-height: 72px; font-size: 17px; }

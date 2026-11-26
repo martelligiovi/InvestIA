@@ -363,8 +363,12 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             ghuntConnected={ghuntConnected}
             facecheckConfigured={facecheckConfigured}
             decodoConfigured={decodoConfigured}
+            normalization={selectedNode?.evidence ? controller.normalizations[selectedNode.evidence.id] : undefined}
+            normalizing={selectedNode?.evidence !== undefined && controller.normalizingEvidenceId === selectedNode.evidence.id}
+            normalizationError={selectedNode?.evidence ? controller.normalizationErrors[selectedNode.evidence.id] ?? "" : ""}
             onValidate={validate}
             onQueueDecodo={controller.queueDecodo}
+            onNormalizeEvidence={controller.normalizeEvidence}
             onApproveGravatar={(actionId, reason) => controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason))}
             onReviewFacecheck={setFacecheckReview}
           />

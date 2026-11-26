@@ -156,6 +156,9 @@ input[type="checkbox"]::before { font-size: 12px; }
 .detail-control > p, .detail-history > p, .detail-empty { font-size: 14px; line-height: 1.55; }
 .fact-list { font-size: 14px; line-height: 1.5; }
 .detail-warning, .detail-note { border-radius: 0 var(--radius) var(--radius) 0; font-size: 13px; line-height: 1.55; }
+.decodo-page-content, .decodo-ai-json pre { border-radius: var(--radius); }
+.decodo-ai-json summary { font-size: 12px; font-weight: 600; }
+.decodo-ai-json pre { font-family: var(--font-code); }
 .detail-control .form-field textarea { font-size: 15px; }
 .detail-history ol { font-size: 14px; }
 .workspace-state-value { font-size: 12px; }
