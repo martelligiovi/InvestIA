@@ -79,6 +79,7 @@ const FUNCTIONS = new Set([
 const EXCEPTIONS = new Set([
   "Exception", "RuntimeError", "ValueError", "TypeError", "KeyError", "IndexError", "AttributeError",
   "ImportError", "ModuleNotFoundError", "OSError", "ConnectionError", "TimeoutError", "AssertionError",
+  "json.decoder.JSONDecodeError", "json.JSONDecodeError",
   "httpx.HTTPError", "httpx.RequestError", "httpx.HTTPStatusError", "httpx.ConnectError", "httpx.ConnectTimeout",
   "httpx.ReadError", "httpx.ReadTimeout", "httpx.WriteError", "httpx.WriteTimeout", "httpx.PoolTimeout",
   "httpx.RemoteProtocolError", "httpcore.ConnectError", "httpcore.ConnectTimeout", "httpcore.ReadError",
