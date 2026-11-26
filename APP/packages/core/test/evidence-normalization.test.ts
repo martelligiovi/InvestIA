@@ -114,6 +114,23 @@ test("decodoSourceContentHash produces deterministic SHA-256 over canonical page
     links: "",
   })).digest("hex");
   assert.equal(decodoSourceContentHash(nonStringExtra), nonStringExpected);
+
+  for (const contentSample of ["", "a".repeat(55), "a".repeat(56), "a".repeat(64), "Áñó 🚀 東京 ".repeat(40)]) {
+    const sampleRecord = decodoEvidence({
+      finding: {
+        ...record.finding!,
+        extra: { ...record.finding!.extra, content: contentSample },
+      },
+    });
+    const sampleExpected = createHash("sha256").update(JSON.stringify({
+      url: "https://example.org/ana-perez",
+      title: "Ana Pérez — Perfil profesional",
+      description: "Ingeniera de software e investigadora de seguridad.",
+      content: contentSample,
+      links: "https://github.com/anaperez\nhttps://example.com/publications",
+    })).digest("hex");
+    assert.equal(decodoSourceContentHash(sampleRecord), sampleExpected);
+  }
 });
 
 test("buildEvidenceNormalizationMessages rejects non-Decodo or findingless evidence records", () => {
