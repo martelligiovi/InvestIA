@@ -151,6 +151,10 @@ export class InvestigationApiClient {
     );
   }
 
+  async rerunAction(id: string, actionId: string, expectedRevision: number): Promise<Investigation> {
+    return this.post(`/investigations/${pathPart(id)}/actions/${pathPart(actionId)}/rerun`, { expectedRevision });
+  }
+
   async runNextAction(id: string): Promise<{ readonly action: GitHubCatalogAction | null }> {
     return this.post(`/investigations/${pathPart(id)}/actions/run`);
   }

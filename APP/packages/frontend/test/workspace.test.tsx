@@ -239,7 +239,69 @@ describe("espacio de investigación factual", () => {
     expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
   });
 
-  it("muestra un fallo terminal sin ofrecer reejecución", async () => {
+  it.each(["success", "failure", "stale"] as const)("confirma la reejecución sin perder la rama antes de tiempo (%s)", async (outcome) => {
+    const root: GitHubCatalogAction = { ...action("succeeded"), approval: undefined, queuedByCatalog: true,
+      spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed } };
+    const child: GitHubCatalogAction = { ...root, id: "child-1", sourceActionId: root.id, status: "succeeded" };
+    const before = snapshot({ advancementMode: "manual", actions: [root, child], evidence: [evidence()],
+      authorization: { ...approval, granted: true, catalogScopes: [root.spec.catalogId] } });
+    const rerun = { previousStatus: "succeeded" as const, fingerprint: "fixture-digest" };
+    let current = before;
+    const { calls } = installFetch(async (call) => {
+      if (pathOf(call) === "/investigations/case-1") return json(current);
+      if (pathOf(call) === "/investigations/case-1/actions/action-1/rerun") {
+        if (outcome === "stale") {
+          current = { ...before, revision: 2 };
+          return json({ error: "CONFLICT", message: "The action cannot be rerun in the current state" }, 409);
+        }
+        current = { ...before, revision: 2, actions: [{ ...root, status: "queued", rerun }, child] };
+        return json(current, 202);
+      }
+      if (pathOf(call) === "/investigations/case-1/actions/run") {
+        const claimed = { ...root, status: "claimed" as const, rerun, claim: { id: "new-claim", claimedAt: createdAt } };
+        current = { ...before, revision: 3, actions: [claimed, child] };
+        return json({ action: claimed });
+      }
+      throw new Error(`Ruta inesperada: ${pathOf(call)}`);
+    });
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const nodeList = await screen.findByText(/Lista accesible de nodos/i).then((entry) => entry.closest("details")!);
+    await user.click(nodeList.querySelector("summary")!);
+    await user.click(within(nodeList).getByRole("button", { name: /Acción: action-1/i }));
+    await user.click(screen.getByRole("button", { name: "Reejecutar" }));
+    expect(screen.getByText(/solo si la nueva ejecución termina bien/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+    expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Reejecutar" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar reejecución" }));
+    const posts = calls.filter((call) => call.init?.method === "POST");
+    expect(posts.map(pathOf)).toEqual(["/investigations/case-1/actions/action-1/rerun"]);
+    expect(bodyOf(posts[0]!)).toEqual({ expectedRevision: 1 });
+    expect(within(nodeList).getByRole("button", { name: /Acción: child-1/i })).toBeInTheDocument();
+    expect(within(nodeList).getByRole("button", { name: /Evidencia: evidence-1/i })).toBeInTheDocument();
+    if (outcome === "stale") {
+      expect(await screen.findByText(/El expediente cambió o la acción ya no admite/i)).toBeInTheDocument();
+      return;
+    }
+    expect(await screen.findByText(/Reejecución en cola/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reejecutar" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Ejecutar siguiente acción en cola" }));
+    expect(await screen.findByText(/Reejecución en curso/i)).toBeInTheDocument();
+    expect(within(nodeList).getByRole("button", { name: /Acción: child-1/i })).toBeInTheDocument();
+    current = outcome === "success"
+      ? { ...before, revision: 4, actions: [root], evidence: [evidence("replacement")] }
+      : { ...before, revision: 4, actions: [{ ...root, lastRerunFailed: true }, child] };
+    if (outcome === "success") {
+      expect(await within(nodeList).findByRole("button", { name: /Evidencia: replacement/i }, { timeout: 7_000 })).toBeInTheDocument();
+      expect(within(nodeList).queryByRole("button", { name: /Acción: child-1/i })).not.toBeInTheDocument();
+    } else {
+      expect(await screen.findByText(/La reejecución falló\. Se conservaron/i, {}, { timeout: 7_000 })).toBeInTheDocument();
+      expect(within(nodeList).getByRole("button", { name: /Acción: child-1/i })).toBeInTheDocument();
+    }
+  }, 12_000);
+
+  it("muestra un fallo terminal de catálogo histórico sin ofrecer reejecución", async () => {
     const { calls } = installFetch(async (call) => {
       if (pathOf(call) === "/investigations/case-1") return json(snapshot({ actions: [action("failed")] }));
       throw new Error(`Ruta inesperada: ${pathOf(call)}`);

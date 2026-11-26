@@ -308,6 +308,8 @@
 .decodo-ai-json summary { color: var(--muted); cursor: pointer; font-family: var(--font-mono); font-size: 12px; }
 .decodo-ai-json pre { max-height: min(40vh, 20rem); margin: var(--space-2) 0 0; padding: var(--space-3); overflow: auto; border: 1px solid var(--line); background: var(--linen); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 
+.detail-rerun-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.detail-rerun-actions > .workspace-button { min-height: 44px; max-width: 100%; }
 .detail-control .form-field { margin: var(--space-3) 0; }
 .detail-control .form-field textarea { min-height: 72px; font-size: 17px; }
 .validation-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }

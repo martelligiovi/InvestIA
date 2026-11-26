@@ -6,7 +6,7 @@ Use Vite at `127.0.0.1:5173` for development, or build once and let the loopback
 
 `src/styles/interface.css` is the final presentation layer: warm neutral surfaces, editorial headings, system UI typography for controls and data, and restrained red accents. It adapts the inherited design to the current sectioned creation form, compact workspace header, light-dismiss controls and detail drawer, without changing routes or graph scale. Decorative stamps and separators are hidden; their surrounding content remains accessible.
 
-`e2e/visual-design.spec.ts` checks desktop/mobile navigation, history visibility, compact headings, email controls and graph/detail controls. Screenshots are written to the ignored `test-results/redesign/` directory. The acceptance suite covers complete workflows.
+`e2e/visual-design.spec.ts` checks desktop/mobile navigation, history visibility, compact headings, email controls, graph/detail controls, and the action rerun confirmation. Screenshots are written to the ignored `test-results/redesign/` directory. The acceptance suite covers complete workflows.
 
 ## Seeds, actions and grouped leaves
 
@@ -76,6 +76,8 @@ The same commands work in Bash. For the required PostgreSQL and Neo4j variables 
 ## Research progression
 
 Creating an investigation records the research intention, enables automatic advancement, and authorizes configured catalog tools for current and future seeds. The authorization API must confirm the grant before the frontend adds initial email seeds. The creation page explains that user-scanner can send emails or notifications and cross-scan discovered targets. FaceCheck sends the Google profile photo to facecheck.id and can consume credits; Decodo receives only accepted public page URLs.
+
+For a finished action with an active tool and current authorization, select it in the graph and choose **Reejecutar**. Confirm to queue a replacement; manual mode still requires **Ejecutar siguiente acción en cola**. The previous results and child branches remain visible while the replacement is queued or running. A successful replacement swaps the branch; a failure keeps it and shows a notice in the action details.
 
 The backend queues and runs eligible work; the workspace refreshes snapshots without sending execution requests. Closing the browser does not stop the worker. The workspace header keeps **Usernames**, **Pausar / Reanudar**, **Obtener informe**, and **Generar informe con IA**. Recovery controls appear inline only when needed: **Actualizar expediente** for a stale snapshot, **Autorizar expediente** to grant missing authorization with a recorded reason, and **Ejecutar siguiente acción en cola** only for legacy manual cases with eligible queued work. A missing legacy mode still means manual; run-next applies to the case queue, not the selected node.
 

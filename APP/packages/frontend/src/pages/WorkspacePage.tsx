@@ -368,6 +368,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             normalizationError={selectedNode?.evidence ? controller.normalizationErrors[selectedNode.evidence.id] ?? "" : ""}
             onValidate={validate}
             onQueueDecodo={controller.queueDecodo}
+            onRerun={controller.rerunAction}
             onNormalizeEvidence={controller.normalizeEvidence}
             onApproveGravatar={(actionId, reason) => controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason))}
             onReviewFacecheck={setFacecheckReview}
