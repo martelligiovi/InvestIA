@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { chmod, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createGhuntProcessRunner, GhuntProcessError, ghuntArguments } from "../src/index.ts";
+import { tracebackDetail } from "../src/traceback.ts";
 
 const require = createRequire(import.meta.url);
 const processes = require("node:child_process") as typeof import("node:child_process");
@@ -120,10 +121,11 @@ test("retry delays are validated and used in order, including defaults", async (
   }
 });
 
-test("CLI uses main(), a positional email and explicit JSON path without a shell", async () => {
+test("CLI uses a Python entrypoint, a positional email and explicit JSON path without a shell", async () => {
   await fake(async (child, args, options) => {
     assert.deepEqual(args, ghuntArguments("ana@gmail.com", join(options.cwd, "report.json")));
-    assert.deepEqual(args.slice(0, 3), ["-B", "-c", "from ghunt.cli import parse_and_run; parse_and_run()"]);
+    assert.deepEqual(args.slice(0, 2), ["-B", "-c"]);
+    assert.match(args[2]!, /\bparse_and_run\(\)/);
     assert.deepEqual(args.slice(3), ["email", "--json", join(options.cwd, "report.json"), "--", "ana@gmail.com"]);
     assert.equal(options.shell, false);
     assert.notEqual(options.env.HOME, options.cwd);
@@ -133,6 +135,150 @@ test("CLI uses main(), a positional email and explicit JSON path without a shell
     assert.equal(await createGhuntProcessRunner({ sessionHome: home, outputDirectory: root }).run("ana@gmail.com"), "{}");
   });
 });
+
+test("the Python entrypoint degrades only optional Maps failures", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "ghunt-entrypoint-test-"));
+  try {
+    const env = {
+      PATH: process.env.PATH,
+      SystemRoot: process.env.SystemRoot,
+      HOME: root,
+      USERPROFILE: root,
+      PYTHONPATH: root,
+      PYTHONNOUSERSITE: "1",
+    };
+    const options = { cwd: root, env, encoding: "utf8", shell: false, windowsHide: true, timeout: 5_000 } as const;
+    const python = ["python", "python3"].find((candidate) => {
+      const probe = processes.spawnSync(candidate, ["-I", "-S", "--version"], options);
+      return probe.status === 0 && /^Python 3\./.test(probe.stdout);
+    });
+    assert.ok(python, "Python 3 must be available as python or python3 on PATH");
+
+    const ghunt = join(root, "ghunt");
+    const helpers = join(ghunt, "helpers");
+    await mkdir(helpers, { recursive: true });
+    await Promise.all([
+      writeFile(join(ghunt, "__init__.py"), ""),
+      writeFile(join(helpers, "__init__.py"), ""),
+      writeFile(join(root, "httpx.py"), `
+import os
+
+if os.environ["GHUNT_TEST_CASE"] == "ValueError without httpx":
+    raise ImportError("Synthetic missing dependency")
+
+class HTTPError(Exception):
+    pass
+
+class ConnectTimeout(HTTPError):
+    pass
+`),
+      writeFile(join(helpers, "gmaps.py"), `
+import asyncio
+import json
+import os
+
+# Use caught base classes so these cases exercise the session re-raise guard.
+class GHuntInvalidSession(ValueError):
+    pass
+
+class GHuntLoginError(TypeError):
+    pass
+
+async def get_reviews(account, *, limit):
+    assert account == "123" and limit == 4
+    case = os.environ["GHUNT_TEST_CASE"]
+    if case == "success":
+        return ("", {"Reviews": 4})
+    if case == "JSONDecodeError":
+        raise json.JSONDecodeError("Synthetic invalid JSON", "", 0)
+    if case in ("HTTPError", "ConnectTimeout"):
+        from httpx import HTTPError, ConnectTimeout
+        raise {"HTTPError": HTTPError, "ConnectTimeout": ConnectTimeout}[case](case)
+    errors = {
+        "KeyError": KeyError, "IndexError": IndexError, "TypeError": TypeError,
+        "ValueError": ValueError, "ValueError without httpx": ValueError,
+        "GHuntInvalidSession": GHuntInvalidSession, "GHuntLoginError": GHuntLoginError,
+        "CancelledError": asyncio.CancelledError, "BaseException": BaseException,
+    }
+    raise errors[case](case)
+`),
+      writeFile(join(ghunt, "cli.py"), `
+import asyncio
+import json
+import os
+from pathlib import Path
+import sys
+from ghunt.helpers import gmaps
+
+def parse_and_run():
+    # Report the escaping exception without platform-dependent traceback frames.
+    sys.excepthook = lambda kind, exc, _: print(f"{kind.__name__}: {exc}", file=sys.stderr)
+    command, flag, report, separator, email = sys.argv[1:]
+    assert (command, flag, separator, email) == ("email", "--json", "--", "--help@gmail.com")
+    case = os.environ["GHUNT_TEST_CASE"]
+    if case == "core timeout":
+        from httpx import ConnectTimeout
+        raise ConnectTimeout(case)
+    status, stats = asyncio.run(gmaps.get_reviews("123", limit=4))
+    assert status == ("" if case == "success" else "failed")
+    container = {
+        "profile": {"personId": "123", "profilePhotos": {"PROFILE": {"url": "https://lh3.googleusercontent.com/synthetic"}}},
+        "play_games": {"profile": {"display_name": "Synthetic player"}},
+        "calendar": {"details": {"summary": "Synthetic calendar"}},
+        "maps": {"stats": stats},
+    }
+    Path(report).write_text(json.dumps({"PROFILE_CONTAINER": container}), encoding="utf8")
+`),
+    ]);
+
+    const run = (scenario: string, report: string) => {
+      const result = processes.spawnSync(python, ghuntArguments("--help@gmail.com", report), {
+        ...options, env: { ...env, GHUNT_TEST_CASE: scenario },
+      });
+      assert.ifError(result.error);
+      assert.equal(result.signal, null);
+      assert.equal(result.stdout, "");
+      return result;
+    };
+    for (const scenario of ["JSONDecodeError", "KeyError", "IndexError", "TypeError", "ValueError", "HTTPError", "ConnectTimeout", "ValueError without httpx", "success"]) {
+      await t.test(scenario, async () => {
+        const report = join(root, `${scenario}.json`);
+        const result = run(scenario, report);
+        assert.equal(result.stderr, "");
+        assert.equal(result.status, 0);
+        assert.deepEqual(JSON.parse(await readFile(report, "utf8")), {
+          PROFILE_CONTAINER: {
+            profile: { personId: "123", profilePhotos: { PROFILE: { url: "https://lh3.googleusercontent.com/synthetic" } } },
+            play_games: { profile: { display_name: "Synthetic player" } },
+            calendar: { details: { summary: "Synthetic calendar" } },
+            maps: { stats: scenario === "success" ? { Reviews: 4 } : {} },
+          },
+        });
+      });
+    }
+    for (const [scenario, kind] of [
+      ["GHuntInvalidSession", "GHuntInvalidSession"], ["GHuntLoginError", "GHuntLoginError"],
+      ["CancelledError", "CancelledError"], ["BaseException", "BaseException"], ["core timeout", "ConnectTimeout"],
+    ] as const) {
+      await t.test(`${scenario} propagates without a report`, async () => {
+        const report = join(root, `${scenario}.json`);
+        const result = run(scenario, report);
+        assert.equal(result.stderr.replace(/\r\n/g, "\n"), `${kind}: ${scenario}\n`);
+        assert.equal(result.status, 1);
+        await assert.rejects(readFile(report), { code: "ENOENT" });
+      });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const exception of ["json.decoder.JSONDecodeError", "json.JSONDecodeError"]) {
+  test(`traceback details allow ${exception} but omit private messages`, () => {
+    const output = `Traceback (most recent call last):\n  File "/opt/venv-ghunt/lib/python3.11/site-packages/ghunt/helpers/gmaps.py", line 57, in get_reviews\n    private_source()\n${exception}: private@gmail.com token=secret\nKeyError: private_second_line\n`;
+    assert.equal(tracebackDetail(output), `${exception}, frames [ghunt/helpers/gmaps.py:57 in get_reviews]`);
+  });
+}
 
 test("explicit persistent session home is supplied and never placed in a run directory", async () => {
   await fake(async (child, _args, options) => {

@@ -43,8 +43,33 @@ export interface GhuntProcessOptions {
 export function validGhuntEmail(email: string): boolean {
   return /^(?!\.)(?!.*\.\.)[A-Z0-9_'+.\-]*[A-Z0-9_+-]@(gmail\.com|googlemail\.com)$/i.test(email);
 }
+// Keep optional Maps failures from interrupting GHunt's email report.
+export const GHUNT_EMAIL_ENTRYPOINT = `from ghunt.helpers import gmaps as _gm
+
+try:
+    import httpx as _hx
+except ImportError:
+    _hx = None
+
+_orig = _gm.get_reviews
+_maps_errors = (ValueError, KeyError, IndexError, TypeError) + ((_hx.HTTPError,) if _hx else ())
+
+async def _get_reviews(*args, **kwargs):
+    try:
+        return await _orig(*args, **kwargs)
+    except _maps_errors as exc:
+        if type(exc).__name__ in ("GHuntInvalidSession", "GHuntLoginError"):
+            raise
+        return ("failed", {})
+
+_gm.get_reviews = _get_reviews
+
+from ghunt.cli import parse_and_run
+parse_and_run()
+`;
+
 export function ghuntArguments(email: string, report: string): string[] {
-  return ["-B", "-c", "from ghunt.cli import parse_and_run; parse_and_run()", "email", "--json", report, "--", email];
+  return ["-B", "-c", GHUNT_EMAIL_ENTRYPOINT, "email", "--json", report, "--", email];
 }
 const NOT_FOUND = ["The target wasn't found.", "does not match a public Google Account."];
 const INVALID_SESSION = ["GHuntInvalidSession", "GHuntLoginError"];
