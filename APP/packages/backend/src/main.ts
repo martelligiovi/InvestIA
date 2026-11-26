@@ -22,6 +22,7 @@ import {
 } from "@investia/core";
 import { PostgresAiSettingsStore } from "./ai-settings-store.ts";
 import { PostgresDecodoSettingsStore } from "./decodo-settings-store.ts";
+import { PostgresEvidenceNormalizationStore } from "./evidence-normalization-store.ts";
 import { PostgresFacecheckSettingsStore } from "./facecheck-settings-store.ts";
 import { createBackendApp } from "./api.ts";
 import { AutomaticInvestigationRunner } from "./automatic-investigation-runner.ts";
@@ -90,6 +91,8 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     await facecheckSettings.migrate();
     const decodoSettings = new PostgresDecodoSettingsStore(pool);
     await decodoSettings.migrate();
+    const normalizationStore = new PostgresEvidenceNormalizationStore(pool);
+    await normalizationStore.migrate();
     const ghuntSession = options.ghuntSession ?? (config.ghuntSessionHome === undefined ? undefined : createGhuntSession({
       sessionHome: config.ghuntSessionHome,
       ...(config.ghuntPython === undefined ? {} : { pythonExecutable: config.ghuntPython }),
@@ -143,6 +146,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
         settings: aiSettings,
         gateway: options.nvidiaGateway ?? createNvidiaBuildGateway(),
         clock: () => new Date().toISOString(),
+        normalizations: normalizationStore,
       },
       ghunt: { session: ghuntSession },
       facecheck: facecheckSettings,

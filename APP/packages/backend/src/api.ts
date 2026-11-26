@@ -4,14 +4,19 @@ import {
   AI_MAX_TOKENS_RANGE,
   AI_REASONING_EFFORTS,
   buildAiReportMessages,
+  buildEvidenceNormalizationMessages,
   compileInvestigationReport,
   composeAiReport,
   countOmittedAiReportFindings,
+  decodoSourceContentHash,
   DEFAULT_AI_REPORT_SETTINGS,
   findingSeedNodeId,
   INVESTIGATION_NAME_MAX_LENGTH,
   USERNAME_SEED_PATTERN,
   normalizeAiReportSettings,
+  parseEvidenceNormalization,
+  type EvidenceAiNormalization,
+  type EvidenceRecord,
   type GitHubCatalogAction,
   type Investigation,
   type InvestigationService,
@@ -21,6 +26,7 @@ import {
   InvestigationNotFoundError,
 } from "./postgres-investigation-store.ts";
 import type { AiSettingsRecord, AiSettingsStore } from "./ai-settings-store.ts";
+import type { EvidenceNormalizationStore } from "./evidence-normalization-store.ts";
 import type { InvestigationActionRunner } from "./investigation-run-graph.ts";
 import { NvidiaProviderError, type NvidiaBuildGateway } from "./nvidia-build.ts";
 import type { InvestigationProjector } from "./neo4j-investigation-projector.ts";
@@ -168,6 +174,23 @@ function publicInvestigation(investigation: Investigation): Investigation {
   return { ...investigation, actions: investigation.actions.map(publicAction) };
 }
 
+function filterValidNormalizations(
+  investigation: Investigation,
+  stored: readonly EvidenceAiNormalization[],
+): readonly EvidenceAiNormalization[] {
+  if (stored.length === 0) return [];
+  const decodoById = new Map<string, EvidenceRecord>();
+  for (const item of investigation.evidence) {
+    if (item.sourceId === "decodo:url" && item.finding !== undefined) {
+      decodoById.set(item.id, item);
+    }
+  }
+  return stored.filter((record) => {
+    const evidence = decodoById.get(record.evidenceId);
+    return evidence !== undefined && record.sourceContentHash === decodoSourceContentHash(evidence);
+  });
+}
+
 function statusCode(error: unknown): number | undefined {
   if (typeof error !== "object" || error === null || !("statusCode" in error)) return undefined;
   const value = error.statusCode;
@@ -178,6 +201,7 @@ export interface AiReportAdapters {
   readonly settings: AiSettingsStore;
   readonly gateway: NvidiaBuildGateway;
   readonly clock: () => string;
+  readonly normalizations?: EvidenceNormalizationStore;
 }
 
 export interface BackendAppAdapters {
@@ -387,6 +411,14 @@ export function createBackendApp(
   });
 
   const ai = adapters.ai;
+  app.get<{ Params: { id: string } }>("/investigations/:id/normalizations", async (request) => {
+    const { id } = input(InvestigationParams, request.params);
+    const investigation = await serviceCall(() => service.loadInvestigation(id));
+    if (investigation === undefined) throw new HttpError(404, "NOT_FOUND", "Investigation not found");
+    const stored = ai?.normalizations === undefined ? [] : await ai.normalizations.listByInvestigation(id);
+    return { normalizations: filterValidNormalizations(investigation, stored) };
+  });
+
   if (ai !== undefined) registerAiRoutes(app, service, ai);
   if (adapters.ghunt !== undefined) registerGhuntRoutes(app, adapters.ghunt.session);
   if (adapters.facecheck !== undefined) registerFacecheckRoutes(app, adapters.facecheck);
@@ -476,6 +508,49 @@ function registerAiRoutes(app: FastifyInstance, service: InvestigationService, a
 
   app.get("/settings/ai/models", async () => ai.gateway.listFreeChatModels());
 
+  app.post<{ Params: { id: string; evidenceId: string } }>(
+    "/investigations/:id/evidence/:evidenceId/normalize",
+    async (request) => {
+      const { id, evidenceId } = input(EvidenceParams, request.params);
+      input(EmptyBody, request.body);
+      const investigation = await serviceCall(() => service.loadInvestigation(id));
+      if (investigation === undefined) throw new HttpError(404, "NOT_FOUND", "Investigation not found");
+      const evidence = investigation.evidence.find((item) => item.id === evidenceId);
+      if (evidence === undefined) throw new HttpError(404, "NOT_FOUND", "Record not found");
+      if (evidence.sourceId !== "decodo:url" || evidence.finding === undefined) {
+        throw new HttpError(409, "CONFLICT", "Only Decodo page evidence can be normalized");
+      }
+      const configuration = await ai.settings.load();
+      if (configuration?.apiKey == null) {
+        throw new HttpError(409, "AI_NOT_CONFIGURED", "Configure an NVIDIA Build API key first");
+      }
+      const raw = await ai.gateway.complete(
+        configuration.apiKey,
+        configuration.settings,
+        buildEvidenceNormalizationMessages(evidence),
+      );
+      let data;
+      try {
+        data = parseEvidenceNormalization(raw);
+      } catch {
+        throw new HttpError(
+          502,
+          "AI_PROVIDER_INVALID_RESPONSE",
+          "NVIDIA Build did not return valid normalized JSON",
+        );
+      }
+      const record: EvidenceAiNormalization = {
+        evidenceId: evidence.id,
+        model: configuration.settings.model,
+        generatedAt: ai.clock(),
+        sourceContentHash: decodoSourceContentHash(evidence),
+        data,
+      };
+      await ai.normalizations?.save(id, record);
+      return record;
+    },
+  );
+
   app.post<{ Params: { id: string } }>("/investigations/:id/report/ai", async (request, reply) => {
     const { id } = input(InvestigationParams, request.params);
     input(EmptyBody, request.body);
@@ -486,13 +561,19 @@ function registerAiRoutes(app: FastifyInstance, service: InvestigationService, a
       throw new HttpError(409, "AI_NOT_CONFIGURED", "Configure an NVIDIA Build API key first");
     }
     const visible = publicInvestigation(investigation);
-    const narrative = await ai.gateway.complete(configuration.apiKey, configuration.settings, buildAiReportMessages(visible));
+    const storedNormalizations = ai.normalizations === undefined ? [] : await ai.normalizations.listByInvestigation(id);
+    const normalizationMap = new Map(storedNormalizations.map((item) => [item.evidenceId, item]));
+    const narrative = await ai.gateway.complete(
+      configuration.apiKey,
+      configuration.settings,
+      buildAiReportMessages(visible, normalizationMap),
+    );
     return reply.type("text/markdown; charset=utf-8").send(composeAiReport({
       narrative,
       factualReport: compileInvestigationReport(visible),
       model: configuration.settings.model,
       generatedAt: ai.clock(),
-      omittedFindings: countOmittedAiReportFindings(visible),
+      omittedFindings: countOmittedAiReportFindings(visible, normalizationMap),
     }));
   });
 }
