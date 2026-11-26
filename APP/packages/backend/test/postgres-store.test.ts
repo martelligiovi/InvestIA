@@ -141,7 +141,7 @@ function auditEvent(id: string, kind: "action_claimed" | "action_succeeded"): Co
   return { id, at: "2025-03-01T00:01:00.000Z", actor: "system", kind, reason: "offline test" };
 }
 
-test("GHunt persists and claims under a pre-GHunt grant only when no longer deferred", async () => {
+test("GHunt persists, waits when deferred, and requires a scope that names it", async () => {
   const { database, store, service } = makeStoreHarness(["ghunt.email.v1", "user-scanner.email.v1"]);
   const created = await service.createInvestigation();
   const seeded = await service.addEmailSeed(created.id, "seed@gmail.com");
@@ -154,10 +154,13 @@ test("GHunt persists and claims under a pre-GHunt grant only when no longer defe
   assert.equal((await store.claimNextAction(request))?.action.spec.catalogId, "user-scanner.email.v1");
   const before = (await store.get(created.id))!;
   assert.equal(before.actions[0]?.status, "queued");
-  assert.equal(await store.claimNextAction({ ...request, claimId: "deferred" }), undefined);
+  assert.equal(await store.claimNextAction({ ...request, claimId: "old-grant", deferredCatalogIds: [] }), undefined);
   assert.deepEqual(await store.get(created.id), before);
+  const renewed = await service.authorize(created.id, true, "Authorize GHunt");
+  assert.equal(await store.claimNextAction({ ...request, claimId: "deferred" }), undefined);
+  assert.deepEqual(await store.get(created.id), renewed);
   assert.equal((await store.claimNextAction({ ...request, claimId: "ghunt", deferredCatalogIds: [] }))?.action.spec.catalogId, "ghunt.email.v1");
-  assert.deepEqual((await store.get(created.id))?.authorization, before.authorization);
+  assert.deepEqual((await store.get(created.id))?.authorization, renewed.authorization);
 });
 
 test("FaceCheck photo actions and evidence round-trip and defer independently", async () => {
@@ -238,18 +241,20 @@ test("Decodo snapshot validation round-trips URL actions and evidence and reject
   }
 });
 
-test("Decodo claims under a pre-Decodo grant but not without an active scoped grant", async () => {
+test("Decodo claims under a FaceCheck-only grant but not without a covering scope", async () => {
   const { database, store, id, accepted, request } = await makeScrapeCase();
-  const { catalogScope: _single, catalogScopes, ...unscoped } = accepted.authorization!;
-  const preDecodo = { ...unscoped, catalogScopes: catalogScopes!.filter((catalogId) => catalogId !== "decodo.url.v1") };
+  const { catalogScope: _single, catalogScopes: _scopes, ...unscoped } = accepted.authorization!;
+  const facecheckOnly = { ...unscoped, catalogScopes: ["facecheck.photo.v1"] } as const;
   const storeAuthorization = (authorization: Investigation["authorization"]) => store.transact(id, (current) => {
     const { authorization: _previous, ...snapshot } = current;
     const next = { ...snapshot, revision: current.revision + 1, ...(authorization === undefined ? {} : { authorization }) };
     return { next, result: next };
   });
   for (const [label, authorization] of [
-    ["missing", undefined], ["revoked", { ...preDecodo, granted: false }],
+    ["missing", undefined], ["revoked", { ...facecheckOnly, granted: false }],
     ["empty", { ...unscoped, catalogScopes: [] }], ["legacy unscoped", unscoped],
+    ["scanner-only", { ...unscoped, catalogScopes: ["user-scanner.email.v1"] }],
+    ["legacy scanner-only", { ...unscoped, catalogScope: "user-scanner.email.v1" }],
   ] as const) {
     const before = await storeAuthorization(authorization);
     const cursor = database.history.length;
@@ -258,7 +263,7 @@ test("Decodo claims under a pre-Decodo grant but not without an active scoped gr
     assert.ok(!database.history.slice(cursor).some(({ sql }) => /UPDATE investigations/.test(sql)), label);
   }
 
-  const before = await storeAuthorization(preDecodo);
+  const before = await storeAuthorization(facecheckOnly);
   const action = { ...before.actions[0]!, status: "claimed", claim: { id: request.claimId, claimedAt: request.claimedAt } };
   assert.deepEqual(await store.claimNextAction(request), {
     action, permit: { authorized: true, approved: true, paused: false },
@@ -441,7 +446,7 @@ test("recorded scopes round-trip, malformed scopes never write and empty scopes 
   assert.deepEqual(database.records.get(created.id), unscoped);
 });
 
-test("a scanner-only grant can claim an approved Gravatar proposal", async () => {
+test("a scanner-only grant never claims an approved Gravatar proposal", async () => {
   const { database, store, service } = makeStoreHarness(["user-scanner.email.v1", "gravatar.email.v1"]);
   const created = await service.createInvestigation();
   const seeded = await service.addEmailSeed(created.id, "seed@example.org");
@@ -459,13 +464,11 @@ test("a scanner-only grant can claim an approved Gravatar proposal", async () =>
   const row = database.records.get(created.id)!;
   row.document = { ...row.document, authorization: { ...row.document.authorization!, catalogScopes: ["user-scanner.email.v1"] } };
   const input: ClaimActionRequest = { investigationId: created.id, claimId: "claim-2", claimedAt: "2025-03-01T00:01:00Z", auditEvent: auditEvent("claim", "action_claimed") };
-  const authorization = row.document.authorization;
-  const claim = await store.claimNextAction(input);
-  assert.equal(claim?.action.id, proposal.id);
-  assert.equal(claim?.action.status, "claimed");
-
   const current = (await store.get(created.id))!;
-  assert.deepEqual(current.authorization, authorization);
+  assert.equal(current.actions.find(({ id }) => id === proposal.id)?.status, "queued");
+  assert.equal(await store.claimNextAction(input), undefined);
+  assert.deepEqual(await store.get(created.id), current);
+
   const corrupt = { ...current, revision: current.revision + 1, actions: current.actions.map((action) =>
     action.spec.catalogId === "gravatar.email.v1" ? { ...action, spec: { ...action.spec, provider: "user-scanner" } } : action) } as unknown as Investigation;
   await assert.rejects(store.transact(created.id, () => ({ next: corrupt, result: undefined })), InvestigationSchemaError);
@@ -673,7 +676,7 @@ test("accepted and rejected username proposals round-trip with their decisions",
   assert.deepEqual(database.records.get(created.id), before);
 });
 
-test("a pre-Maigret grant claims a Maigret action without renewal", async () => {
+test("a pre-Maigret grant does not claim a Maigret action without renewal", async () => {
   const { database, store, service } = makeStoreHarness();
   const created = await service.createInvestigation();
   await service.addUsernameSeed(created.id, "anaexample", "Username supplied by the operator.");
@@ -681,10 +684,13 @@ test("a pre-Maigret grant claims a Maigret action without renewal", async () => 
   assert.deepEqual(granted.authorization?.catalogScopes, currentGrant);
   const row = database.records.get(created.id)!;
   row.document = { ...row.document, authorization: { ...row.document.authorization!, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] } };
-  const authorization = row.document.authorization;
+  const before = (await store.get(created.id))!;
   const input: ClaimActionRequest = { investigationId: created.id, claimId: "claim", claimedAt: "2025-03-01T00:01:00Z", auditEvent: auditEvent("claim", "action_claimed") };
+  assert.equal(await store.claimNextAction(input), undefined);
+  assert.deepEqual(await store.get(created.id), before);
+  const renewed = await service.authorize(created.id, true, "Authorize Maigret");
   assert.equal((await store.claimNextAction(input))?.action.spec.catalogId, "maigret.username.v1");
-  assert.deepEqual((await store.get(created.id))?.authorization, authorization);
+  assert.deepEqual((await store.get(created.id))?.authorization, renewed.authorization);
 });
 
 test("completion rejects malformed username evidence without a finding", async () => {

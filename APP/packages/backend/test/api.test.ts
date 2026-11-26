@@ -308,7 +308,7 @@ test("HTTP workflow persists operator decisions and only runs the approved actio
   assert.match(report.body, /rejected/);
 });
 
-test("FaceCheck acceptance and Decodo token updates wake eligible scrapes with no grant renewal", async (t) => {
+test("FaceCheck acceptance and token updates wake Decodo under a FaceCheck grant, not a scanner-only grant", async (t) => {
   const store = new MemoryStore();
   const seen: unknown[] = [];
   let settings = { token: undefined as string | undefined, apiMode: "web_data" as DecodoApiMode };
@@ -343,7 +343,7 @@ test("FaceCheck acceptance and Decodo token updates wake eligible scrapes with n
   });
   t.after(async () => { await runner.stop(); await server.close(); });
   const photo = { kind: "photo" as const, value: "https://lh3.googleusercontent.com/profile-photo" };
-  const seedCase = async (url: string, preDecodo = false) => {
+  const seedCase = async (url: string, catalogScopes?: NonNullable<Investigation["authorization"]>["catalogScopes"]) => {
     const created = await server.inject({ method: "POST", url: "/investigations" });
     assert.equal(created.statusCode, 201);
     const investigation = created.json<Investigation>();
@@ -351,7 +351,7 @@ test("FaceCheck acceptance and Decodo token updates wake eligible scrapes with n
     assert.equal((await server.inject({ method: "POST", url: `${path}/authorization`, payload: { granted: true, reason: "Authorize the enabled tools" } })).statusCode, 200);
     const authorization = await store.transact(investigation.id, (current) => {
       const grant = current.authorization!;
-      const authorization = preDecodo ? { ...grant, catalogScopes: grant.catalogScopes!.filter((id) => id !== "decodo.url.v1") } : grant;
+      const authorization = catalogScopes === undefined ? grant : { ...grant, catalogScopes };
       return { next: { ...current, revision: current.revision + 1, authorization, evidence: [{
         id: "match", actionId: "facecheck", seed: photo, provider: "FaceCheck", status: "registered", sourceId: "facecheck:photo", recordedAt: current.createdAt,
         finding: { target: photo, upstreamStatus: "Found", url, category: "Face match", reason: "Candidate", extra: {}, media: { thumbnail: "data:image/webp;base64,YWJj" } },
@@ -366,9 +366,11 @@ test("FaceCheck acceptance and Decodo token updates wake eligible scrapes with n
   };
   const approvedUrl = "https://www.linkedin.com/in/example-profile";
   const disputedUrl = "https://example.org/profile";
-  const approved = await seedCase(approvedUrl, true);
+  const unauthorizedUrl = "https://example.net/profile";
+  const approved = await seedCase(approvedUrl, ["facecheck.photo.v1"]);
   const disputed = await seedCase(disputedUrl);
-  for (const [entry, url] of [[approved, approvedUrl], [disputed, disputedUrl]] as const) {
+  const unauthorized = await seedCase(unauthorizedUrl, ["user-scanner.email.v1"]);
+  for (const [entry, url] of [[approved, approvedUrl], [disputed, disputedUrl], [unauthorized, unauthorizedUrl]] as const) {
     const decision = await entry.decide("accepted");
     assert.equal(decision.statusCode, 201);
     assert.deepEqual(decision.json<Investigation>().actions.map(({ spec, status }) => [spec.catalogId, status, spec.seed]),
@@ -382,18 +384,21 @@ test("FaceCheck acceptance and Decodo token updates wake eligible scrapes with n
   }
   assert.deepEqual(seen, []);
   assert.equal((await disputed.decide("rejected")).statusCode, 201);
-  assert.equal(wakes, 2);
+  assert.equal(wakes, 3);
   const rejected = await disputed.load();
+  const uncovered = await unauthorized.load();
   const configured = await server.inject({ method: "PUT", url: "/settings/decodo", headers: { host: "127.0.0.1:4317" }, payload: { token: "offline-token" } });
   assert.equal(configured.statusCode, 200);
-  assert.equal(wakes, 3);
+  assert.equal(wakes, 4);
   await sweep;
   assert.deepEqual(seen, [{ kind: "url", value: approvedUrl }]);
-  assert.deepEqual(await disputed.load(), rejected);
-  const blocked = await disputed.run();
-  assert.equal(blocked.statusCode, 200);
-  assert.deepEqual(blocked.json(), { action: null });
-  assert.deepEqual(await disputed.load(), rejected);
+  for (const [entry, before] of [[disputed, rejected], [unauthorized, uncovered]] as const) {
+    assert.deepEqual(await entry.load(), before);
+    const blocked = await entry.run();
+    assert.equal(blocked.statusCode, 200);
+    assert.deepEqual(blocked.json(), { action: null });
+    assert.deepEqual(await entry.load(), before);
+  }
   const completed = await approved.load();
   assert.deepEqual(completed.authorization, approved.authorization);
   assert.equal(completed.audit.filter(({ kind }) => kind === "authorization_changed").length, 1);
@@ -401,9 +406,10 @@ test("FaceCheck acceptance and Decodo token updates wake eligible scrapes with n
   assert.deepEqual(completed.evidence.slice(1).map(({ sourceId, seed, finding }) => [sourceId, seed, finding?.target, finding?.extra.content]),
     [["decodo:url", { kind: "url", value: approvedUrl }, { kind: "url", value: approvedUrl }, "Offline excerpt"]]);
   assert.equal((await disputed.decide("accepted")).statusCode, 201);
-  assert.equal(wakes, 4);
+  assert.equal(wakes, 5);
   await sweep;
   assert.deepEqual(seen, [{ kind: "url", value: approvedUrl }, { kind: "url", value: disputedUrl }]);
+  assert.deepEqual(await unauthorized.load(), uncovered);
   const reaccepted = await disputed.load();
   assert.deepEqual(reaccepted.actions.map(({ id, status }) => [id, status]), [[rejected.actions[0]!.id, "succeeded"]]);
   assert.deepEqual(reaccepted.evidence.map(({ sourceId }) => sourceId), ["facecheck:photo", "decodo:url"]);

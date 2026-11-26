@@ -22,24 +22,30 @@ function claimed(spec: GitHubCatalogAction["spec"]): ActionClaim["action"] {
 
 const scannerSpec = { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: { kind: "email", value: "person@example.org" } } as const;
 
-const historicalGrants: Readonly<Record<string, Partial<AuthorizationRecord>>> = {
-  "pre-Decodo": { catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1"] },
-  "pre-FaceCheck": { catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"] },
-  "pre-GHunt": { catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"] },
-  "pre-Maigret": { catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] },
-  "single-scope": { catalogScope: "user-scanner.email.v1" },
-  "single-scope with an empty scope list": { catalogScope: "user-scanner.email.v1", catalogScopes: [] },
-};
+test("Decodo accepts an active FaceCheck or Decodo scope, but not an unrelated or unknown scope", () => {
+  for (const catalogId of SCOPED_CATALOG_IDS) {
+    const grant: AuthorizationRecord = { ...base, granted: true, catalogScopes: [catalogId] };
+    assert.equal(authorizationCovers(grant, "decodo.url.v1"), catalogId === "facecheck.photo.v1" || catalogId === "decodo.url.v1", catalogId);
+  }
+  const unknownScope = { ...base, granted: true, catalogScopes: ["unknown.tool.v1"] } as unknown as AuthorizationRecord;
+  assert.equal(authorizationCovers(unknownScope, "decodo.url.v1"), false);
+});
 
-for (const [label, scopes] of Object.entries(historicalGrants)) {
-  test(`a ${label} grant covers every active scoped tool without renewal`, () => {
-    const authorization = { ...base, ...scopes, granted: true };
-    for (const catalogId of SCOPED_CATALOG_IDS) {
-      assert.equal(authorizationCovers(authorization, catalogId), true, catalogId);
-    }
-    assert.equal(authorizationCovers(authorization, "unknown.tool.v1"), false);
-  });
-}
+test("other scoped tools require their own scope, and unknown catalog IDs are never covered", () => {
+  for (const recordedScope of SCOPED_CATALOG_IDS) {
+    const grant: AuthorizationRecord = { ...base, granted: true, catalogScopes: [recordedScope] };
+    const covered = SCOPED_CATALOG_IDS.filter((id) => id !== "decodo.url.v1" && authorizationCovers(grant, id));
+    assert.deepEqual(covered, recordedScope === "decodo.url.v1" ? [] : [recordedScope]);
+    assert.equal(authorizationCovers(grant, "unknown.tool.v1"), false);
+  }
+});
+
+test("the older single-scope marker authorizes only User Scanner", () => {
+  const grant: AuthorizationRecord = { ...base, granted: true, catalogScope: "user-scanner.email.v1" };
+  assert.deepEqual(SCOPED_CATALOG_IDS.filter((id) => authorizationCovers(grant, id)), ["user-scanner.email.v1"]);
+  assert.deepEqual(SCOPED_CATALOG_IDS.filter((id) => authorizationCovers({ ...grant, catalogScopes: [] }, id)), ["user-scanner.email.v1"]);
+  assert.equal(authorizationCovers({ ...grant, catalogScope: "unknown.tool.v1" } as unknown as AuthorizationRecord, "decodo.url.v1"), false);
+});
 
 test("scoped tools fail closed without a granted scope and historical GitHub keeps its original gate", () => {
   const unscoped: AuthorizationRecord = { ...base, granted: true };

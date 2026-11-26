@@ -57,7 +57,7 @@ export interface ActionApproval {
   readonly operator: "local-operator";
 }
 
-/** Catalog tools that require an active scoped investigation grant. */
+/** Catalog tools that require an active investigation grant covering their scope. */
 export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1" | "maigret.username.v1" | "ghunt.email.v1" | "facecheck.photo.v1" | "decodo.url.v1";
 export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze([
   "user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1", "decodo.url.v1",
@@ -84,9 +84,9 @@ export function isScopedCatalogId(value: unknown): value is ScopedCatalogId {
 }
 
 export interface AuthorizationRecord {
-  /** Single-scope marker retained for compatibility with older scoped grants. */
+  /** Compatibility marker that grants only the User Scanner scope by itself. */
   readonly catalogScope?: "user-scanner.email.v1";
-  /** Scoped catalog recorded at grant time, not a per-tool allowlist. */
+  /** Explicit tool scopes recorded at grant time. */
   readonly catalogScopes?: readonly ScopedCatalogId[];
   readonly granted: boolean;
   readonly at: string;
@@ -95,14 +95,17 @@ export interface AuthorizationRecord {
 }
 
 /**
- * An active grant with a recorded scope covers every active scoped tool, including tools added later.
+ * Scoped tools require their own scope, except Decodo also accepts the FaceCheck scope.
  * Unknown tools are never covered. Historical GitHub actions still require only an active grant.
  */
 export function authorizationCovers(authorization: AuthorizationRecord | undefined, catalogId: string): boolean {
   if (authorization?.granted !== true) return false;
   if (catalogId === LEGACY_CATALOG_ID) return true;
   if (!isScopedCatalogId(catalogId)) return false;
-  return (Array.isArray(authorization.catalogScopes) && authorization.catalogScopes.length > 0) || authorization.catalogScope !== undefined;
+  if (authorization.catalogScope === catalogId) return true;
+  const scopes = authorization.catalogScopes;
+  return Array.isArray(scopes) && (scopes.includes(catalogId) ||
+    (catalogId === "decodo.url.v1" && scopes.includes("facecheck.photo.v1")));
 }
 
 export interface GitHubActionSpec {

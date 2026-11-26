@@ -1042,25 +1042,32 @@ test("FaceCheck queues only for an own Google profile photo while the tool is en
   }), /photo catalog/);
 });
 
-test("deferred FaceCheck waits until ready, then runs under a pre-FaceCheck grant", async () => {
+test("FaceCheck waits until ready and then requires a grant that names it", async () => {
   let deferred = true;
   const { store, service, executed } = facecheckHarness([ghuntPhoto(PROFILE_PHOTO)], ["facecheck.photo.v1"], () => deferred ? ["facecheck.photo.v1"] : []);
   const created = await service.createInvestigation();
   await service.addEmailSeed(created.id, "ana@gmail.com");
   const granted = await service.authorize(created.id, true, "Authorize tools");
-  const authorization = { ...granted.authorization!, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"] as const };
-  await store.transact(created.id, (current) => ({ next: { ...current, revision: current.revision + 1, authorization }, result: undefined }));
   await service.executeNextAction(created.id);
   const queued = (await service.loadInvestigation(created.id))!;
   assert.equal(queued.actions.at(-1)?.status, "queued");
   assert.equal(await service.executeNextAction(created.id), undefined);
   assert.deepEqual(await service.loadInvestigation(created.id), queued);
   deferred = false;
+  const authorization = { ...granted.authorization!, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"] as const };
+  const before = await store.transact(created.id, (current) => {
+    const next = { ...current, revision: current.revision + 1, authorization };
+    return { next, result: next };
+  });
+  assert.equal(await service.executeNextAction(created.id), undefined);
+  assert.deepEqual(await service.loadInvestigation(created.id), before);
+  assert.deepEqual(executed, ["ghunt.email.v1 email:ana@gmail.com"]);
+  const renewed = await service.authorize(created.id, true, "Authorize FaceCheck");
   const completed = await service.executeNextAction(created.id);
   assert.equal(completed?.spec.catalogId, "facecheck.photo.v1");
   assert.equal(completed?.status, "succeeded");
   assert.deepEqual(executed, ["ghunt.email.v1 email:ana@gmail.com", `facecheck.photo.v1 photo:${PROFILE_PHOTO}`]);
-  assert.deepEqual((await service.loadInvestigation(created.id))?.authorization, authorization);
+  assert.deepEqual((await service.loadInvestigation(created.id))?.authorization, renewed.authorization);
 });
 
 test("the report names photo seeds and does not inline FaceCheck thumbnails", async () => {
