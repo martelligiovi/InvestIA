@@ -308,7 +308,7 @@ test("HTTP workflow persists operator decisions and only runs the approved actio
   assert.match(report.body, /rejected/);
 });
 
-test("FaceCheck acceptance and Decodo token updates wake eligible scrapes without claiming rejected matches", async (t) => {
+test("FaceCheck acceptance and Decodo token updates wake eligible scrapes with no grant renewal", async (t) => {
   const store = new MemoryStore();
   const seen: unknown[] = [];
   let settings = { token: undefined as string | undefined, apiMode: "web_data" as DecodoApiMode };
@@ -343,17 +343,22 @@ test("FaceCheck acceptance and Decodo token updates wake eligible scrapes withou
   });
   t.after(async () => { await runner.stop(); await server.close(); });
   const photo = { kind: "photo" as const, value: "https://lh3.googleusercontent.com/profile-photo" };
-  const seedCase = async (url: string) => {
+  const seedCase = async (url: string, preDecodo = false) => {
     const created = await server.inject({ method: "POST", url: "/investigations" });
     assert.equal(created.statusCode, 201);
     const investigation = created.json<Investigation>();
     const path = `/investigations/${investigation.id}`;
     assert.equal((await server.inject({ method: "POST", url: `${path}/authorization`, payload: { granted: true, reason: "Authorize the enabled tools" } })).statusCode, 200);
-    await store.transact(investigation.id, (current) => ({ next: { ...current, revision: current.revision + 1, evidence: [{
-      id: "match", actionId: "facecheck", seed: photo, provider: "FaceCheck", status: "registered", sourceId: "facecheck:photo", recordedAt: current.createdAt,
-      finding: { target: photo, upstreamStatus: "Found", url, category: "Face match", reason: "Candidate", extra: {}, media: { thumbnail: "data:image/webp;base64,YWJj" } },
-    }] }, result: undefined }));
+    const authorization = await store.transact(investigation.id, (current) => {
+      const grant = current.authorization!;
+      const authorization = preDecodo ? { ...grant, catalogScopes: grant.catalogScopes!.filter((id) => id !== "decodo.url.v1") } : grant;
+      return { next: { ...current, revision: current.revision + 1, authorization, evidence: [{
+        id: "match", actionId: "facecheck", seed: photo, provider: "FaceCheck", status: "registered", sourceId: "facecheck:photo", recordedAt: current.createdAt,
+        finding: { target: photo, upstreamStatus: "Found", url, category: "Face match", reason: "Candidate", extra: {}, media: { thumbnail: "data:image/webp;base64,YWJj" } },
+      }] }, result: authorization };
+    });
     return {
+      authorization,
       decide: (status: string) => server.inject({ method: "POST", url: `${path}/evidence/match/validation`, payload: { status, reason: "Reviewed this match" } }),
       run: () => server.inject({ method: "POST", url: `${path}/actions/run` }),
       load: async () => (await server.inject({ method: "GET", url: path })).json<Investigation>(),
@@ -361,7 +366,7 @@ test("FaceCheck acceptance and Decodo token updates wake eligible scrapes withou
   };
   const approvedUrl = "https://www.linkedin.com/in/example-profile";
   const disputedUrl = "https://example.org/profile";
-  const approved = await seedCase(approvedUrl);
+  const approved = await seedCase(approvedUrl, true);
   const disputed = await seedCase(disputedUrl);
   for (const [entry, url] of [[approved, approvedUrl], [disputed, disputedUrl]] as const) {
     const decision = await entry.decide("accepted");
@@ -390,6 +395,8 @@ test("FaceCheck acceptance and Decodo token updates wake eligible scrapes withou
   assert.deepEqual(blocked.json(), { action: null });
   assert.deepEqual(await disputed.load(), rejected);
   const completed = await approved.load();
+  assert.deepEqual(completed.authorization, approved.authorization);
+  assert.equal(completed.audit.filter(({ kind }) => kind === "authorization_changed").length, 1);
   assert.equal(completed.actions[0]?.status, "succeeded");
   assert.deepEqual(completed.evidence.slice(1).map(({ sourceId, seed, finding }) => [sourceId, seed, finding?.target, finding?.extra.content]),
     [["decodo:url", { kind: "url", value: approvedUrl }, { kind: "url", value: approvedUrl }, "Offline excerpt"]]);

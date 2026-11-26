@@ -57,7 +57,7 @@ export interface ActionApproval {
   readonly operator: "local-operator";
 }
 
-/** Catalog tools that run only under an explicit, per-tool consent scope. */
+/** Catalog tools that require an active scoped investigation grant. */
 export type ScopedCatalogId = "user-scanner.email.v1" | "gravatar.email.v1" | "maigret.username.v1" | "ghunt.email.v1" | "facecheck.photo.v1" | "decodo.url.v1";
 export const SCOPED_CATALOG_IDS: readonly ScopedCatalogId[] = Object.freeze([
   "user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1", "decodo.url.v1",
@@ -84,9 +84,9 @@ export function isScopedCatalogId(value: unknown): value is ScopedCatalogId {
 }
 
 export interface AuthorizationRecord {
-  /** Missing on legacy grants; those never authorize the broader scanner command. */
+  /** Single-scope marker retained for compatibility with older scoped grants. */
   readonly catalogScope?: "user-scanner.email.v1";
-  /** Every tool this grant consents to; missing on single-scope and legacy grants. */
+  /** Scoped catalog recorded at grant time, not a per-tool allowlist. */
   readonly catalogScopes?: readonly ScopedCatalogId[];
   readonly granted: boolean;
   readonly at: string;
@@ -95,14 +95,14 @@ export interface AuthorizationRecord {
 }
 
 /**
- * A grant authorizes a scoped tool only when it names that tool; grants never broaden to tools
- * added later. Historical GitHub actions keep their original unscoped gate.
+ * An active grant with a recorded scope covers every active scoped tool, including tools added later.
+ * Unknown tools are never covered. Historical GitHub actions still require only an active grant.
  */
 export function authorizationCovers(authorization: AuthorizationRecord | undefined, catalogId: string): boolean {
   if (authorization?.granted !== true) return false;
   if (catalogId === LEGACY_CATALOG_ID) return true;
   if (!isScopedCatalogId(catalogId)) return false;
-  return authorization.catalogScopes?.includes(catalogId) === true || authorization.catalogScope === catalogId;
+  return (Array.isArray(authorization.catalogScopes) && authorization.catalogScopes.length > 0) || authorization.catalogScope !== undefined;
 }
 
 export interface GitHubActionSpec {

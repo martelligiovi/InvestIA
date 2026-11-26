@@ -22,23 +22,37 @@ function claimed(spec: GitHubCatalogAction["spec"]): ActionClaim["action"] {
 
 const scannerSpec = { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: { kind: "email", value: "person@example.org" } } as const;
 
-test("authorization covers a tool only through an explicit scope", () => {
-  const current: AuthorizationRecord = { ...base, granted: true, catalogScopes: ["user-scanner.email.v1"] };
-  const singleScope: AuthorizationRecord = { ...base, granted: true, catalogScope: "user-scanner.email.v1" };
+const historicalGrants: Readonly<Record<string, Partial<AuthorizationRecord>>> = {
+  "pre-Decodo": { catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1"] },
+  "pre-FaceCheck": { catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"] },
+  "pre-GHunt": { catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"] },
+  "pre-Maigret": { catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] },
+  "single-scope": { catalogScope: "user-scanner.email.v1" },
+  "single-scope with an empty scope list": { catalogScope: "user-scanner.email.v1", catalogScopes: [] },
+};
+
+for (const [label, scopes] of Object.entries(historicalGrants)) {
+  test(`a ${label} grant covers every active scoped tool without renewal`, () => {
+    const authorization = { ...base, ...scopes, granted: true };
+    for (const catalogId of SCOPED_CATALOG_IDS) {
+      assert.equal(authorizationCovers(authorization, catalogId), true, catalogId);
+    }
+    assert.equal(authorizationCovers(authorization, "unknown.tool.v1"), false);
+  });
+}
+
+test("scoped tools fail closed without a granted scope and historical GitHub keeps its original gate", () => {
   const unscoped: AuthorizationRecord = { ...base, granted: true };
-  const emptyScopes: AuthorizationRecord = { ...base, granted: true, catalogScopes: [] };
-  const revoked: AuthorizationRecord = { ...base, granted: false, catalogScopes: ["user-scanner.email.v1"] };
-  assert.equal(authorizationCovers(current, "user-scanner.email.v1"), true);
-  assert.equal(authorizationCovers(singleScope, "user-scanner.email.v1"), true, "single-scope grants stay valid");
-  assert.equal(authorizationCovers(unscoped, "user-scanner.email.v1"), false, "legacy grants never broaden");
-  assert.equal(authorizationCovers(emptyScopes, "user-scanner.email.v1"), false);
-  assert.equal(authorizationCovers(revoked, "user-scanner.email.v1"), false);
-  assert.equal(authorizationCovers(undefined, "user-scanner.email.v1"), false);
-  assert.equal(authorizationCovers(unscoped, "github.email-registration.v1"), true, "historical actions keep their gate");
-  assert.equal(authorizationCovers(current, "unknown.tool.v1"), false);
-  assert.equal(authorizationCovers(current, "gravatar.email.v1"), false, "a user-scanner grant never covers Gravatar");
-  assert.equal(authorizationCovers(singleScope, "gravatar.email.v1"), false);
-  assert.equal(authorizationCovers({ ...current, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] }, "gravatar.email.v1"), true);
+  const emptyScopes: AuthorizationRecord = { ...unscoped, catalogScopes: [] };
+  const revoked: AuthorizationRecord = { ...base, granted: false, catalogScopes: SCOPED_CATALOG_IDS };
+  for (const authorization of [undefined, revoked, emptyScopes, unscoped]) {
+    for (const catalogId of SCOPED_CATALOG_IDS) {
+      assert.equal(authorizationCovers(authorization, catalogId), false, catalogId);
+    }
+  }
+  assert.equal(authorizationCovers(unscoped, "github.email-registration.v1"), true);
+  assert.equal(authorizationCovers(revoked, "github.email-registration.v1"), false);
+  assert.equal(authorizationCovers(undefined, "github.email-registration.v1"), false);
 });
 
 test("the scoped catalog lists every consentable tool and its input kind", () => {
@@ -46,11 +60,6 @@ test("the scoped catalog lists every consentable tool and its input kind", () =>
   assert.deepEqual(CATALOG_INPUT_KINDS, {
     "user-scanner.email.v1": "email", "gravatar.email.v1": "email", "maigret.username.v1": "username", "ghunt.email.v1": "email", "facecheck.photo.v1": "photo", "decodo.url.v1": "url",
   });
-  const beforeDecodo: AuthorizationRecord = { ...base, granted: true, catalogScopes: SCOPED_CATALOG_IDS.filter((id) => id !== "decodo.url.v1") };
-  assert.equal(authorizationCovers(beforeDecodo, "decodo.url.v1"), false);
-  assert.equal(authorizationCovers({ ...beforeDecodo, catalogScopes: SCOPED_CATALOG_IDS }, "decodo.url.v1"), true);
-  const scannerAndGravatar: AuthorizationRecord = { ...base, granted: true, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] };
-  assert.equal(authorizationCovers(scannerAndGravatar, "maigret.username.v1"), false, "earlier grants never cover Maigret");
 });
 
 test("catalog executor routes username actions to a username box", async () => {
