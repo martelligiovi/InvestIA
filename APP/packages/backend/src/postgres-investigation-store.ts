@@ -384,7 +384,8 @@ export class PostgresInvestigationStore implements InvestigationStore {
       const proposedEvents: (typeof input.auditEvent)[] = [];
       const actions = current.actions.map((candidate) => {
         if (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.status !== "queued" ||
-          candidate.queuedByCatalog !== true || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) return candidate;
+          candidate.queuedByCatalog !== true || candidate.sourceSeedId !== undefined || candidate.sourceActionId !== undefined ||
+          candidate.approval !== undefined || candidate.rerun !== undefined) return candidate;
         const scannerIds = new Set(current.actions.filter((scanner) => scanner.spec.catalogId === "user-scanner.email.v1" &&
           scanner.spec.seed.value === candidate.spec.seed.value && scanner.status === "succeeded").map((scanner) => scanner.id));
         if (scannerIds.size === 0) return candidate;
@@ -402,7 +403,7 @@ export class PostgresInvestigationStore implements InvestigationStore {
       // Unlinked catalog Gravatar entries still waiting for their scanner are never dispatched.
       const action = actions.find((candidate) => candidate.status === "queued" && !rerunDescendants.has(candidate.id) &&
         (candidate.queuedByCatalog === true || candidate.approval !== undefined) &&
-        (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) &&
+        (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.sourceSeedId !== undefined || candidate.approval !== undefined || candidate.rerun !== undefined) &&
         !(input.deferredCatalogIds ?? []).includes(candidate.spec.catalogId) &&
         authorizationCovers(current.authorization, candidate.spec.catalogId) &&
         isActionEligibleByParentValidation(current, candidate));
@@ -472,19 +473,23 @@ export class PostgresInvestigationStore implements InvestigationStore {
         const existing = actions[existingIndex]!;
         // Convert only an unclaimed legacy catalog sibling; never rewrite completed or human-approved work.
         if (rerun !== undefined || existing.spec.catalogId !== "gravatar.email.v1" || existing.status !== "queued" ||
-          existing.queuedByCatalog !== true || existing.sourceSeedId !== undefined || existing.approval !== undefined) continue;
+          existing.queuedByCatalog !== true || existing.sourceSeedId !== undefined || existing.sourceActionId !== undefined ||
+          existing.approval !== undefined || existing.rerun !== undefined) continue;
         const { queuedByCatalog: _legacyEligibility, ...legacy } = existing;
         actions[existingIndex] = { ...legacy, status: followUp.action.status, proposalReason: followUp.action.proposalReason,
           ...(followUp.action.sourceSeedId === undefined ? {} : { sourceSeedId: followUp.action.sourceSeedId }),
           ...(followUp.action.queuedByCatalog === true ? { queuedByCatalog: true as const } : {}) };
         followUpEvents.push({ ...followUp.auditEvent, actionId: existing.id });
       }
+      const auditEvent = rerun === undefined ? input.auditEvent : {
+        ...input.auditEvent, kind: "action_rerun_succeeded" as const, reason: "Replacement succeeded; prior results and dependent branches were replaced.",
+      };
       const next = revise(basis, input.completedAt, {
         actions,
         evidence: input.result.kind === "success"
           ? [...basis.evidence, ...input.result.evidence]
           : basis.evidence,
-        audit: [...basis.audit, { ...input.auditEvent, actionId: input.actionId }, ...followUpEvents],
+        audit: [...basis.audit, { ...auditEvent, actionId: input.actionId }, ...followUpEvents],
       });
       return { next, result: next };
     });

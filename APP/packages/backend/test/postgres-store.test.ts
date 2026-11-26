@@ -122,12 +122,12 @@ class FakeClient implements PgClientLike {
 }
 
 /** Older workflow tests pin a user-scanner-only queue; Gravatar tests pass the full catalog. */
-function makeStoreHarness(seedCatalog: readonly ScopedCatalogId[] = ["user-scanner.email.v1"]) {
+function makeStoreHarness(seedCatalog: readonly ScopedCatalogId[] = ["user-scanner.email.v1"],
+  executor: InvestigationExecutor = { id: "not-called", async execute() { return []; } }) {
   const database = new FakePostgres();
   const store = new PostgresInvestigationStore(database);
   let sequence = 0;
   let ticks = 0;
-  const executor: InvestigationExecutor = { id: "not-called", async execute() { return []; } };
   const service = createInvestigationService({
     store,
     executor,
@@ -142,8 +142,8 @@ function auditEvent(id: string, kind: "action_claimed" | "action_succeeded" | "a
   return { id, at: "2025-03-01T00:01:00.000Z", actor: "system", kind, reason: "offline test" };
 }
 
-async function rerunFixture(childStatus: "queued" | "claimed" = "queued") {
-  const { store, service } = makeStoreHarness(["user-scanner.email.v1", "gravatar.email.v1"]);
+async function rerunFixture(childStatus: "queued" | "claimed" = "queued", executor?: InvestigationExecutor) {
+  const { store, service } = makeStoreHarness(["user-scanner.email.v1", "gravatar.email.v1"], executor);
   const at = "2025-03-01T00:00:00.000Z";
   const seed = { kind: "email", value: "owner@example.org" } as const;
   const run = {
@@ -185,6 +185,7 @@ test("a rerun keeps its previous results until successful completion commits the
   assert.equal(result.revision, pending.revision + 2);
   assert.deepEqual(result.actions.map(({ id, status }) => [id, status]), [["root", "succeeded"], ["sibling", "succeeded"], ["new-child", "queued"]]);
   assert.deepEqual(result.evidence.map(({ id }) => id), ["sibling-result", "replacement"]);
+  assert.equal(result.audit.find(({ id }) => id === "success")?.kind, "action_rerun_succeeded");
   assert.deepEqual(await store.get(created.id), result);
 });
 
@@ -214,6 +215,59 @@ test("prevents a rerun from overlapping an already-claimed child and leaves the 
   const before = await store.get(created.id);
   await assert.rejects(service.requestActionRerun(created.id, run.id, created.revision), { name: "ActionRerunConflictError" });
   assert.deepEqual(await store.get(created.id), before);
+});
+
+test("ordinary scanner proposals cannot overwrite a pending rerun", async () => {
+  const { store, service, created, run, claimRequest } = await rerunFixture();
+  const pending = await service.requestActionRerun(created.id, run.id, created.revision);
+  await assert.rejects(service.proposeUserScannerAction(created.id, run.spec.seed.value, "Other tab"),
+    { message: "A scanner catalog action already exists for this email seed" });
+  assert.deepEqual(await store.get(created.id), pending);
+  assert.equal((await store.claimNextAction(claimRequest))?.action.id, run.id);
+});
+
+test("legacy Gravatar reconciliation cannot convert a pending rerun into a proposal", async () => {
+  const { store, service, created, claimRequest } = await rerunFixture();
+  const child = { ...created.actions[0]!, status: "succeeded" as const };
+  delete child.sourceSeedId;
+  await store.transact(created.id, (current) => {
+    const next = { ...current, revision: current.revision + 1, actions: [child, ...current.actions.slice(1)] };
+    return { next, result: next };
+  });
+  const pending = await service.requestActionRerun(created.id, child.id, created.revision + 1);
+  const claim = await store.claimNextAction(claimRequest);
+  assert.equal(claim?.action.id, child.id);
+  assert.deepEqual(claim?.action.rerun, pending.actions[0]!.rerun);
+  assert.deepEqual((await store.get(created.id))?.evidence, pending.evidence);
+});
+
+test("a result consisting entirely of scanner errors cannot replace the previous branch", async () => {
+  for (const status of ["error", "not_registered"] as const) {
+    const executor: InvestigationExecutor = { id: "fixture", async execute(action) {
+      return [{ kind: "scanner_finding", provider: "Fixture", seed: action.spec.seed, status,
+        finding: { target: action.spec.seed, upstreamStatus: status === "error" ? "Error" : "Not Registered",
+          url: "", category: "", reason: "", extra: {}, media: {} } }];
+    } };
+    const { store, service, created, run } = await rerunFixture("queued", executor);
+    const queued = await service.requestActionRerun(created.id, run.id, created.revision);
+    const completed = await service.executeNextAction(created.id);
+    const saved = (await store.get(created.id))!;
+    assert.equal(completed?.id, run.id);
+    assert.equal(completed?.status, "succeeded");
+    assert.equal(saved.revision, queued.revision + 2);
+    assert.equal(completed?.lastRerunFailed, status === "error" ? true : undefined);
+    assert.deepEqual(saved.evidence.map(({ id }) => id), status === "error" ? ["old", "sibling-result"] : ["sibling-result"]);
+    assert.equal(saved.actions.some(({ id }) => id === "child"), status === "error");
+    assert.equal(saved.audit.some(({ kind }) => kind === "action_rerun_succeeded"), status === "not_registered");
+  }
+});
+
+test("a queued rerun cannot claim work after its authorization is revoked", async () => {
+  const { store, service, created, run, claimRequest } = await rerunFixture();
+  await service.requestActionRerun(created.id, run.id, created.revision);
+  const revoked = await service.authorize(created.id, false, "Revoked before dispatch");
+  assert.equal(await store.claimNextAction(claimRequest), undefined);
+  assert.deepEqual(await store.get(created.id), revoked);
 });
 
 test("GHunt persists, waits when deferred, and requires a scope that names it", async () => {

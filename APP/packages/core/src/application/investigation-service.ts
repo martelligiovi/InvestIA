@@ -350,7 +350,7 @@ export class InvestigationService {
       const existing = current.actions.find((candidate) => candidate.spec.seed.value === seed.value);
       // Compatibility: an explicit historical proposal request may replace an unclaimed
       // catalog queue entry with the old proposed/approval workflow. Never alter claimed work.
-      if (existing !== undefined && !(existing.status === "queued" && existing.queuedByCatalog === true && existing.approval === undefined)) {
+      if (existing !== undefined && !(existing.status === "queued" && existing.queuedByCatalog === true && existing.approval === undefined && existing.rerun === undefined)) {
         throw new Error("A GitHub catalog action already exists for this email seed");
       }
       const proposed = existing === undefined ? action : { ...action, id: existing.id };
@@ -376,7 +376,7 @@ export class InvestigationService {
         throw new Error("Scanner actions require an email seed already recorded in this investigation");
       }
       const existing = current.actions.find((candidate) => candidate.spec.catalogId === CATALOG_ID && candidate.spec.seed.value === seed.value);
-      if (existing && !(existing.status === "queued" && existing.queuedByCatalog && !existing.approval)) {
+      if (existing && !(existing.status === "queued" && existing.queuedByCatalog && !existing.approval && !existing.rerun)) {
         throw new Error("A scanner catalog action already exists for this email seed");
       }
       const proposed = existing ? { ...action, id: existing.id } : action;
@@ -579,6 +579,7 @@ export class InvestigationService {
     const sourceId = this.dependencies.executor.sourceIdFor?.(claim.action) ?? this.dependencies.executor.id;
     const evidence: EvidenceRecord[] = [];
     let unsupportedObservationCount = 0;
+    let confirmedObservation = false;
     for (const observation of observations as readonly unknown[]) {
       const scanner = isScannerObservation(observation);
       const registration = isRegistrationObservation(observation) && observation.provider === "github";
@@ -592,12 +593,16 @@ export class InvestigationService {
         continue;
       }
       const accepted = observation as RegistrationObservation | ScannerObservation;
-      // Valid negative/uncertain results are not findings and do not consume evidence IDs.
-      if (accepted.status !== "registered") continue;
+      // A confirmed negative result can replace prior results; an error or skipped check cannot.
+      if (accepted.status !== "registered") {
+        confirmedObservation ||= accepted.status === "not_registered";
+        continue;
+      }
       if (scanner && !["Registered", "Found"].includes((accepted as ScannerObservation).finding.upstreamStatus)) {
         unsupportedObservationCount++;
         continue;
       }
+      confirmedObservation = true;
       evidence.push({
         id: newId(this.dependencies.createId, "evidence"),
         actionId: claim.action.id,
@@ -608,6 +613,13 @@ export class InvestigationService {
         recordedAt: completedAt,
         ...(scanner ? { finding: structuredClone((accepted as ScannerObservation).finding) } : {}),
       });
+    }
+    if (claim.action.rerun !== undefined && observations.length > 0 && !confirmedObservation) {
+      const failed = await this.dependencies.store.completeAction(this.completion(
+        claim, id, completedAt, { kind: "failure", error: "The replacement returned no confirmed results." },
+        "Replacement execution returned only inconclusive or failed checks.",
+      ));
+      return getAction(failed, claim.action.id);
     }
     const scanned = claim.action.spec.seed as EmailSeed;
     const chainsGravatar = claim.action.spec.catalogId === CATALOG_ID && this.seedCatalog.includes("gravatar.email.v1");

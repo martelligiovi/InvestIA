@@ -43,6 +43,7 @@ export type AuditKind =
   | "action_proposed"
   | "action_queued"
   | "action_rerun_requested"
+  | "action_rerun_succeeded"
   | "authorization_changed"
   | "action_approved"
   | "paused"
