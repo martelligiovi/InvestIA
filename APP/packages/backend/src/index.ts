@@ -1,4 +1,8 @@
-export { createBackendApp, type BackendAppAdapters } from "./api.ts";
+export { createBackendApp, type AiReportAdapters, type BackendAppAdapters } from "./api.ts";
+export {
+  PostgresEvidenceNormalizationStore,
+  type EvidenceNormalizationStore,
+} from "./evidence-normalization-store.ts";
 export { loadBackendConfig, type BackendConfig } from "./config.ts";
 export { runBackend, startBackend, type BackendStartOptions } from "./main.ts";
 export { createInvestigationRunGraph, type InvestigationActionRunner } from "./investigation-run-graph.ts";

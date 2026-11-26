@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { latestValidationStatus, type Investigation } from "@investia/core";
+import { latestValidationStatus, type EvidenceAiNormalization, type Investigation } from "@investia/core";
 import { ApiError, InvestigationApiClient } from "../api/client";
 import { actionDisplayState } from "./workspace-status";
 
@@ -23,10 +23,14 @@ export interface WorkspaceController {
   readonly reportRevision: number | null;
   readonly reportError: string;
   readonly reportLoading: boolean;
+  readonly normalizations: Readonly<Record<string, EvidenceAiNormalization>>;
+  readonly normalizingEvidenceId: string | null;
+  readonly normalizationErrors: Readonly<Record<string, string>>;
   readonly refresh: () => Promise<boolean>;
   readonly retryLoad: () => Promise<void>;
   readonly mutate: (operation: (api: InvestigationApiClient, id: string) => Promise<unknown>, dispatch?: boolean) => Promise<boolean>;
   readonly queueDecodo: (evidenceIds: readonly string[]) => Promise<boolean>;
+  readonly normalizeEvidence: (evidenceId: string) => Promise<boolean>;
   readonly loadReport: () => Promise<void>;
   readonly loadAiReport: () => Promise<void>;
 }
@@ -39,6 +43,13 @@ const AI_REPORT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_PROVIDER_UNAVAILABLE: "NVIDIA Build no respondió o no devolvió un informe. Probá de nuevo.",
   AI_PROVIDER_TIMEOUT: "El modelo no empezó a responder a tiempo; su endpoint gratuito puede estar saturado. Elegí otro modelo en Ajustes de IA o probá más tarde.",
   AI_PROVIDER_TRUNCATED: "El modelo agotó el máximo de tokens antes de escribir el informe. Subí el máximo de tokens o bajá el esfuerzo de razonamiento en Ajustes de IA.",
+};
+
+const AI_NORMALIZATION_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  ...AI_REPORT_ERROR_MESSAGES,
+  AI_PROVIDER_UNAVAILABLE: "NVIDIA Build no respondió o no devolvió una normalización. Probá de nuevo.",
+  AI_PROVIDER_TRUNCATED: "El modelo agotó el máximo de tokens antes de completar la normalización. Subí el máximo de tokens o bajá el esfuerzo de razonamiento en Ajustes de IA.",
+  AI_PROVIDER_INVALID_RESPONSE: "NVIDIA Build devolvió una respuesta que no es JSON válido. Probá otro modelo o intentá de nuevo.",
 };
 
 function messageFor(error: unknown): string {
@@ -54,6 +65,11 @@ function reportErrorFor(kind: ReportKind, error: unknown): string {
   if (kind === "factual") return `No se pudo obtener el informe: ${messageFor(error)}`;
   const known = error instanceof ApiError ? AI_REPORT_ERROR_MESSAGES[error.code] : undefined;
   return known ?? `No se pudo generar el informe con IA: ${messageFor(error)}`;
+}
+
+function normalizationErrorFor(error: unknown): string {
+  const known = error instanceof ApiError ? AI_NORMALIZATION_ERROR_MESSAGES[error.code] : undefined;
+  return known ?? `No se pudo normalizar la página con IA: ${messageFor(error)}`;
 }
 
 function useTokenConfigured(enabled: boolean, read: () => Promise<{ readonly tokenConfigured: boolean }>): boolean | null {
@@ -91,6 +107,9 @@ export function useWorkspaceController(id: string): WorkspaceController {
   const [reportRevision, setReportRevision] = useState<number | null>(null);
   const [reportError, setReportError] = useState("");
   const [reportLoading, setReportLoading] = useState(false);
+  const [normalizations, setNormalizations] = useState<Readonly<Record<string, EvidenceAiNormalization>>>({});
+  const [normalizingEvidenceId, setNormalizingEvidenceId] = useState<string | null>(null);
+  const [normalizationErrors, setNormalizationErrors] = useState<Readonly<Record<string, string>>>({});
   const lock = useRef(false);
   const currentId = useRef(id);
   const generation = useRef(0);
@@ -142,6 +161,9 @@ export function useWorkspaceController(id: string): WorkspaceController {
     setReportError("");
     setReportLoading(false);
     setReportLoadingKind(null);
+    setNormalizations({});
+    setNormalizingEvidenceId(null);
+    setNormalizationErrors({});
     void readLatest(activeGeneration).catch((error: unknown) => {
       if (!isCurrent(id, activeGeneration)) return;
       if (isNotFound(error)) {
@@ -287,6 +309,34 @@ export function useWorkspaceController(id: string): WorkspaceController {
     });
   }, [isCurrent, mutate]);
 
+  const normalizeEvidence = useCallback(async (evidenceId: string): Promise<boolean> => {
+    const activeGeneration = generation.current;
+    if (investigationId !== id || stale || !takeLock(activeGeneration)) return false;
+    setNormalizationErrors((previous) => {
+      if (!(evidenceId in previous)) return previous;
+      const { [evidenceId]: _cleared, ...rest } = previous;
+      return rest;
+    });
+    setNormalizingEvidenceId(evidenceId);
+    try {
+      const result = await api.normalizeEvidence(id, evidenceId);
+      if (!isCurrent(id, activeGeneration)) return false;
+      setNormalizations((previous) => ({ ...previous, [result.evidenceId]: result }));
+      return true;
+    } catch (error) {
+      if (isCurrent(id, activeGeneration)) {
+        const message = normalizationErrorFor(error);
+        setNormalizationErrors((previous) => ({ ...previous, [evidenceId]: message }));
+      }
+      return false;
+    } finally {
+      if (isCurrent(id, activeGeneration)) {
+        setNormalizingEvidenceId(null);
+      }
+      releaseLock(activeGeneration);
+    }
+  }, [api, id, investigationId, isCurrent, releaseLock, stale, takeLock]);
+
   const fetchReport = useCallback(async (kind: ReportKind) => {
     const activeGeneration = generation.current;
     if (investigationId !== id || stale || !takeLock(activeGeneration)) return;
@@ -322,6 +372,36 @@ export function useWorkspaceController(id: string): WorkspaceController {
 
   const visibleInvestigation = investigationId === id ? investigation : null;
   const visiblePhase = visibleInvestigation === null && phase === "ready" ? "loading" : phase;
+  const decodoEvidenceKey = useMemo(() => {
+    if (visibleInvestigation === null) return "";
+    return visibleInvestigation.evidence
+      .filter((evidence) => evidence.sourceId === "decodo:url")
+      .map((evidence) => evidence.id)
+      .join("\0");
+  }, [visibleInvestigation]);
+
+  useEffect(() => {
+    if (decodoEvidenceKey === "") return;
+    let active = true;
+    const activeGeneration = generation.current;
+    void api.getNormalizations(id).then(
+      (items) => {
+        if (!active || !isCurrent(id, activeGeneration)) return;
+        setNormalizations((previous) => {
+          const next: Record<string, EvidenceAiNormalization> = { ...previous };
+          for (const item of items) {
+            next[item.evidenceId] = item;
+          }
+          return next;
+        });
+      },
+      () => {
+        // Leave normalizations empty if unstubbed or transiently unreachable so factual view stays usable.
+      },
+    );
+    return () => { active = false; };
+  }, [api, decodoEvidenceKey, id, isCurrent]);
+
   const hasQueuedFacecheck = visibleInvestigation?.actions.some((action) => action.status === "queued" && action.spec.catalogId === "facecheck.photo.v1") === true;
   const hasQueuedDecodo = visibleInvestigation?.actions.some((action) => action.status === "queued" && action.spec.catalogId === "decodo.url.v1") === true;
   const hasAcceptedFacecheck = visibleInvestigation?.evidence.some((evidence) => evidence.sourceId === "facecheck:photo" &&
@@ -366,10 +446,14 @@ export function useWorkspaceController(id: string): WorkspaceController {
     reportRevision,
     reportError,
     reportLoading,
+    normalizations: investigationId === id ? normalizations : {},
+    normalizingEvidenceId: investigationId === id ? normalizingEvidenceId : null,
+    normalizationErrors: investigationId === id ? normalizationErrors : {},
     refresh,
     retryLoad,
     mutate,
     queueDecodo,
+    normalizeEvidence,
     loadReport,
     loadAiReport,
   };

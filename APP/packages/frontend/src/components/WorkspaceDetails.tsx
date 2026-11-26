@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { authorizationCovers, findingSeedNodeId, isActionEligibleByParentValidation, isSafePublicHttpUrl, latestValidationStatus, type EvidenceRecord, type ScannerFinding, type Investigation, type ValidationStatus } from "@investia/core";
+import { authorizationCovers, findingSeedNodeId, isActionEligibleByParentValidation, isSafePublicHttpUrl, latestValidationStatus, type EvidenceAiNormalization, type EvidenceRecord, type ScannerFinding, type Investigation, type ValidationStatus } from "@investia/core";
 import { actionTitle, decodoPageTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 import { facecheckReviewState } from "./FacecheckReview";
@@ -11,9 +11,13 @@ export interface WorkspaceDetailsProps {
   readonly ghuntConnected?: boolean | null;
   readonly facecheckConfigured?: boolean | null;
   readonly decodoConfigured?: boolean | null;
+  readonly normalization?: EvidenceAiNormalization;
+  readonly normalizing?: boolean;
+  readonly normalizationError?: string;
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
   readonly onQueueDecodo?: (evidenceIds: readonly string[]) => Promise<boolean>;
+  readonly onNormalizeEvidence?: (evidenceId: string) => Promise<boolean>;
   readonly onApproveGravatar?: (actionId: string, reason: string) => Promise<boolean>;
   /** Opens the card review for the candidates of one FaceCheck search. */
   readonly onReviewFacecheck?: (actionId: string) => void;
@@ -101,6 +105,132 @@ function DecodoPageDetails({ finding }: { readonly finding: ScannerFinding }) {
         <h4>Enlaces públicos extraídos</h4>
         <ul className="decodo-page-links">{publicLinks.map((url) => <li key={url}><SafeLink value={url} publicOnly /></li>)}</ul>
       </>}
+    </section>
+  );
+}
+
+const NORMALIZED_PRIMARY_LISTS = [
+  ["Handles", "handles"],
+  ["Roles / ocupaciones", "rolesOrOccupations"],
+  ["Organizaciones", "organizations"],
+  ["Educación", "education"],
+  ["Ubicaciones mencionadas", "locationsMentioned"],
+  ["Temas e intereses", "topicsOrInterests"],
+  ["Hechos destacados", "notableFacts"],
+] as const;
+
+function NormalizationAlert({ error }: { readonly error: string }) {
+  const settingsLabel = "Ajustes de IA";
+  const index = error.indexOf(settingsLabel);
+  if (index >= 0) {
+    return (
+      <p className="workspace-alert" role="alert">
+        {error.slice(0, index)}
+        <a href="#/ajustes">{settingsLabel}</a>
+        {error.slice(index + settingsLabel.length)}
+      </p>
+    );
+  }
+  if (error.includes("AI_NOT_CONFIGURED")) {
+    return (
+      <p className="workspace-alert" role="alert">
+        {error} <a href="#/ajustes">{settingsLabel}</a>
+      </p>
+    );
+  }
+  return <p className="workspace-alert" role="alert">{error}</p>;
+}
+
+function DecodoAiNormalizationSection({
+  evidenceId,
+  disabled,
+  normalization,
+  normalizing = false,
+  normalizationError = "",
+  onNormalize,
+}: {
+  readonly evidenceId: string;
+  readonly disabled: boolean;
+  readonly normalization?: EvidenceAiNormalization;
+  readonly normalizing?: boolean;
+  readonly normalizationError?: string;
+  readonly onNormalize?: (evidenceId: string) => Promise<boolean>;
+}) {
+  const buttonLabel = normalizing
+    ? "Normalizando con IA…"
+    : normalization !== undefined
+      ? "Volver a normalizar con IA"
+      : "Normalizar con IA";
+  const data = normalization?.data;
+  return (
+    <section className="detail-fact decodo-ai-normalization" aria-labelledby="decodo-ai-normalization-heading">
+      <h3 id="decodo-ai-normalization-heading">Resumen estructurado (asistido por IA)</h3>
+      <p className="detail-note">
+        Vista derivada generada a pedido con NVIDIA Build a partir de la página guardada. No modifica ni reemplaza la evidencia factual recopilada por Decodo.
+      </p>
+      <div className="decodo-ai-actions">
+        <button
+          type="button"
+          className="workspace-button"
+          disabled={disabled || normalizing || onNormalize === undefined}
+          onClick={() => { if (onNormalize !== undefined) void onNormalize(evidenceId); }}
+        >
+          {buttonLabel}
+        </button>
+      </div>
+      {normalizationError !== "" && <NormalizationAlert error={normalizationError} />}
+      {normalization !== undefined && data !== undefined && (
+        <div className="decodo-ai-summary">
+          <dl className="fact-list">
+            <dt>Modelo</dt><dd className="break-value">{normalization.model}</dd>
+            <dt>Generado</dt><dd>{formatDate(normalization.generatedAt)}</dd>
+            {data.entityName !== undefined && data.entityName !== "" && (
+              <><dt>Entidad</dt><dd className="break-value">{data.entityName}</dd></>
+            )}
+            <dt>Resumen</dt><dd className="break-value">{data.summary}</dd>
+            {NORMALIZED_PRIMARY_LISTS.map(([label, field]) => {
+              const items = data[field];
+              if (items.length === 0) return null;
+              return (
+                <Fragment key={field}>
+                  <dt>{label}</dt>
+                  <dd>
+                    <ul className="decodo-ai-list">
+                      {items.map((item, index) => <li key={`${index}-${item}`} className="break-value">{item}</li>)}
+                    </ul>
+                  </dd>
+                </Fragment>
+              );
+            })}
+            {data.relatedUrls.length > 0 && (
+              <>
+                <dt>Enlaces relacionados</dt>
+                <dd>
+                  <ul className="decodo-ai-list">
+                    {data.relatedUrls.map((url, index) => (
+                      <li key={`${index}-${url}`} className="break-value"><SafeLink value={url} publicOnly /></li>
+                    ))}
+                  </ul>
+                </dd>
+              </>
+            )}
+            {data.limitations.length > 0 && (
+              <>
+                <dt>Limitaciones</dt>
+                <dd>
+                  <ul className="decodo-ai-list">
+                    {data.limitations.map((item, index) => <li key={`${index}-${item}`} className="break-value">{item}</li>)}
+                  </ul>
+                </dd>
+              </>
+            )}
+          </dl>
+          <details className="decodo-ai-json">
+            <summary>Ver JSON estructurado</summary>
+            <pre aria-label="JSON normalizado por IA">{JSON.stringify(data, null, 2)}</pre>
+          </details>
+        </div>
+      )}
     </section>
   );
 }
@@ -193,7 +323,7 @@ function LeafGroupDetails({ node, investigation, disabled, decodoConfigured, onS
   );
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, facecheckConfigured, decodoConfigured, onValidate, onSelectNode, onQueueDecodo, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
+export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, facecheckConfigured, decodoConfigured, normalization, normalizing, normalizationError, onValidate, onSelectNode, onQueueDecodo, onNormalizeEvidence, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
@@ -339,6 +469,16 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                 <p className="detail-note">La validación de abajo corresponde a la observación original completa, no a este campo por separado.</p>
               </section>}
               {decodoFinding !== undefined && <DecodoPageDetails finding={decodoFinding} />}
+              {node.evidence.sourceId === "decodo:url" && (
+                <DecodoAiNormalizationSection
+                  evidenceId={node.evidence.id}
+                  disabled={disabled}
+                  normalization={normalization}
+                  normalizing={normalizing}
+                  normalizationError={normalizationError}
+                  onNormalize={onNormalizeEvidence}
+                />
+              )}
               <section className="detail-fact" aria-labelledby="selected-evidence-heading">
                 <h3 id="selected-evidence-heading">{evidenceHeading(node.evidence)}</h3>
                 <dl className="fact-list">

@@ -81,6 +81,15 @@ export {
 export { usernameProposals, type UsernameProposal } from "./domain/username-proposals.ts";
 export { compileInvestigationReport } from "./application/compile-report.ts";
 export {
+  buildEvidenceNormalizationMessages,
+  decodoSourceContentHash,
+  EVIDENCE_NORMALIZATION_SYSTEM_PROMPT,
+  isValidNormalizedPageData,
+  parseEvidenceNormalization,
+  type EvidenceAiNormalization,
+  type NormalizedPageData,
+} from "./domain/evidence-normalization.ts";
+export {
   AI_MAX_TOKENS_RANGE,
   AI_REASONING_EFFORTS,
   AI_REPORT_SYSTEM_PROMPT,

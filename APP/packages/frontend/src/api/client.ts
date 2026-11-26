@@ -1,5 +1,6 @@
 import type {
   AiReportSettings,
+  EvidenceAiNormalization,
   GitHubCatalogAction,
   Investigation,
   InvestigationSummary,
@@ -168,6 +169,20 @@ export class InvestigationApiClient {
 
   async queueDecodoScrape(id: string, evidenceId: string): Promise<Investigation> {
     return this.post<Investigation>(`/investigations/${pathPart(id)}/evidence/${pathPart(evidenceId)}/decodo`);
+  }
+
+  async getNormalizations(investigationId: string): Promise<readonly EvidenceAiNormalization[]> {
+    const payload = await this.requestJson<unknown>(`/investigations/${pathPart(investigationId)}/normalizations`);
+    if (!isRecord(payload) || !Array.isArray(payload.normalizations)) {
+      throw new ApiError(502, "INVALID_RESPONSE", "Invalid normalizations payload");
+    }
+    return payload.normalizations as readonly EvidenceAiNormalization[];
+  }
+
+  async normalizeEvidence(investigationId: string, evidenceId: string): Promise<EvidenceAiNormalization> {
+    return this.post<EvidenceAiNormalization>(
+      `/investigations/${pathPart(investigationId)}/evidence/${pathPart(evidenceId)}/normalize`,
+    );
   }
 
   async rejectEvidence(id: string, evidenceId: string, reason: string): Promise<Investigation> {

@@ -162,6 +162,74 @@ describe("InvestigationApiClient", () => {
     });
   });
 
+  it("loads stored AI normalizations and rejects malformed payloads", async () => {
+    const normalization = {
+      evidenceId: "page-1",
+      model: "nvidia/nemotron-3.5-super-vl-120b-a12b",
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      sourceContentHash: "a".repeat(64),
+      data: {
+        summary: "Public developer profile.",
+        entityName: "Ana Ejemplo",
+        handles: ["@anaejemplo"],
+        rolesOrOccupations: ["Software Engineer"],
+        organizations: ["InvestIA Labs"],
+        education: [],
+        locationsMentioned: ["Buenos Aires"],
+        topicsOrInterests: ["TypeScript"],
+        notableFacts: ["Maintains open-source packages."],
+        relatedUrls: ["https://github.com/anaejemplo"],
+        limitations: [],
+      },
+    };
+    const { api, calls } = clientWith({ normalizations: [normalization] });
+
+    await expect(api.getNormalizations("case 1")).resolves.toEqual([normalization]);
+    expect(calls[0]?.input).toBe("/investigations/case%201/normalizations");
+    expect(calls[0]?.init?.method).toBeUndefined();
+
+    const { api: malformed } = clientWith({ normalizations: "invalid" });
+    await expect(malformed.getNormalizations("case-1")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 502,
+      code: "INVALID_RESPONSE",
+    });
+  });
+
+  it("requests on-demand evidence normalization with a bodiless POST and surfaces provider errors", async () => {
+    const normalization = {
+      evidenceId: "ev/2",
+      model: "nvidia/nemotron-3.5-super-vl-120b-a12b",
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      sourceContentHash: "b".repeat(64),
+      data: {
+        summary: "Structured page summary.",
+        handles: [],
+        rolesOrOccupations: [],
+        organizations: [],
+        education: [],
+        locationsMentioned: [],
+        topicsOrInterests: [],
+        notableFacts: [],
+        relatedUrls: [],
+        limitations: [],
+      },
+    };
+    const { api, calls } = clientWith(normalization);
+
+    await expect(api.normalizeEvidence("case/1", "ev/2")).resolves.toEqual(normalization);
+    expect(calls[0]?.input).toBe("/investigations/case%2F1/evidence/ev%2F2/normalize");
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.body).toBeUndefined();
+
+    const { api: failing } = clientWith({ error: "AI_PROVIDER_INVALID_RESPONSE", message: "Malformed JSON" }, 502);
+    await expect(failing.normalizeEvidence("case-1", "ev-2")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 502,
+      code: "AI_PROVIDER_INVALID_RESPONSE",
+    });
+  });
+
   it("surfaces typed API errors from the backend JSON envelope", async () => {
     const { api } = clientWith({ error: "NOT_FOUND", message: "Investigation not found" }, 404);
 

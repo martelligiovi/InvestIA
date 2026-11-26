@@ -6,10 +6,12 @@ import {
   composeAiReport,
   compileInvestigationReport,
   countOmittedAiReportFindings,
+  decodoSourceContentHash,
   DEFAULT_AI_REPORT_SETTINGS,
   normalizeAiReportSettings,
   stripModelReasoning,
   findingSeedNodeId,
+  type EvidenceAiNormalization,
   type EvidenceRecord,
   type GitHubCatalogAction,
   type Investigation,
@@ -357,4 +359,197 @@ test("composed report puts the hypothetical narrative first and all the data use
 test("model reasoning blocks are removed from the narrative", () => {
   assert.equal(stripModelReasoning("<think>plan\nsecreto</think>\n\n## Resumen\nTexto"), "## Resumen\nTexto");
   assert.equal(stripModelReasoning("  ## Resumen\nTexto  "), "## Resumen\nTexto");
+});
+
+test("AI report substitutes compact provenance and aiNormalizedPage only when Decodo sourceContentHash matches, leaving factual report untouched", () => {
+  const base = investigation();
+  const urlSeed = { kind: "url" as const, value: "https://example.org/ana-profile" };
+  const decodoFresh: EvidenceRecord = {
+    id: "decodo-fresh",
+    actionId: "action-decodo-1",
+    seed: urlSeed,
+    provider: "Decodo",
+    status: "registered",
+    sourceId: "decodo:url",
+    recordedAt: "2026-11-26T10:00:00.000Z",
+    finding: {
+      target: urlSeed,
+      upstreamStatus: "Found",
+      url: "https://example.org/ana-profile",
+      category: "Web page",
+      reason: "Ana — Sitio personal",
+      media: {},
+      extra: {
+        source: "decodo",
+        api_mode: "web_data",
+        status_code: 200,
+        content_format: "html",
+        content_length: 5500,
+        content_truncated: false,
+        title: "Ana — Sitio personal",
+        description: "Descripción extensa original",
+        preview: "Vista previa extensa original",
+        content: `Contenido crudo extenso: ${"A".repeat(5200)}`,
+        links: "https://github.com/ana\nhttps://example.org/blog",
+        extracted_links_count: 2,
+      },
+    },
+  };
+  const decodoStale: EvidenceRecord = {
+    ...decodoFresh,
+    id: "decodo-stale",
+    finding: {
+      ...decodoFresh.finding!,
+      url: "https://example.org/ana-updated",
+      extra: {
+        ...decodoFresh.finding!.extra,
+        title: "Ana — Página actualizada",
+        content: "Contenido nuevo sin re-normalizar",
+      },
+    },
+  };
+
+  const snapshot: Investigation = {
+    ...base,
+    evidence: [base.evidence[0]!, decodoFresh, decodoStale],
+    validations: [],
+  };
+
+  const freshNorm: EvidenceAiNormalization = {
+    evidenceId: "decodo-fresh",
+    model: "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    generatedAt: "2026-11-26T10:05:00.000Z",
+    sourceContentHash: decodoSourceContentHash(decodoFresh),
+    data: {
+      summary: "Sitio personal público de Ana con enlaces a proyectos.",
+      entityName: "Ana",
+      handles: ["@ana"],
+      rolesOrOccupations: ["Desarrolladora"],
+      organizations: [],
+      education: [],
+      locationsMentioned: [],
+      topicsOrInterests: ["Código abierto"],
+      notableFacts: ["Mantiene repositorios públicos."],
+      relatedUrls: ["https://github.com/ana"],
+      limitations: [],
+    },
+  };
+  const staleNorm: EvidenceAiNormalization = {
+    ...freshNorm,
+    evidenceId: "decodo-stale",
+    sourceContentHash: "0".repeat(64),
+  };
+  const nonDecodoNorm: EvidenceAiNormalization = {
+    ...freshNorm,
+    evidenceId: "evidence-1",
+    sourceContentHash: decodoSourceContentHash(base.evidence[0]!),
+  };
+
+  const normalizations = new Map<string, EvidenceAiNormalization>([
+    [freshNorm.evidenceId, freshNorm],
+    [staleNorm.evidenceId, staleNorm],
+    [nonDecodoNorm.evidenceId, nonDecodoNorm],
+  ]);
+
+  const baselineMessages = buildAiReportMessages(snapshot);
+  const baselineJson = JSON.parse(baselineMessages[1]!.content.slice(baselineMessages[1]!.content.indexOf("```json") + 7, baselineMessages[1]!.content.lastIndexOf("```")));
+  assert.equal(baselineJson.findings[1].metadata.content, decodoFresh.finding!.extra.content);
+  assert.equal(baselineJson.findings[1].aiNormalizedPage, undefined);
+
+  const normalizedMessages = buildAiReportMessages(snapshot, normalizations);
+  const normalizedUser = normalizedMessages[1]!.content;
+  const normalizedJson = JSON.parse(normalizedUser.slice(normalizedUser.indexOf("```json") + 7, normalizedUser.lastIndexOf("```")));
+
+  assert.equal("aiNormalizedPage" in normalizedJson.findings[0], false);
+  assert.deepEqual(normalizedJson.findings[0].metadata, { display_name: "Ana Rock" });
+
+  assert.deepEqual(normalizedJson.findings[1].metadata, {
+    title: "Ana — Sitio personal",
+    status_code: 200,
+    source: "decodo",
+    api_mode: "web_data",
+    content_truncated: false,
+  });
+  assert.deepEqual(normalizedJson.findings[1].aiNormalizedPage, {
+    model: "nvidia/nemotron-3.5-super-vl-120b-a12b",
+    generatedAt: "2026-11-26T10:05:00.000Z",
+    note: "Extracted by AI from the stored raw page; verify against factual appendix.",
+    ...freshNorm.data,
+  });
+  assert.equal(normalizedUser.includes("A".repeat(5200)), false);
+
+  assert.equal("aiNormalizedPage" in normalizedJson.findings[2], false);
+  assert.equal(normalizedJson.findings[2].metadata.content, "Contenido nuevo sin re-normalizar");
+
+  const factual = compileInvestigationReport(snapshot);
+  assert.ok(factual.includes("A".repeat(5200)));
+  assert.equal(factual.includes("aiNormalizedPage"), false);
+  assert.equal(factual.includes("Sitio personal público de Ana con enlaces a proyectos."), false);
+});
+
+test("matching Decodo AI normalizations conserve AI report prompt budget and reduce omitted findings", () => {
+  const base = investigation();
+  const evidence: EvidenceRecord[] = Array.from({ length: 12 }, (_, index) => {
+    const seed = { kind: "url" as const, value: `https://example.org/page-${index}` };
+    return {
+      id: `decodo-${index}`,
+      actionId: `action-${index}`,
+      seed,
+      provider: "Decodo",
+      status: "registered",
+      sourceId: "decodo:url",
+      recordedAt: "2026-11-26T10:00:00.000Z",
+      finding: {
+        target: seed,
+        upstreamStatus: "Found",
+        url: seed.value,
+        category: "Web page",
+        reason: `Página ${index}`,
+        media: {},
+        extra: {
+          source: "decodo",
+          api_mode: "web_data",
+          status_code: 200,
+          content_truncated: true,
+          title: `Página ${index}`,
+          content: `Texto extenso ${index}: ${"X".repeat(5800)}`,
+          links: `https://example.com/ref-${index}`,
+        },
+      },
+    };
+  });
+  const largeInvestigation: Investigation = { ...base, evidence, validations: [] };
+
+  const rawOmitted = countOmittedAiReportFindings(largeInvestigation);
+  assert.ok(rawOmitted > 0, "unnormalized 6k-char pages should exceed 60k finding budget");
+
+  const normalizations = new Map<string, EvidenceAiNormalization>(
+    evidence.map((record, index) => [
+      record.id,
+      {
+        evidenceId: record.id,
+        model: "nvidia/nemotron-3.5-super-vl-120b-a12b",
+        generatedAt: "2026-11-26T10:10:00.000Z",
+        sourceContentHash: decodoSourceContentHash(record),
+        data: {
+          summary: `Resumen compacto de la página ${index}.`,
+          handles: [],
+          rolesOrOccupations: [],
+          organizations: [],
+          education: [],
+          locationsMentioned: [],
+          topicsOrInterests: [],
+          notableFacts: [],
+          relatedUrls: [`https://example.com/ref-${index}`],
+          limitations: ["Contenido truncado."],
+        },
+      },
+    ]),
+  );
+
+  assert.equal(countOmittedAiReportFindings(largeInvestigation, normalizations), 0);
+  const user = buildAiReportMessages(largeInvestigation, normalizations)[1]!.content;
+  const json = JSON.parse(user.slice(user.indexOf("```json") + 7, user.lastIndexOf("```")));
+  assert.equal(json.findings.length, 12);
+  assert.equal(json.omittedFindings, undefined);
 });

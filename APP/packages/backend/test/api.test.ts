@@ -703,3 +703,19 @@ test("validates HTTP input and sanitizes missing-record and internal errors", as
   assert.deepEqual(internal.json(), { error: "INTERNAL_ERROR", message: "Internal server error" });
   assert.doesNotMatch(internal.body, /secret SQL|private\.example/i);
 });
+
+test("preserves factual report output and empty normalizations when AI adapters are omitted", async (t) => {
+  const harness = makeHarness();
+  t.after(() => harness.app.close());
+  const { app } = harness;
+
+  const created = (await app.inject({ method: "POST", url: "/investigations", payload: { name: "Caso Factual" } })).json<Investigation>();
+  const report = await app.inject({ method: "GET", url: `/investigations/${created.id}/report` });
+  assert.equal(report.statusCode, 200);
+  assert.match(report.headers["content-type"] ?? "", /^text\/markdown/);
+  assert.match(report.body, /^# Caso Factual/m);
+
+  const normalizations = await app.inject({ method: "GET", url: `/investigations/${created.id}/normalizations` });
+  assert.equal(normalizations.statusCode, 200);
+  assert.deepEqual(normalizations.json(), { normalizations: [] });
+});
