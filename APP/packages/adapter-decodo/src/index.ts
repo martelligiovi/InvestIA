@@ -135,14 +135,24 @@ export function createDecodoAdapter(options: DecodoAdapterOptions): SeedBox<UrlS
       const { token } = credential;
       const api = API[apiMode];
 
-      let result = await scrape(seed.value, api, token, true);
-      if (result === BLOCKED) result = await scrape(seed.value, api, token, false);
-      if (result === BLOCKED) throw new Error(FAILURE.blocked);
-      const resultUrl = safePageUrl(result.url) ?? safePageUrl(seed.value)!;
-      const page = extractPage(result.content, resultUrl, seed.value);
-      const finalUrl = page.canonical ?? resultUrl;
-      if (isLoginGate(page, resultUrl, finalUrl)) throw new Error(FAILURE.login);
-      if (!page.content) throw new Error(FAILURE.empty);
+      const attempt = async (headless: boolean) => {
+        const result = await scrape(seed.value, api, token, headless);
+        if (result === BLOCKED) return { state: "blocked" } as const;
+        const resultUrl = safePageUrl(result.url) ?? safePageUrl(seed.value)!;
+        const page = extractPage(result.content, resultUrl, seed.value);
+        const finalUrl = page.canonical ?? resultUrl;
+        if (isLoginGate(page, resultUrl, finalUrl)) return { state: "login" } as const;
+        if (!page.content) return { state: "empty" } as const;
+        return { state: "found", result, page, finalUrl } as const;
+      };
+
+      const first = await attempt(true);
+      const outcome = first.state === "found" ? first : await attempt(false);
+      if (outcome.state !== "found") {
+        const state = first.state === "login" && outcome.state === "blocked" ? "login" : outcome.state;
+        throw new Error(FAILURE[state]);
+      }
+      const { result, page, finalUrl } = outcome;
 
       const taskId = typeof result.taskId === "string" ? scalar(result.taskId, 240) : "";
       const finding = {

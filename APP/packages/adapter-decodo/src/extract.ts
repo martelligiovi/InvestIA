@@ -1,4 +1,5 @@
 import { isSafePublicHttpUrl } from "../../core/src/index.ts";
+import { MAX_JSON_LD_BLOCKS, readStructuredPage } from "./structured-page.ts";
 
 const ENTITIES = new Map(Object.entries({
   amp: "&", apos: "'", quot: '"', lt: "<", gt: ">", nbsp: " ", copy: "©", reg: "®", trade: "™",
@@ -8,12 +9,14 @@ const CONTROLS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
 const RAW_TAGS = new Set(["script", "style", "title", "noscript"]);
 const HIDDEN_TAGS = new Set(["svg", "template"]);
 const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "keygen", "link", "meta", "param", "source", "track", "wbr"]);
-const CHROME_TAGS = new Set(["header", "nav", "footer", "aside", "form", "dialog"]);
+const CHROME_TAGS = new Set(["nav", "aside", "form", "dialog"]);
+const UI_ALT = /^(?:(?:a|an|the)\s+)?(?:(?:profile|user|account)\s+(?:photo|picture|image)|avatar|icon|logo|badge)\b/i;
+const MAX_STRUCTURED_LINES = 32;
 const CHROME_ROLES = new Set(["navigation", "banner", "contentinfo", "complementary", "dialog", "alertdialog", "menu", "menubar", "search"]);
 const SCOPE_TAGS = new Set(["html", "body", "main", "article", "header", "nav", "footer", "aside", "dialog", "form", "table"]);
 const BLOCK_TAG = /^(?:address|article|aside|blockquote|br|dd|dialog|div|dl|dt|figcaption|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|td|th|tr|ul)$/;
 const HTML_START = /^<(?:!doctype\s+html\b|(?:html|head|body|title|meta|link|main|article|section|aside|dialog|div|p|h[1-6]|nav|header|footer|ul|ol|table|form|script|style|noscript|svg|template|a|span|strong|em|b|i)(?=[\s/>]))/i;
-const ASSET_PATH = /\.(?:png|jpe?g|webp|gif|svg|ico|css|m?js|cjs|woff2?|ttf|eot)$/i;
+const ASSET_PATH = /\.(?:png|jpe?g|webp|avif|gif|svg|ico|css|m?js|cjs|woff2?|ttf|eot)$/i;
 const SKIP_LINK = /^(?:skip to (?:(?:main|primary) )?content|jump to (?:(?:main|primary) )?content|ir al contenido(?: principal)?)(?:[.!?:]+)?$/i;
 const MD_NAV_LINE = /^(?:(?:[-*+]|\d+\.)\s+)?(?:\[[^\]\n]+\]\((?:[^()\n]|\([^()\n]*\))*\)|<https?:\/\/[^<>\s]+>|[|/•·—–-])+(?:\s*(?:\[[^\]\n]+\]\((?:[^()\n]|\([^()\n]*\))*\)|<https?:\/\/[^<>\s]+>|[|/•·—–-]))*$/;
 const EMPTY_ATTRS: ReadonlyMap<string, string> = new Map();
@@ -23,6 +26,7 @@ interface ElementFrame {
   readonly hidden: boolean;
   readonly chrome: boolean;
   readonly primary: boolean;
+  readonly localLandmarks: boolean;
   readonly form: boolean;
   readonly dialog: boolean;
 }
@@ -66,7 +70,7 @@ export function safePageUrl(value: unknown, base?: string): string | undefined {
 
 function isAssetUrl(url: string): boolean {
   try {
-    return ASSET_PATH.test(new URL(url).pathname);
+    return ASSET_PATH.test(decodeURIComponent(new URL(url).pathname));
   } catch { return true; }
 }
 
@@ -98,6 +102,18 @@ function attributes(source: string): Map<string, string> {
   return result;
 }
 
+function hasHiddenFlag(fields: ReadonlyMap<string, string>): boolean {
+  return fields.has("hidden") || fields.get("aria-hidden")?.trim().toLowerCase() === "true";
+}
+
+function hasModalFlag(fields: ReadonlyMap<string, string>): boolean {
+  return fields.get("aria-modal")?.trim().toLowerCase() === "true";
+}
+
+function roleTokens(fields: ReadonlyMap<string, string>): string[] {
+  return (fields.get("role") ?? "").toLowerCase().split(/\s+/);
+}
+
 function isSelfClosingTag(name: string, attrs: string): boolean {
   return VOID_TAGS.has(name) || /(?:^|[\s"'])\/\s*$/.test(attrs);
 }
@@ -114,12 +130,14 @@ function closeFrame(stack: ElementFrame[], name: string): void {
 }
 
 /** Extracts text only. This never renders or executes the scraped document. */
-function scanMarkup(source: string, html: boolean, base: string) {
+function scanMarkup(source: string, html: boolean, base: string, addStructuredLink: (value: string) => void) {
   const text: string[] = [];
   const main: string[] = [];
   const primary: string[] = [];
   const primaryLinks: string[] = [];
   const bodyLinks: string[] = [];
+  const structuredText = new Map<string, string>();
+  const structuredSubjects = new Set<string>();
   const metadata = new Map<string, string>();
   const hiddenTags: string[] = [];
   const stack: ElementFrame[] = [];
@@ -132,13 +150,22 @@ function scanMarkup(source: string, html: boolean, base: string) {
   let loginAction = false;
   let heading: { name: string; parts: string[] } | undefined;
   let buttonParts: string[] | undefined;
+  let jsonLdBlocks = 0;
   let cursor = 0;
+  const addStructuredText = (raw: string, isSubjectName = false) => {
+    if (structuredText.size >= MAX_STRUCTURED_LINES) return;
+    const value = scalar(textFromHtml(raw), 400);
+    if (!value) return;
+    const key = value.toLowerCase();
+    if (!structuredText.has(key)) structuredText.set(key, value);
+    if (isSubjectName) structuredSubjects.add(key);
+  };
   const tags = /<!--[\s\S]*?(?:-->|$)|<!doctype[^>]*>|<(https?:\/\/[^<>\s]+)>|<(\/?)([a-z][\w:-]*)(?=[\s/>])((?:[^<>"']|"[^"]*"|'[^']*')*)>/gi;
   const emit = (value: string) => {
     const current = stack.at(-1);
     if (current?.hidden) return;
-    text.push(value);
-    if (!current?.chrome) {
+    if (!html) text.push(value);
+    if (html && !current?.chrome) {
       main.push(value);
       if (current?.primary) primary.push(value);
     }
@@ -161,8 +188,17 @@ function scanMarkup(source: string, html: boolean, base: string) {
       const end = new RegExp(`</${name}\\s*>`, "gi");
       end.lastIndex = cursor;
       const match = end.exec(source);
-      if (html && name === "title" && !title && !hiddenTags.length && match) {
-        title = scalar(textFromHtml(source.slice(cursor, match.index)), 240);
+      if (html && !hiddenTags.length && !stack.at(-1)?.chrome && match) {
+        if (name === "title" && !title) {
+          title = scalar(textFromHtml(source.slice(cursor, match.index)), 240);
+        } else if (name === "script" && jsonLdBlocks < MAX_JSON_LD_BLOCKS) {
+          const fields = attributes(attrs);
+          if (fields.get("type")?.trim().toLowerCase() === "application/ld+json" &&
+            !hasHiddenFlag(fields) && !hasModalFlag(fields) && !roleTokens(fields).some((role) => CHROME_ROLES.has(role))) {
+            jsonLdBlocks++;
+            readStructuredPage(source, cursor, match.index, addStructuredText, addStructuredLink);
+          }
+        }
       }
       cursor = tags.lastIndex = match ? end.lastIndex : source.length;
       continue;
@@ -194,22 +230,29 @@ function scanMarkup(source: string, html: boolean, base: string) {
     const fields = attrs.trim() ? attributes(attrs) : EMPTY_ATTRS;
     if (!inHead && BLOCK_TAG.test(name)) emit("\n");
 
+    const parent = stack.at(-1);
+    const roles = roleTokens(fields);
+    const isHidden = hasHiddenFlag(fields);
+    const ariaModal = hasModalFlag(fields);
+    const isChrome = CHROME_TAGS.has(name) || ariaModal || roles.some((role) => CHROME_ROLES.has(role)) ||
+      ((name === "header" || name === "footer") && !parent?.localLandmarks);
     if (!inHead && !isSelfClosingTag(name, attrs)) {
-      const parent = stack.at(-1);
-      const roles = (fields.get("role") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
-      const isHidden = fields.has("hidden") || fields.get("aria-hidden")?.trim().toLowerCase() === "true";
-      const ariaModal = fields.get("aria-modal")?.trim().toLowerCase() === "true";
       const isDialog = name === "dialog" || ariaModal || roles.includes("dialog") || roles.includes("alertdialog");
-      const isChrome = CHROME_TAGS.has(name) || ariaModal || roles.some((role) => CHROME_ROLES.has(role));
       const isPrimary = name === "main" || name === "article" || roles.includes("main");
       stack.push({
         tag: name,
         hidden: Boolean(parent?.hidden || isHidden),
         chrome: Boolean(parent?.chrome || isChrome || isHidden),
         primary: Boolean(parent?.primary || isPrimary),
+        localLandmarks: Boolean(parent?.localLandmarks || isPrimary || name === "section"),
         form: Boolean(parent?.form || name === "form"),
         dialog: Boolean(parent?.dialog || isDialog),
       });
+    } else if (!inHead && name === "img" && parent?.primary && !parent.chrome && !isHidden && !isChrome) {
+      const caption = scalar(textFromHtml(fields.get("alt") ?? ""), 400);
+      if (caption.length >= 25 && (caption.match(/[\p{L}\p{N}]+/gu)?.length ?? 0) >= 4 && !UI_ALT.test(caption)) {
+        emit(`\n${caption}\n`);
+      }
     }
 
     const current = stack.at(-1);
@@ -244,7 +287,7 @@ function scanMarkup(source: string, html: boolean, base: string) {
   emitText(source.slice(cursor));
   return {
     rawMarkdown: html ? "" : escapeTagStarts(text.join("").replace(/[ \t]+(?=\n|$)/g, "").trim()),
-    textParts: text, mainParts: main, primaryParts: primary, primaryLinks, bodyLinks,
+    mainParts: main, primaryParts: primary, primaryLinks, bodyLinks, structuredText, structuredSubjects,
     passwordField, passwordForm, loginHeading, loginAction, canonical,
     title: clip(metadata.get("og:title") ?? metadata.get("title") ?? title, 240),
     description: metadata.get("description") ?? metadata.get("og:description") ?? metadata.get("twitter:description") ?? "",
@@ -327,24 +370,31 @@ export function extractPage(raw: string, base: string, target: string) {
   const source = raw.replace(/\r\n?/g, "\n").replace(CONTROLS, " ").trim();
   const html = HTML_START.test(source.replace(/^(?:<!--[\s\S]*?-->\s*)+/, ""));
   const { add, links } = linkCollector(target, base);
-  const parsed = scanMarkup(source, html, base);
+  const structuredLinks = linkCollector(target, base);
+  // Keep raw script bytes and syntax for JSON-LD validation; visible text is normalized as it is extracted.
+  const parsed = scanMarkup(html ? raw : source, html, base, structuredLinks.add);
   const { canonical, passwordField, passwordForm, loginHeading, loginAction } = parsed;
   const hasLoginForm = passwordForm && (loginHeading || GATE_HEADING.test(parsed.title));
 
   if (html) {
     for (const href of parsed.primaryLinks) add(href);
     for (const href of parsed.bodyLinks) add(href);
+    for (const href of structuredLinks.links) add(href);
     const primaryCleaned = cleanHtmlLines(parsed.primaryParts);
     const mainCleaned = cleanHtmlLines(parsed.mainParts);
-    const textCleaned = cleanHtmlLines(parsed.textParts);
     const nonChrome = primaryCleaned.length >= 120 ? primaryCleaned : mainCleaned;
-    const cleaned = nonChrome || textCleaned;
+    const visibleLines = new Set(nonChrome.toLowerCase().split("\n"));
+    const structured = [...parsed.structuredText].filter(([key]) => !visibleLines.has(key)).map(([, value]) => value).join("\n");
+    const structuredCorroborated = !loginHeading && !loginAction && [...parsed.structuredSubjects].some((line) =>
+      visibleLines.has(line) && !GATE_HEADING.test(line) && !GATE_COPY.test(line) && /\p{L}+\s+\p{L}+/u.test(line),
+    );
+    const cleaned = [nonChrome, structured].filter(Boolean).join("\n");
     const firstLine = cleaned.split("\n").find((line) => /[\p{L}\p{N}]/u.test(line)) ?? cleaned.split("\n", 1)[0] ?? "";
     const preview = parsed.description || scalar(firstLine, 400);
     return {
       format: "html" as const, title: parsed.title, description: parsed.description, canonical, links,
       passwordField, passwordForm, loginAction, hasLoginForm, preview,
-      content: clip(cleaned, 6000), contentLength: cleaned.length, main: nonChrome,
+      content: clip(cleaned, 6000), contentLength: cleaned.length, main: nonChrome, structured, structuredCorroborated,
     };
   }
 
@@ -374,7 +424,7 @@ export function extractPage(raw: string, base: string, target: string) {
   return {
     format: "markdown" as const, title: scalar(markdownText(heading ?? ""), 240), description: preview, preview,
     canonical, links, passwordField, passwordForm, loginAction, hasLoginForm,
-    content: clip(content, 6000), contentLength: content.length, main,
+    content: clip(content, 6000), contentLength: content.length, main, structured: "", structuredCorroborated: false,
   };
 }
 
@@ -392,7 +442,9 @@ export function isLoginGate(page: ReturnType<typeof extractPage>, ...urls: strin
   const substantiveLength = substantive.join(" ").length;
   if ((page.hasLoginForm || (page.passwordForm && page.loginAction)) && substantiveLength < 250) return true;
   if (!page.passwordField && !GATE_HEADING.test(page.title) && !lines.some((line) => GATE_HEADING.test(line))) return false;
-  // A navigation sign-in label or modal login form is not a gate when substantial page/profile content exists.
-  if (substantiveLength >= 250) return false;
+  // Structured claims can corroborate visible public text, but cannot turn a credential form or empty login shell into a finding.
+  const metadataLines = page.structured.split("\n").filter((line) => line && !GATE_HEADING.test(line) && !GATE_COPY.test(line));
+  const corroboratedLength = !page.passwordField && page.structuredCorroborated ? metadataLines.join(" ").length : 0;
+  if (substantiveLength + corroboratedLength >= 250) return false;
   return !substantive.some((line) => line.split(/\s+/).length >= 5) && substantive.length < 2;
 }
