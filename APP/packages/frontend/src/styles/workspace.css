@@ -43,7 +43,7 @@
 .workspace-button--report { padding-inline: 18px; }
 .workspace-button--quiet { min-height: 34px; padding: 6px 10px; font-size: 12px; }
 
-/* Header disclosures ("Controles del expediente", "Pausar") open as anchored popovers. */
+/* The username and pause/resume disclosures open as anchored popovers. */
 .workspace-disclosure { position: relative; }
 .workspace-disclosure summary {
   display: inline-flex;
@@ -83,7 +83,6 @@
   font-size: 15px;
   animation: popover-in 220ms var(--ease) both;
 }
-.workspace-case-panel { width: min(400px, calc(100vw - 32px)); }
 .workspace-usernames-panel { width: min(420px, calc(100vw - 32px)); }
 .username-seeds-panel { display: grid; gap: var(--space-3); }
 .username-seeds-panel h3 { margin: 0; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -109,7 +108,7 @@
 .workspace-pause-note { color: var(--muted); font-size: 14px; }
 
 /* ── Notices ─────────────────────────────────────────────── */
-.workspace-alert, .workspace-claimed-warning {
+.workspace-alert, .workspace-claimed-warning, .workspace-queue-notice {
   margin: var(--space-3) var(--gutter) 0;
   padding: var(--space-3) var(--space-4);
   border-left: 2px solid var(--red);
@@ -118,6 +117,9 @@
   overflow-wrap: anywhere;
 }
 .workspace-alert { color: var(--red-deep); }
+.workspace-queue-notice { border-left-color: var(--line-strong); background: var(--linen); }
+.workspace-notice-with-action { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); }
+.workspace-notice-with-action > .workspace-button { max-width: 100%; }
 
 /* ── Layout: canvas + detail drawer ─────────────────────
  * The drawer is a grid track that grows from 0 to its width, so the canvas slides
@@ -296,9 +298,11 @@
 .detail-warning, .detail-note { margin: var(--space-3) 0 0; padding: var(--space-3); border-left: 2px solid var(--red); background: var(--red-wash); font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
 .face-thumbnail { display: block; width: 128px; height: 128px; object-fit: cover; border-radius: var(--radius); border: 1px solid var(--line); }
 .detail-note { border-left-color: var(--line-strong); background: var(--linen); color: var(--ink-soft); }
+.decodo-page-content { max-height: min(45vh, 24rem); margin: var(--space-2) 0 0; padding: var(--space-3); overflow: auto; border: 1px solid var(--line); background: var(--linen); font: inherit; font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.decodo-page-links { display: grid; gap: var(--space-1); margin: 0; padding-left: var(--space-5); overflow-wrap: anywhere; }
 
 .detail-control .form-field { margin: var(--space-3) 0; }
-.detail-control .form-field textarea, .workspace-case-controls .form-field textarea { min-height: 72px; font-size: 17px; }
+.detail-control .form-field textarea { min-height: 72px; font-size: 17px; }
 .validation-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
 .validation-actions button:last-child { grid-column: 1 / -1; }
 
@@ -308,11 +312,6 @@
 .detail-history ol { display: grid; gap: var(--space-2); margin: 0; padding-left: var(--space-5); font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
 .detail-history time { display: block; margin-top: 2px; color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
 
-.case-reference { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-.case-reference code { display: block; margin-top: 2px; font-size: 11px; }
-.authorization-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
-.dispatch-gates { display: grid; gap: var(--space-1); margin: var(--space-3) 0 0; padding: var(--space-3) 0 0; border-top: 1px dashed var(--line-strong); color: var(--ink-soft); font-family: var(--font-mono); font-size: 12px; list-style: none; }
-.dispatch-gates li::before { margin-right: var(--space-2); color: var(--red); content: "+"; }
 .dispatch-note { color: var(--muted); font-size: 14px; line-height: 1.4; }
 
 /* ── Report ─────────────────────────────────────────────── */
@@ -374,3 +373,4 @@
 .graph-node--leaf-group .graph-node-card { filter: drop-shadow(0 2px 2px rgb(35 32 30 / 12%)); }
 .leaf-group-members { display: grid; gap: 8px; margin: 16px 0; padding: 0; list-style: none; }
 .leaf-group-members button { width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.leaf-group-member--with-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); align-items: center; }

@@ -9,6 +9,9 @@ import {
   DEFAULT_AI_REPORT_SETTINGS,
   normalizeAiReportSettings,
   stripModelReasoning,
+  findingSeedNodeId,
+  type EvidenceRecord,
+  type GitHubCatalogAction,
   type Investigation,
 } from "../src/index.ts";
 
@@ -88,7 +91,7 @@ function facecheckCase(): Investigation {
   };
 }
 
-function requestData(value: Investigation): { findings: { evidenceId: string; url?: string; operatorValidation: string }[]; omittedFindings?: number } {
+function requestData(value: Investigation): { findings: { evidenceId: string; url?: string; urlSeed?: string; operatorValidation: string }[]; omittedFindings?: number } {
   const user = buildAiReportMessages(value)[1]!.content;
   return JSON.parse(user.slice(user.indexOf("```json") + 7, user.lastIndexOf("```")));
 }
@@ -126,6 +129,66 @@ test("AI request and factual appendix exclude non-accepted FaceCheck candidates 
   assert.ok(countOmittedAiReportFindings(large) > 0);
   assert.deepEqual(requestData(excluded), requestData(large));
   assert.equal(countOmittedAiReportFindings(excluded), countOmittedAiReportFindings(large));
+});
+
+test("Decodo evidence reaches factual and AI reports only for FaceCheck parents still accepted", () => {
+  const base = facecheckCase();
+  const parents = base.evidence.filter((record) => record.sourceId === "facecheck:photo");
+  const seed = { kind: "url", value: "https://example.org/public-profile" } as const;
+  const actions: GitHubCatalogAction[] = parents.map((parent) => ({
+    id: `scrape-${parent.id}`, spec: { catalogId: "decodo.url.v1", provider: "decodo", seed },
+    sourceSeedId: findingSeedNodeId(parent.id), status: "succeeded", proposedAt: base.createdAt, proposalReason: "Accepted result URL.",
+  }));
+  const children: EvidenceRecord[] = parents.map((parent, index) => ({
+    id: `child-${parent.id}`, actionId: actions[index]!.id, seed, provider: "Decodo", status: "registered",
+    sourceId: "decodo:url", recordedAt: base.updatedAt,
+    finding: { target: seed, upstreamStatus: "Found", url: seed.value, category: "Page", reason: "", extra: { title: `Scraped ${parent.id}` }, media: {} },
+  }));
+  const snapshot = { ...base, actions, evidence: [...base.evidence, ...children] };
+  const factualReport = compileInvestigationReport(snapshot);
+  const aiMessage = buildAiReportMessages(snapshot)[1]!.content;
+  const aiAppendix = composeAiReport({ narrative: "Summary", factualReport, model: "test/model", generatedAt: "2026-10-01" });
+  for (const parent of ["rejected", "rerejected", "inconclusive", "undecided"]) {
+    const title = `Scraped face-${parent}`;
+    assert.ok(!factualReport.includes(title.replace("-", "\\-")), `factual report must not expose ${title}`);
+    assert.ok(!aiMessage.includes(title), `AI request must not expose ${title}`);
+    assert.ok(!aiAppendix.includes(title.replace("-", "\\-")), `AI appendix must not expose ${title}`);
+  }
+  assert.equal(countOmittedAiReportFindings(snapshot), 0);
+  const findings = requestData(snapshot).findings.filter((record) => record.evidenceId.startsWith("child-"));
+  assert.deepEqual(findings.map((record) => [record.evidenceId, record.urlSeed]), [
+    ["child-face-accepted", seed.value], ["child-face-reaccepted", seed.value],
+  ]);
+  assert.ok(factualReport.includes("url: https://example\\.org/public\\-profile"));
+  assert.ok(aiAppendix.includes("Scraped face\\-reaccepted"));
+});
+
+test("Decodo results with unresolved explicit parents are excluded from factual and AI evidence", () => {
+  const base = investigation();
+  const seed = { kind: "url", value: "https://example.org/public-profile" } as const;
+  const action: GitHubCatalogAction = {
+    id: "scrape", spec: { catalogId: "decodo.url.v1", provider: "decodo", seed },
+    status: "succeeded", proposedAt: base.createdAt, proposalReason: "Scrape result URL.",
+  };
+  const child: EvidenceRecord = {
+    id: "child", actionId: action.id, seed, provider: "Decodo", status: "registered",
+    sourceId: "decodo:url", recordedAt: base.updatedAt,
+    finding: { target: seed, upstreamStatus: "Found", url: seed.value, category: "Page", reason: "Public excerpt", extra: {}, media: {} },
+  };
+  const snapshot = { ...base, evidence: [...base.evidence, child] };
+  const unlinked = { ...snapshot, actions: [action] };
+  assert.match(compileInvestigationReport(unlinked), /\| child \| scrape \|/);
+  assert.ok(requestData(unlinked).findings.some(({ evidenceId }) => evidenceId === child.id));
+
+  for (const parentId of ["missing-parent", base.evidence[0]!.id]) {
+    const linked = { ...snapshot, actions: [{ ...action, sourceSeedId: findingSeedNodeId(parentId) }], validations: [
+      ...base.validations, { ...base.validations[0]!, evidenceId: parentId, status: "accepted" as const },
+    ] };
+    const withoutChild = { ...linked, evidence: base.evidence };
+    assert.equal(compileInvestigationReport(linked), compileInvestigationReport(withoutChild));
+    assert.deepEqual(requestData(linked), requestData(withoutChild));
+    assert.equal(countOmittedAiReportFindings(linked), countOmittedAiReportFindings(withoutChild));
+  }
 });
 
 test("rejected evidence from another provider remains in factual and AI reports", () => {

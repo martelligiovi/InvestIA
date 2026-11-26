@@ -95,6 +95,9 @@ const PROJECT_ACTIONS = `
     MERGE (a)-[:USES_SEED]->(s))
   FOREACH (_ IN CASE WHEN action.seedKind = 'photo' THEN [1] ELSE [] END |
     MERGE (s:PhotoSeed {investigationId: $investigationId, value: action.seedValue})
+    MERGE (a)-[:USES_SEED]->(s))
+  FOREACH (_ IN CASE WHEN action.seedKind = 'url' THEN [1] ELSE [] END |
+    MERGE (s:UrlSeed {investigationId: $investigationId, value: action.seedValue})
     MERGE (a)-[:USES_SEED]->(s))`;
 
 const PROJECT_EVIDENCE = `
@@ -124,6 +127,9 @@ const PROJECT_EVIDENCE = `
     MERGE (s)-[:HAS_EVIDENCE]->(e))
   FOREACH (_ IN CASE WHEN record.seedKind = 'photo' THEN [1] ELSE [] END |
     MERGE (s:PhotoSeed {investigationId: $investigationId, value: record.seedValue})
+    MERGE (s)-[:HAS_EVIDENCE]->(e))
+  FOREACH (_ IN CASE WHEN record.seedKind = 'url' THEN [1] ELSE [] END |
+    MERGE (s:UrlSeed {investigationId: $investigationId, value: record.seedValue})
     MERGE (s)-[:HAS_EVIDENCE]->(e))
   MERGE (a:CatalogAction {investigationId: $investigationId, id: record.actionId})
   MERGE (a)-[:PRODUCED]->(e)`;
@@ -164,6 +170,7 @@ const SCHEMA_CONSTRAINTS = [
   "CREATE CONSTRAINT email_seed_unique IF NOT EXISTS FOR (n:EmailSeed) REQUIRE (n.investigationId, n.value) IS UNIQUE",
   "CREATE CONSTRAINT username_seed_unique IF NOT EXISTS FOR (n:UsernameSeed) REQUIRE (n.investigationId, n.value) IS UNIQUE",
   "CREATE CONSTRAINT photo_seed_unique IF NOT EXISTS FOR (n:PhotoSeed) REQUIRE (n.investigationId, n.value) IS UNIQUE",
+  "CREATE CONSTRAINT url_seed_unique IF NOT EXISTS FOR (n:UrlSeed) REQUIRE (n.investigationId, n.value) IS UNIQUE",
   "CREATE CONSTRAINT catalog_action_unique IF NOT EXISTS FOR (n:CatalogAction) REQUIRE (n.investigationId, n.id) IS UNIQUE",
   "CREATE CONSTRAINT evidence_unique IF NOT EXISTS FOR (n:Evidence) REQUIRE (n.investigationId, n.id) IS UNIQUE",
   "CREATE CONSTRAINT validation_unique IF NOT EXISTS FOR (n:EvidenceValidation) REQUIRE (n.investigationId, n.id) IS UNIQUE",

@@ -47,6 +47,7 @@ function installSettingsApi(initial: Partial<SettingsView> = {}, models: unknown
     const path = String(input);
     if (path === "/settings/ghunt") return json({ available: false, state: "requires_connection", account: null });
     if (path === "/settings/facecheck") return json({ tokenConfigured: false, tokenHint: null, testingMode: true });
+    if (path === "/settings/decodo") return json({ tokenConfigured: false, tokenHint: null, apiMode: "web_data" });
     if (path === "/settings/ai/models") return json(models);
     if (path === "/settings/ai" && init?.method === undefined) return json(view);
     if (path === "/settings/ai" && init?.method === "PUT") {
@@ -210,13 +211,15 @@ describe("ajustes de IA", () => {
   });
 
   it("informa errores al cargar o guardar", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input) === "/settings/ghunt"
-      ? json({ available: false, state: "requires_connection", account: null })
-      : String(input) === "/settings/facecheck"
-        ? json({ tokenConfigured: false, tokenHint: null, testingMode: true })
-      : String(input) === "/settings/ai/models"
-        ? json(liveModels)
-        : json({ error: "UNAVAILABLE", message: "sin conexión" }, 503)));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      switch (String(input)) {
+        case "/settings/ghunt": return json({ available: false, state: "requires_connection", account: null });
+        case "/settings/facecheck": return json({ tokenConfigured: false, tokenHint: null, testingMode: true });
+        case "/settings/decodo": return json({ tokenConfigured: false, tokenHint: null, apiMode: "web_data" });
+        case "/settings/ai/models": return json(liveModels);
+        default: return json({ error: "UNAVAILABLE", message: "sin conexión" }, 503);
+      }
+    }));
     render(<AiSettingsPage />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("No se pudieron cargar los ajustes de IA: sin conexión");

@@ -202,7 +202,7 @@ export function FacecheckReview({ investigation, actionId, disabled, onDecide, o
           <div>
             <p className="eyebrow">FaceCheck · revisión de candidatos</p>
             <h2 id="fc-title">Revisar candidatos de FaceCheck</h2>
-            <p className="fc-subtitle">FaceCheck encontró caras parecidas, no necesariamente la misma persona. Decidí una por una; solo las aceptadas cuentan como evidencia.</p>
+            <p className="fc-subtitle">FaceCheck encontró caras parecidas, no necesariamente la misma persona. Decidí una por una; solo las aceptadas cuentan como evidencia. Aceptar encola el scraping de la URL pública con Decodo; nunca se envía la foto ni la miniatura a Decodo.</p>
           </div>
           <button type="button" className="fc-close" aria-label="Cerrar revisión" onClick={onClose}><span aria-hidden="true">×</span></button>
         </header>

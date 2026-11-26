@@ -12,7 +12,7 @@ Use Vite at `127.0.0.1:5173` for development, or build once and let the loopback
 
 The starting email is an operator seed and remains the only accepted input type. Every recorded finding is also a seed (for example, a reported Canva registration), with provenance from its producing action. `investigationSeedGraph` in core derives these identities from existing records without migrating stored investigations or queuing new actions. An action may explicitly name a `sourceSeedId`; otherwise its embedded operator email is its input. Matching discovered values never establishes a causal edge.
 
-Two or more seeds without actions produced by the same action appear as one paper stack. The two rotated sheets are decorative, not a count of records. Seeds with actions remain separate branches; a single leaf keeps its own card. Select a stack to browse its results, 50 per detail page, then open any result for full provenance and human validation. **Volver al grupo** returns to the stack without expanding the graph or issuing requests. Errors and empty results retain their existing presentation. Keyboard selection, centering and zoom remain available.
+Two or more seeds without actions produced by the same action appear as one paper stack. The two rotated sheets are decorative, not a count of records. Seeds with actions remain separate branches; a single leaf ordinarily keeps its own card. Select a stack to browse its results, 50 per detail page, then open any result for full provenance and human validation. **Volver al grupo** returns to the stack without expanding the graph or issuing requests. Errors and empty results retain their existing presentation. Keyboard selection, centering and zoom remain available.
 
 ## Full stack without a dev server
 
@@ -58,7 +58,7 @@ From the repository root, start the backend in one shell using the [backend setu
 pnpm --dir APP frontend:dev
 ```
 
-The Vite server is loopback-only and proxies `/investigations` to `127.0.0.1:4317`; set `INVESTIA_API_TARGET` (for example `http://127.0.0.1:4318` for a Docker app published on `APP_PORT=4318`) to proxy to another local backend. These commands are the same in Bash. Backend process environment variables, including `PYTHON`, must be set explicitly in the shell; Node does not automatically load `.env` or `.env.example`. Use the interpreter path appropriate to the host as shown above.
+The Vite server is loopback-only and proxies `/investigations` and `/settings` to `127.0.0.1:4317`; set `INVESTIA_API_TARGET` (for example `http://127.0.0.1:4318` for a Docker app published on `APP_PORT=4318`) to proxy to another local backend. These commands are the same in Bash. Backend process environment variables, including `PYTHON`, must be set explicitly in the shell; Node does not automatically load `.env` or `.env.example`. Use the interpreter path appropriate to the host as shown above.
 
 ## Build and same-origin serving
 
@@ -71,17 +71,17 @@ pnpm --dir APP start
 
 `build` creates `packages/frontend/dist`; `start` runs the backend, which serves `/`, `/index.html`, and built assets on `127.0.0.1:4317`. The frontend build is optional for API-only startup: when it is missing, the backend prints a notice and API routes still work. Unknown assets and unknown API paths or methods return JSON 404s; unknown browser routes are handled by the frontend's hash router after `/` loads.
 
-The same commands work in Bash. For the required PostgreSQL and Neo4j variables in PowerShell and Bash, see [backend local setup](../backend/README.md). Backend startup resumes eligible automatic work; do not authorize real investigations or use live accounts to verify the UI.
+The same commands work in Bash. For the required PostgreSQL and Neo4j variables in PowerShell and Bash, see [backend local setup](../backend/README.md). Backend startup resumes eligible automatic work; do not create or authorize real investigations or use live accounts to verify the UI.
 
 ## Research progression
 
-Creation collects the research intention once and defaults to automatic advancement. Select **Elegir avance manual** at instantiation to require the case-level **Ejecutar siguiente acción en cola** control. Missing legacy mode remains manual; mode is not changed later in the workspace.
+Creating an investigation records the research intention, enables automatic advancement, and authorizes configured catalog tools for current and future seeds. The authorization API must confirm the grant before the frontend adds initial email seeds. The creation page explains that user-scanner can send emails or notifications and cross-scan discovered targets. FaceCheck sends the Google profile photo to facecheck.id and can consume credits; Decodo receives only accepted public page URLs.
 
-New email seeds receive catalog queue entries on the backend without per-node proposal, research-motive, approval, or advance controls. Automatic progression belongs entirely to the server: the workspace only refreshes snapshots while work is eligible or claimed, never polls an execution endpoint. Closing the browser does not stop the worker. Manual mode uses run-next for the case queue, not the selected graph node, without a separate node approval.
+The backend queues and runs eligible work; the workspace refreshes snapshots without sending execution requests. Closing the browser does not stop the worker. The workspace header keeps **Usernames**, **Pausar / Reanudar**, **Obtener informe**, and **Generar informe con IA**. Recovery controls appear inline only when needed: **Actualizar expediente** for a stale snapshot, **Autorizar expediente** to grant missing authorization with a recorded reason, and **Ejecutar siguiente acción en cola** only for legacy manual cases with eligible queued work. A missing legacy mode still means manual; run-next applies to the case queue, not the selected node.
 
-Creation offers **Autorizar consultas del catálogo**, unchecked by default. Checking it explicitly authorizes present and future catalog seeds in that case until revocation; the generated audit reason records this scope. The existing authorization API must confirm the grant before any initial email seeds are queued. Unchecked creation and existing cases stay unapproved. A failed/uncertain grant stops seed submission and keeps consent in the session recovery record. Retry reads the existing case first, reconciles any saved grant (or revocation), then submits only absent seeds; it never resends case creation automatically or overwrites a recorded revocation. The recovery receipt is session-local, not a cross-browser creation idempotency key.
+Each scoped tool requires an active grant that names it, except Decodo also accepts the FaceCheck scope. An old grant that covers only User Scanner does not cover Decodo or other tools. Missing, revoked, or legacy unscoped grants do not cover scoped actions, and unknown catalog IDs are never covered. Pause or revocation blocks new claims but does not cancel an in-flight provider call. Historical proposal and approval provenance remains readable; old proposals are not silently approved. Claimed actions with unknown outcomes and terminal failures are never offered as retries.
 
-Case authorization, pause/resume, and evidence validation remain independent controls with their own audit reasons. Creation and case controls explain that scanner authorization includes loud modules (which may send emails/notifications) and discovered cross-scan targets. Historical authorization without the new scanner catalog scope must be granted again before scanner execution. Pause or revocation blocks new claims but does not cancel an in-flight provider call. Historical proposal/approval provenance remains readable; old proposed actions are not silently approved. Claimed actions with unknown outcomes and terminal failures are never offered as retries.
+If the initial grant fails or its result is uncertain, creation stops before adding emails and keeps a session-local recovery receipt. Retry reads the existing case first, reconciles any saved grant or revocation, and submits only absent seeds. It never recreates the case automatically or overwrites a recorded revocation. The receipt is not a cross-browser idempotency key.
 
 ## Action results
 
@@ -89,7 +89,7 @@ The graph renders at most 50 pageable terminal evidence nodes per page, with fir
 
 Every terminal action has a connected result: persisted supported observations remain individually accessible, either as evidence rectangles or inside a sibling leaf stack, with actual provider, status, source and validation history. User Scanner evidence also shows the discovered email/username, original tool status, URL, category, reason, metadata, media references and pivot source/confidence. Unsafe URLs stay text; media URLs are not automatically fetched. These findings are not verified identities or newly queued seeds. Scanner actions have tool-aware labels, while historical GitHub actions retain their original descriptions. Execution failures gain a derived red circle with an X and selectable, wrapped error details. Successful actions without admitted evidence gain a derived **Sin información admitida** rectangle, including the unsupported-observation count when recorded. These derived results are not persisted evidence and cannot be validated; no information does not imply `not_registered`. Queued/claimed actions never synthesize outcomes. Queue labels distinguish waiting authorization, pause and non-executable historical entries; the workspace headline describes gates or claimed uncertainty rather than claiming the case is active or concluded.
 
-Mocked browser fixtures in `e2e/acceptance.spec.ts` cover checked creation through information, failure and empty results, plus unchecked blocked queues. They intercept investigation API traffic, deny external origins and never call a real provider. Independent browser/build verification remains separate from writer unit/typecheck evidence.
+Mocked browser fixtures in `e2e/acceptance.spec.ts` cover automatic authorized creation through information, failure and empty results, plus a queue blocked by revocation. They intercept investigation API traffic, deny external origins and never call a real provider. Independent browser/build verification remains separate from writer unit/typecheck evidence.
 
 ## Verification
 
@@ -125,11 +125,19 @@ The Playwright server uses the actual Vite build and `createBackendApp` on `127.
 
 ## Automatic progression writer verification
 
-T2 writer checks passed: **59 frontend unit tests**, **2 Chromium scenarios**, workspace typecheck, and production build. Core/backend checks passed **21/29** tests with the backend's **5 database-gated tests skipped**. Browser acceptance retained the existing viewport, clipping, ornament, touch, graph, and report assertions. Creation metadata now uses a compact desktop layout with a correctly sized manual-mode checkbox; the desktop CTA bottom measured **929.05px** within the unchanged **941px** viewport bound. These are writer results, not independent T3 closure or real-database evidence.
+Historical T2 writer checks passed: **59 frontend unit tests**, **2 Chromium scenarios**, workspace typecheck, and production build. Core/backend checks passed **21/29** tests with the backend's **5 database-gated tests skipped**. Browser acceptance retained the existing viewport, clipping, ornament, touch, graph, and report assertions. These are historical writer results, not independent T3 closure or real-database evidence.
 
 ## Historical independent MVP acceptance
 
 The independent acceptance record reports **110 TypeScript tests passed (0 failed, 0 skipped), 1 Chromium scenario passed, and all 4 workspace package typechecks passed**; all 5 database-gated checks ran and the named runtime reload was verified. The separate offline Python adapter suite has now passed all **5 tests**. The Chromium scenario demonstrates behavior, not identical visuals: corrected desktop/mobile screenshots were independently inspected, and title wrapping, CTA visibility, ornament spacing and linen texture passed MVP acceptance. This is a usable interpretation of the references; no pixel-identical claim is made.
+
+## Decodo page scraping
+
+Under **Ajustes de IA → Decodo**, set the token and choose Web Data API (Bearer, default) or Web Scraping API v2 (Basic). The frontend uses `/settings/decodo`; it shows only a masked hint of the saved token. An empty token field preserves the current token when saving a mode change. **Quitar token** deletes the token without changing the mode.
+
+Accepting a FaceCheck match queues its eligible public URL for Decodo, never its image or thumbnail. In automatic mode, a configured token, an active grant naming Decodo or FaceCheck, an accepted match and an unpaused case let the server run it without another click. The graph keeps that match outside the candidate stack so its Decodo action and page evidence remain connected. When only discarded leaves remain, the graph omits the stack if an accepted candidate already has its own branch. Otherwise it keeps a **Ningún candidato aceptado** stack connected to the FaceCheck action. Discarded matches remain accessible through **Revisar candidatos**. The drawer shows extracted content as plain text and links only to validated public URLs; login-gated pages fail rather than yielding empty evidence.
+
+For previously accepted FaceCheck matches without a Decodo action, use **Decodo** beside one candidate, **Aplicar Decodo a aceptados (N)** for the eligible group, or **Aplicar scraping con Decodo** in the match detail. These controls queue only eligible public URLs, require no new validation reason, and do not rerun FaceCheck. The same authorization, token, and advancement rules still apply.
 
 ## NVIDIA Build AI reports
 

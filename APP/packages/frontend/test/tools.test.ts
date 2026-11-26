@@ -58,21 +58,22 @@ describe("username seeds in the workspace graph", () => {
   });
 });
 
-describe("per-tool consent in the workspace", () => {
+describe("scoped case authorization in the workspace", () => {
   const grant = { granted: true, at, reason: "Consent", operator: "local-operator" } as const;
 
-  it("a user-scanner-only grant leaves Gravatar waiting for authorization", () => {
-    const investigation = withGrant({ ...grant, catalogScope: "user-scanner.email.v1" });
-    expect(actionDisplayState(investigation, scanner)).toBe("queued");
-    expect(actionDisplayState(investigation, gravatar)).toBe("waiting_authorization");
-    expect(hasCatalogAuthorization(investigation)).toBe(false);
-  });
-
-  it("a grant naming both tools enables a linked Gravatar lookup", () => {
-    const investigation = withGrant({ ...grant, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] });
-    expect(actionDisplayState(investigation, { ...gravatar, sourceSeedId: "seed:evidence:e" })).toBe("queued");
-    expect(actionDisplayState(investigation, { ...gravatar, approval: { at, reason: "Approved", operator: "local-operator" } })).toBe("queued");
-    expect(hasCatalogAuthorization(investigation)).toBe(true);
+  it("keeps a linked or approved Gravatar action waiting until its scope is recorded", () => {
+    const scannerOnly = withGrant({ ...grant, catalogScope: "user-scanner.email.v1" });
+    const bothTools = withGrant({ ...grant, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] });
+    expect(actionDisplayState(scannerOnly, scanner)).toBe("queued");
+    for (const lookup of [
+      { ...gravatar, sourceSeedId: "seed:evidence:e" },
+      { ...gravatar, approval: { at, reason: "Approved", operator: "local-operator" as const } },
+    ]) {
+      expect(actionDisplayState(scannerOnly, lookup)).toBe("waiting_authorization");
+      expect(actionDisplayState(bothTools, lookup)).toBe("queued");
+    }
+    expect(hasCatalogAuthorization(scannerOnly)).toBe(false);
+    expect(hasCatalogAuthorization(bothTools)).toBe(true);
   });
 
   it("an unlinked historical Gravatar queue waits for user-scanner", () => {

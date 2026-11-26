@@ -3,6 +3,7 @@ import { AI_MAX_TOKENS_RANGE, type AiReasoningEffort, type AiReportSettings } fr
 import { InvestigationApiClient, type AiModelList, type AiSettingsView } from "../api/client";
 import { GhuntSettings } from "../components/GhuntSettings";
 import { FacecheckSettings } from "../components/FacecheckSettings";
+import { DecodoSettings } from "../components/DecodoSettings";
 
 const NVIDIA_MODELS_URL = "https://build.nvidia.com/models";
 
@@ -57,7 +58,7 @@ function messageFor(error: unknown): string {
 export function AiSettingsPage() {
   return <>
     <AiSettingsContent />
-    <div className="creation-page ai-settings-page"><GhuntSettings /><FacecheckSettings /></div>
+    <div className="creation-page ai-settings-page"><GhuntSettings /><FacecheckSettings /><DecodoSettings /></div>
   </>;
 }
 

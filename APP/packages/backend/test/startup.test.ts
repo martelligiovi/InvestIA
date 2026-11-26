@@ -87,6 +87,10 @@ test("container startup permits only an explicitly opted-in IPv4 wildcard", asyn
     const settings = await runtime.app.inject({ method: "GET", url: "/settings/facecheck", headers: { host: "127.0.0.1:4317" } });
     assert.deepEqual(settings.json(), { tokenConfigured: false, tokenHint: null, testingMode: true });
     assert.ok(pool.queries.some((query) => query.includes("CREATE TABLE IF NOT EXISTS facecheck_settings")));
+    const decodo = await runtime.app.inject({ method: "GET", url: "/settings/decodo", headers: { host: "127.0.0.1:4317" } });
+    assert.equal(decodo.statusCode, 200);
+    assert.deepEqual(decodo.json(), { tokenConfigured: false, tokenHint: null, apiMode: "web_data" });
+    assert.ok(pool.queries.some((query) => query.includes("CREATE TABLE IF NOT EXISTS decodo_settings")));
     const readiness = await runtime.app.inject({ method: "GET", url: "/investigations" });
     assert.equal(readiness.statusCode, 200);
     assert.deepEqual(readiness.json(), []);

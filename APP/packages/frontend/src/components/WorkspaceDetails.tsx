@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react";
-import { authorizationCovers, type Investigation, type ValidationStatus } from "@investia/core";
-import { actionTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
+import { authorizationCovers, findingSeedNodeId, isActionEligibleByParentValidation, isSafePublicHttpUrl, latestValidationStatus, type EvidenceRecord, type ScannerFinding, type Investigation, type ValidationStatus } from "@investia/core";
+import { actionTitle, decodoPageTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 import { facecheckReviewState } from "./FacecheckReview";
 
@@ -9,8 +9,11 @@ export interface WorkspaceDetailsProps {
   readonly node: WorkspaceNode | null;
   readonly disabled: boolean;
   readonly ghuntConnected?: boolean | null;
+  readonly facecheckConfigured?: boolean | null;
+  readonly decodoConfigured?: boolean | null;
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
+  readonly onQueueDecodo?: (evidenceIds: readonly string[]) => Promise<boolean>;
   readonly onApproveGravatar?: (actionId: string, reason: string) => Promise<boolean>;
   /** Opens the card review for the candidates of one FaceCheck search. */
   readonly onReviewFacecheck?: (actionId: string) => void;
@@ -61,7 +64,8 @@ function MediaValue({ value }: { readonly value: string }) {
   return <span>{value}</span>;
 }
 
-function SafeLink({ value }: { readonly value: string }) {
+function SafeLink({ value, publicOnly = false }: { readonly value: string; readonly publicOnly?: boolean }) {
+  if (publicOnly && !isSafePublicHttpUrl(value)) return <span>{value}</span>;
   try {
     const url = new URL(value);
     if (["https:", "http:"].includes(url.protocol) && !url.username && !url.password) {
@@ -71,11 +75,40 @@ function SafeLink({ value }: { readonly value: string }) {
   return <span>{value}</span>;
 }
 
+const DECODO_PAGE_FIELDS = new Set(["title", "status_code", "description", "content", "content_truncated", "preview", "links"]);
+const TARGET_LABELS: Readonly<Record<ScannerFinding["target"]["kind"], string>> = { email: "Email", photo: "Foto", username: "Usuario", url: "URL" };
+
+function DecodoPageDetails({ finding }: { readonly finding: ScannerFinding }) {
+  const { status_code: status, description, content, content_truncated: truncated, links } = finding.extra;
+  const publicLinks = typeof links === "string"
+    ? [...new Set(links.split("\n").map((link) => link.trim()).filter(isSafePublicHttpUrl))]
+    : [];
+  return (
+    <section className="detail-fact" aria-labelledby="decodo-page-heading">
+      <h3 id="decodo-page-heading">Página recopilada por Decodo</h3>
+      <dl className="fact-list">
+        <dt>Título</dt><dd>{decodoPageTitle(finding)}</dd>
+        <dt>URL final</dt><dd><SafeLink value={finding.url} publicOnly /></dd>
+        {typeof status === "number" && <><dt>Estado HTTP</dt><dd>{status}</dd></>}
+        {typeof description === "string" && description !== "" && <><dt>Descripción</dt><dd>{description}</dd></>}
+      </dl>
+      {typeof content === "string" && content !== "" && <>
+        <h4 id="decodo-content-heading">Texto recopilado</h4>
+        {truncated === true && <p className="detail-note">El contenido se guardó truncado por el límite de tamaño.</p>}
+        <pre className="decodo-page-content" aria-labelledby="decodo-content-heading" tabIndex={0}>{content}</pre>
+      </>}
+      {publicLinks.length > 0 && <>
+        <h4>Enlaces públicos extraídos</h4>
+        <ul className="decodo-page-links">{publicLinks.map((url) => <li key={url}><SafeLink value={url} publicOnly /></li>)}</ul>
+      </>}
+    </section>
+  );
+}
+
 /** The FaceCheck search behind a candidate group, a single candidate or the search action itself. */
 function facecheckActionOf(node: WorkspaceNode): string | undefined {
-  if (node.kind === "leaf-group") {
-    const first = node.members?.[0]?.evidence;
-    return first?.sourceId === "facecheck:photo" ? first.actionId : undefined;
+  if (node.kind === "leaf-group" && node.hiddenMembers !== undefined) {
+    return node.producerActionId ?? node.members?.[0]?.evidence?.actionId;
   }
   if (node.kind === "evidence" && node.evidence?.sourceId === "facecheck:photo") return node.evidence.actionId;
   if (node.kind === "action" && node.action?.spec.catalogId === "facecheck.photo.v1") return node.action.id;
@@ -92,25 +125,59 @@ function facecheckGroupHeading(members: readonly WorkspaceNode[], investigation:
   return "Ningún candidato aceptado";
 }
 
-function LeafGroupDetails({ node, investigation, onSelectNode }: { readonly node: WorkspaceNode; readonly investigation: Investigation; readonly onSelectNode?: (id: string) => void }) {
+function canQueueDecodo(investigation: Investigation, evidence: EvidenceRecord | undefined): evidence is EvidenceRecord {
+  if (evidence?.sourceId !== "facecheck:photo" || latestValidationStatus(investigation, evidence.id) !== "accepted" ||
+    !isSafePublicHttpUrl(evidence.finding?.url)) return false;
+  const sourceSeedId = findingSeedNodeId(evidence.id);
+  return !investigation.actions.some((action) => action.spec.catalogId === "decodo.url.v1" && action.sourceSeedId === sourceSeedId);
+}
+
+function DecodoReadinessNotes({ investigation, decodoConfigured }: Pick<WorkspaceDetailsProps, "investigation" | "decodoConfigured">) {
+  return <>
+    {!authorizationCovers(investigation.authorization, "decodo.url.v1") && <p className="detail-note">El expediente requiere autorización para ejecutar Decodo.</p>}
+    {decodoConfigured === false && <p className="detail-note">Falta el token de Decodo. <a href="#/ajustes">Configurar Decodo</a></p>}
+  </>;
+}
+
+type LeafGroupDetailsProps = Pick<WorkspaceDetailsProps, "investigation" | "disabled" | "decodoConfigured" | "onSelectNode" | "onQueueDecodo"> & {
+  readonly node: WorkspaceNode;
+};
+
+function LeafGroupDetails({ node, investigation, disabled, decodoConfigured, onSelectNode, onQueueDecodo }: LeafGroupDetailsProps) {
   const [page, setPage] = useState(0);
   const members = node.members ?? [];
   const lastPage = Math.max(0, Math.ceil(members.length / GRAPH_PAGE_SIZE) - 1);
   const currentPage = Math.min(page, lastPage);
   const start = currentPage * GRAPH_PAGE_SIZE;
   const facecheck = node.hiddenMembers !== undefined;
+  const eligibleIds = new Set(facecheck && onQueueDecodo !== undefined
+    ? members.flatMap(({ evidence }) => canQueueDecodo(investigation, evidence) ? [evidence.id] : [])
+    : []);
   return (
     <section className="detail-fact" aria-labelledby="group-heading">
       <h3 id="group-heading">{facecheck ? facecheckGroupHeading(members, investigation) : `Semillas agrupadas · ${members.length} resultados`}</h3>
       {facecheck
         ? <p className="detail-note">{node.hiddenMembers! > 0 && `Los ${node.hiddenMembers} descartados no se muestran en el grafo; siguen en la pestaña Descartados de la revisión. `}Abrir un candidato no ejecuta ninguna acción.</p>
         : <p className="detail-note">Son semillas producidas por la misma acción, sin acciones asociadas por ahora. Abrir un resultado no ejecuta ninguna acción ni expande el grafo.</p>}
+      {eligibleIds.size > 0 && <>
+        <p className="detail-note">Podés encolar el scraping de las URL públicas aceptadas sin volver a ejecutar FaceCheck.</p>
+        <DecodoReadinessNotes investigation={investigation} decodoConfigured={decodoConfigured} />
+        <button type="button" className="workspace-button" disabled={disabled} onClick={() => void onQueueDecodo?.([...eligibleIds])}>
+          {eligibleIds.size === 1 ? "Aplicar Decodo" : `Aplicar Decodo a aceptados (${eligibleIds.size})`}
+        </button>
+      </>}
       <ul className="leaf-group-members">
-        {members.slice(start, start + GRAPH_PAGE_SIZE).map((member) => (
-          <li key={member.id}><button type="button" className="workspace-button"
-            aria-label={`Ver resultado: ${member.title}`} disabled={onSelectNode === undefined}
-            onClick={() => onSelectNode?.(member.id)}>{member.title}</button></li>
-        ))}
+        {members.slice(start, start + GRAPH_PAGE_SIZE).map((member) => {
+          const evidenceId = member.evidence?.id;
+          const canQueue = evidenceId !== undefined && eligibleIds.has(evidenceId);
+          return <li key={member.id} className={canQueue ? "leaf-group-member--with-action" : undefined}>
+            <button type="button" className="workspace-button"
+              aria-label={`Ver resultado: ${member.title}`} disabled={onSelectNode === undefined}
+              onClick={() => onSelectNode?.(member.id)}>{member.title}</button>
+            {canQueue && <button type="button" className="workspace-button" aria-label={`Aplicar Decodo a ${member.title}`}
+              disabled={disabled} onClick={() => void onQueueDecodo?.([evidenceId])}>Decodo</button>}
+          </li>;
+        })}
       </ul>
       {lastPage > 0 && <nav className="graph-pagination" aria-label="Páginas del grupo">
         <p role="status">Resultados {start + 1}–{Math.min(start + GRAPH_PAGE_SIZE, members.length)} de {members.length}</p>
@@ -126,10 +193,12 @@ function LeafGroupDetails({ node, investigation, onSelectNode }: { readonly node
   );
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, onValidate, onSelectNode, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
+export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, facecheckConfigured, decodoConfigured, onValidate, onSelectNode, onQueueDecodo, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
+  const decodoFinding = node?.evidence?.sourceId === "decodo:url" ? node.evidence.finding : undefined;
+  const isDecodoAction = node?.action?.spec.catalogId === "decodo.url.v1";
 
   async function validate(evidenceId: string, status: ValidationStatus) {
     if (validationReason.trim() === "") {
@@ -160,7 +229,8 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
         <div className="detail-content" key={node.id}>
           {onReviewFacecheck !== undefined && facecheckActionOf(node) !== undefined &&
             <FacecheckReviewCall investigation={investigation} actionId={facecheckActionOf(node)!} onReview={onReviewFacecheck} />}
-          {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} investigation={investigation} onSelectNode={onSelectNode} />}
+          {node.kind === "leaf-group" && <LeafGroupDetails key={node.id} node={node} investigation={investigation} disabled={disabled}
+            decodoConfigured={decodoConfigured} onSelectNode={onSelectNode} onQueueDecodo={onQueueDecodo} />}
           {node.groupId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
             onClick={() => onSelectNode(node.groupId!)}>Volver al grupo</button>}
           {node.relatedParentId !== undefined && onSelectNode !== undefined && <button type="button" className="workspace-button"
@@ -185,7 +255,8 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                 <h3 id="selected-action-heading">{actionTitle(node.action)}</h3>
                 <dl className="fact-list">
                   <dt>Proveedor</dt><dd>{node.action.spec.provider}</dd>
-                  <dt>Semilla</dt><dd className="break-value">{node.action.spec.seed.value}</dd>
+                  <dt>{isDecodoAction ? "URL objetivo" : "Semilla"}</dt><dd className="break-value">{isDecodoAction
+                    ? <SafeLink value={node.action.spec.seed.value} publicOnly /> : node.action.spec.seed.value}</dd>
                   <dt>Estado de la acción</dt><dd><StateValue value={node.state} /></dd>
                 </dl>
                 <details className="detail-provenance">
@@ -209,9 +280,15 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                 </dl>
                 </details>
                 {node.action.spec.catalogId === "ghunt.email.v1" && node.action.status === "queued" && <>
-                  {!authorizationCovers(investigation.authorization, node.action.spec.catalogId) && <p className="detail-note">Es necesario renovar la autorización para GHunt desde Controles del expediente.</p>}
+                  {!authorizationCovers(investigation.authorization, node.action.spec.catalogId) && <p className="detail-note">El expediente requiere autorización para ejecutar GHunt.</p>}
                   {ghuntConnected === false && <p className="detail-note"><span className="workspace-state-value">Requiere login</span> · <a href="#/ajustes?seccion=ghunt">Conectar Google</a></p>}
                   {ghuntConnected === null && <p className="detail-note">No se pudo confirmar la conexión de Google.</p>}
+                </>}
+                {node.action.spec.catalogId === "facecheck.photo.v1" && node.action.status === "queued" && facecheckConfigured === false &&
+                  <p className="detail-note">Falta el token de FaceCheck. <a href="#/ajustes">Configurar FaceCheck</a></p>}
+                {isDecodoAction && node.action.status === "queued" && <>
+                  <DecodoReadinessNotes investigation={investigation} decodoConfigured={decodoConfigured} />
+                  {!isActionEligibleByParentValidation(investigation, node.action) && <p className="detail-note">La coincidencia de FaceCheck ya no está aceptada. Decodo espera a que vuelvas a aceptarla.</p>}
                 </>}
                 {node.action.status === "claimed" && (
                   <p className="detail-warning" role="note">Acción reclamada: efecto externo incierto o aún en curso. Esta interfaz no la vuelve a ejecutar.</p>
@@ -261,6 +338,7 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                 <p className="detail-note">Semilla descubierta en {node.evidence.provider}. Seleccionarla no ejecuta nuevas búsquedas. No confirma identidad ni titularidad.</p>
                 <p className="detail-note">La validación de abajo corresponde a la observación original completa, no a este campo por separado.</p>
               </section>}
+              {decodoFinding !== undefined && <DecodoPageDetails finding={decodoFinding} />}
               <section className="detail-fact" aria-labelledby="selected-evidence-heading">
                 <h3 id="selected-evidence-heading">{evidenceHeading(node.evidence)}</h3>
                 <dl className="fact-list">
@@ -272,26 +350,38 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                   <dt>Semilla observada</dt><dd className="break-value">{node.evidence.seed.value}</dd>
                   <dt>Registrada</dt><dd>{formatDate(node.evidence.recordedAt)}</dd>
                   {node.evidence.finding && <>
-                    <dt>Tipo de objetivo descubierto</dt><dd>{node.evidence.finding.target.kind === "email" ? "Email" : node.evidence.finding.target.kind === "photo" ? "Foto" : "Usuario"}</dd>
-                    <dt>Objetivo observado</dt><dd className="break-value">{node.evidence.finding.target.value}</dd>
+                    <dt>Tipo de objetivo descubierto</dt><dd>{TARGET_LABELS[node.evidence.finding.target.kind]}</dd>
+                    <dt>Objetivo observado</dt><dd className="break-value">{node.evidence.finding.target.kind === "url"
+                      ? <SafeLink value={node.evidence.finding.target.value} publicOnly /> : node.evidence.finding.target.value}</dd>
                     <dt>Estado original de la herramienta</dt><dd>{node.evidence.finding.upstreamStatus}</dd>
-                    <dt>Enlace</dt><dd className="break-value"><SafeLink value={node.evidence.finding.url} /></dd>
+                    {decodoFinding === undefined && <><dt>Enlace</dt><dd className="break-value"><SafeLink value={node.evidence.finding.url} /></dd></>}
                     <dt>Categoría</dt><dd>{node.evidence.finding.category}</dd>
-                    <dt>Motivo informado</dt><dd className="break-value">{node.evidence.finding.reason}</dd>
+                    {decodoFinding === undefined && <><dt>Motivo informado</dt><dd className="break-value">{node.evidence.finding.reason}</dd></>}
                   </>}
                 </dl>
                 {node.evidence.finding && <>
                   <h4>Metadatos y procedencia</h4>
-                  <dl className="fact-list">{Object.entries(node.evidence.finding.extra).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value">{String(value)}</dd></Fragment>)}</dl>
-                  <h4>Referencias multimedia</h4>
-                  <dl className="fact-list">{Object.entries(node.evidence.finding.media).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value"><MediaValue value={value} /></dd></Fragment>)}</dl>
+                  <dl className="fact-list">{Object.entries(node.evidence.finding.extra)
+                    .filter(([key]) => decodoFinding === undefined || !DECODO_PAGE_FIELDS.has(key))
+                    .map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value">{String(value)}</dd></Fragment>)}</dl>
+                  {decodoFinding === undefined && <>
+                    <h4>Referencias multimedia</h4>
+                    <dl className="fact-list">{Object.entries(node.evidence.finding.media).map(([key, value]) => <Fragment key={key}><dt className="break-value">{key}</dt><dd className="break-value"><MediaValue value={value} /></dd></Fragment>)}</dl>
+                  </>}
                 </>}
                 {node.evidence.sourceId === "facecheck:photo" && <p className="detail-warning">
-                  Este resultado es un candidato: FaceCheck encontró una cara parecida a la foto de perfil, no necesariamente la misma persona. Necesita que confirmes o rechaces si es esa persona.
+                  Este resultado es un candidato: FaceCheck encontró una cara parecida a la foto de perfil, no necesariamente la misma persona. Necesita que confirmes o rechaces si es esa persona. Si lo aceptás, se encola el scraping de su URL pública con Decodo, nunca de la foto ni de la miniatura. En avance automático no necesitás ejecutar otra acción.
                   {node.evidence.finding?.extra.testing_mode === true && " Se encontró en modo prueba (solo 100.000 caras), así que es poco fiable."}
                 </p>}
                 <p className="detail-warning">La herramienta reportó un hallazgo positivo para el objetivo observado. No confirma identidad ni titularidad y puede contener errores. La confianza informada por la herramienta no es una validación humana.</p>
               </section>
+              {onQueueDecodo !== undefined && canQueueDecodo(investigation, node.evidence) && <section className="detail-control" aria-labelledby="decodo-action-heading">
+                <h3 id="decodo-action-heading">Acción de Decodo</h3>
+                <p className="detail-note">Agrega a la cola el scraping de esta URL pública. No vuelve a ejecutar FaceCheck.</p>
+                <DecodoReadinessNotes investigation={investigation} decodoConfigured={decodoConfigured} />
+                <button type="button" className="workspace-button" disabled={disabled}
+                  onClick={() => void onQueueDecodo([node.evidence!.id])}>Aplicar scraping con Decodo</button>
+              </section>}
               <section className="detail-control" aria-labelledby="validation-heading">
                 <h3 id="validation-heading">Validación humana</h3>
                 <label className="form-field">

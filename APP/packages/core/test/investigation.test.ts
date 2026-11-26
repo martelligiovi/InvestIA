@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   authorizationCovers,
   buildAiReportMessages,
+  SCOPED_CATALOG_IDS,
   compileInvestigationReport,
   createInvestigationService,
   createSeedBoxExecutor,
@@ -19,6 +20,8 @@ import {
   createInitialInvestigation,
   findingSeedNodeId,
   investigationSeedGraph,
+  isActionEligibleByParentValidation,
+  latestValidationStatus,
   usernameProposals,
   usernameSeedNodeId,
 } from "../src/index.ts";
@@ -60,7 +63,8 @@ class MemoryInvestigationStore implements InvestigationStore {
     ) return undefined;
     if (input.automaticOnly && current.advancementMode !== "automatic") return undefined;
     const action = current.actions.find((candidate) => candidate.status === "queued" && (candidate.approval || candidate.queuedByCatalog) &&
-      !(input.deferredCatalogIds ?? []).includes(candidate.spec.catalogId) && authorizationCovers(current.authorization, candidate.spec.catalogId));
+      !(input.deferredCatalogIds ?? []).includes(candidate.spec.catalogId) && authorizationCovers(current.authorization, candidate.spec.catalogId) &&
+      isActionEligibleByParentValidation(current, candidate));
     if (action === undefined) return undefined;
 
     const claimedAction = {
@@ -192,13 +196,12 @@ test("deferred GHunt waits while other work runs in manual and automatic modes",
   }
 });
 
-test("GHunt requires a fresh per-tool consent grant", async () => {
+test("new authorizations record every active scoped tool", async () => {
   const { service } = makeHarness();
   const created = await service.createInvestigation();
-  const fresh = (await service.authorize(created.id, true, "Authorize tools")).authorization!;
-  const old = { ...fresh, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1"] as const };
-  assert.equal(authorizationCovers(old, "ghunt.email.v1"), false);
-  assert.equal(authorizationCovers(fresh, "ghunt.email.v1"), true);
+  const granted = await service.authorize(created.id, true, "Authorize tools");
+  assert.deepEqual(granted.authorization?.catalogScopes, SCOPED_CATALOG_IDS);
+  assert.deepEqual((await service.loadInvestigation(created.id))?.authorization, granted.authorization);
 });
 
 test("a new email queues User Scanner without independently running Gravatar", async () => {
@@ -926,36 +929,50 @@ function ghuntPhoto(url: string): Observation {
   };
 }
 
-function faceMatch(score: number): Observation {
+function faceMatch(score: number, url = `https://example.org/${score}`): Observation {
   const seed = { kind: "photo", value: PROFILE_PHOTO } as const;
   return {
     kind: "scanner_finding", seed, provider: "FaceCheck", status: "registered",
-    finding: { target: seed, upstreamStatus: "Found", url: `https://example.org/${score}`, category: "Face match", reason: "",
+    finding: { target: seed, upstreamStatus: "Found", url, category: "Face match", reason: "",
       extra: { source: "facecheck", score, testing_mode: true }, media: { thumbnail: THUMBNAIL } },
   };
 }
 
-/** GHunt reports the given observations; FaceCheck reports two candidates. */
-function facecheckHarness(ghunt: Observation[], photoCatalog?: readonly ScopedCatalogId[], deferred: () => readonly ScopedCatalogId[] = () => []) {
+/** GHunt reports the given observations; FaceCheck reports two candidates by default. */
+function facecheckHarness(
+  ghunt: Observation[],
+  photoCatalog?: readonly ScopedCatalogId[],
+  deferred: () => readonly ScopedCatalogId[] = () => [],
+  options: { urlCatalog?: readonly ScopedCatalogId[]; matches?: Observation[] } = {},
+) {
   const store = new MemoryInvestigationStore();
   let id = 0;
   const executed: string[] = [];
-  const service = createInvestigationService({
+  const createService = (urlCatalog = options.urlCatalog) => createInvestigationService({
     store,
     executor: {
       id: "fake",
-      sourceIdFor: (action) => action.spec.catalogId === "facecheck.photo.v1" ? "facecheck:photo" : "fake",
+      sourceIdFor: (action) => action.spec.catalogId === "facecheck.photo.v1" ? "facecheck:photo"
+        : action.spec.catalogId === "decodo.url.v1" ? "decodo:url" : "fake",
       async execute(action) {
-        executed.push(`${action.spec.catalogId} ${action.spec.seed.kind}:${action.spec.seed.value}`);
-        return action.spec.catalogId === "ghunt.email.v1" ? ghunt : [faceMatch(80), faceMatch(91)];
+        const { spec } = action;
+        executed.push(`${spec.catalogId} ${spec.seed.kind}:${spec.seed.value}`);
+        if (spec.catalogId === "ghunt.email.v1") return ghunt;
+        if (spec.catalogId === "decodo.url.v1") return [{
+          kind: "scanner_finding", seed: spec.seed, provider: "Decodo", status: "registered",
+          finding: { target: spec.seed, upstreamStatus: "Found", url: spec.seed.value, category: "Page",
+            reason: "", extra: { title: "Scraped public profile", discovered_usernames: "unconfirmed_alias" }, media: {} },
+        }];
+        return options.matches ?? [faceMatch(80), faceMatch(91)];
       },
     },
     clock: () => "2025-01-01T00:00:00.000Z", createId: (kind) => `${kind}-${++id}`,
     seedCatalog: ["ghunt.email.v1"],
     ...(photoCatalog === undefined ? {} : { photoCatalog }),
+    ...(urlCatalog === undefined ? {} : { urlCatalog }),
     deferredCatalogIds: async () => deferred(),
   });
-  return { store, service, executed };
+  return { store, service: createService(), createService, executed, issuedIds: () => id };
 }
 
 test("a GHunt profile photo queues FaceCheck fed by that finding, and each candidate is separate evidence", async () => {
@@ -994,8 +1011,10 @@ test("a GHunt profile photo queues FaceCheck fed by that finding, and each candi
   assert.deepEqual(rejected.validations.map((decision) => [decision.evidenceId, decision.status]), [
     [candidates[1]!.id, "accepted"], [candidates[0]!.id, "rejected"],
   ]);
-  assert.equal(decided.actions.length, stored.actions.length, "a confirmed candidate launches no new action");
-  assert.equal(rejected.actions.length, stored.actions.length);
+  assert.deepEqual(decided.actions, stored.actions, "omitting the URL catalog preserves the FaceCheck queue");
+  assert.equal(decided.revision, stored.revision + 1);
+  assert.deepEqual(decided.audit.slice(stored.audit.length).map((event) => event.kind), ["evidence_validated"]);
+  assert.deepEqual(rejected.actions, stored.actions);
 });
 
 test("FaceCheck queues only for an own Google profile photo while the tool is enabled, once per photo", async () => {
@@ -1023,20 +1042,32 @@ test("FaceCheck queues only for an own Google profile photo while the tool is en
   }), /photo catalog/);
 });
 
-test("deferred FaceCheck waits until it is ready and requires a grant that names it", async () => {
+test("FaceCheck waits until ready and then requires a grant that names it", async () => {
   let deferred = true;
-  const { service, executed } = facecheckHarness([ghuntPhoto(PROFILE_PHOTO)], ["facecheck.photo.v1"], () => deferred ? ["facecheck.photo.v1"] : []);
+  const { store, service, executed } = facecheckHarness([ghuntPhoto(PROFILE_PHOTO)], ["facecheck.photo.v1"], () => deferred ? ["facecheck.photo.v1"] : []);
   const created = await service.createInvestigation();
   await service.addEmailSeed(created.id, "ana@gmail.com");
-  const fresh = (await service.authorize(created.id, true, "Authorize tools")).authorization!;
-  assert.equal(authorizationCovers({ ...fresh, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"] }, "facecheck.photo.v1"), false);
-  assert.equal(authorizationCovers(fresh, "facecheck.photo.v1"), true);
+  const granted = await service.authorize(created.id, true, "Authorize tools");
   await service.executeNextAction(created.id);
+  const queued = (await service.loadInvestigation(created.id))!;
+  assert.equal(queued.actions.at(-1)?.status, "queued");
   assert.equal(await service.executeNextAction(created.id), undefined);
-  assert.equal((await service.loadInvestigation(created.id))!.actions.at(-1)!.status, "queued");
+  assert.deepEqual(await service.loadInvestigation(created.id), queued);
   deferred = false;
-  assert.equal((await service.executeNextAction(created.id))?.spec.catalogId, "facecheck.photo.v1");
-  assert.equal(executed.length, 2);
+  const authorization = { ...granted.authorization!, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1"] as const };
+  const before = await store.transact(created.id, (current) => {
+    const next = { ...current, revision: current.revision + 1, authorization };
+    return { next, result: next };
+  });
+  assert.equal(await service.executeNextAction(created.id), undefined);
+  assert.deepEqual(await service.loadInvestigation(created.id), before);
+  assert.deepEqual(executed, ["ghunt.email.v1 email:ana@gmail.com"]);
+  const renewed = await service.authorize(created.id, true, "Authorize FaceCheck");
+  const completed = await service.executeNextAction(created.id);
+  assert.equal(completed?.spec.catalogId, "facecheck.photo.v1");
+  assert.equal(completed?.status, "succeeded");
+  assert.deepEqual(executed, ["ghunt.email.v1 email:ana@gmail.com", `facecheck.photo.v1 photo:${PROFILE_PHOTO}`]);
+  assert.deepEqual((await service.loadInvestigation(created.id))?.authorization, renewed.authorization);
 });
 
 test("the report names photo seeds and does not inline FaceCheck thumbnails", async () => {
@@ -1065,6 +1096,203 @@ test("photo catalog rejects unknown, duplicate and non-photo tools while allowin
     assert.throws(() => createInvestigationService({ ...base, photoCatalog: photoCatalog as ScopedCatalogId[] }), /photo catalog/);
   }
   assert.throws(() => createInvestigationService({ ...base, seedCatalog: ["facecheck.photo.v1"] }), /seed catalog/);
+});
+
+const PUBLIC_PROFILE_URL = "https://linkedin.com/in/example?view=public";
+
+async function caseWithDecodo(rawUrl = "https://LinkedIn.com:443/in/example?view=public#bio", enabled = true) {
+  const harness = facecheckHarness([ghuntPhoto(PROFILE_PHOTO)], ["facecheck.photo.v1"], undefined, {
+    ...(enabled ? { urlCatalog: ["decodo.url.v1"] } : {}), matches: [faceMatch(91, rawUrl)],
+  });
+  const { service } = harness;
+  const { id } = await service.createInvestigation();
+  await service.addEmailSeed(id, "ana@gmail.com");
+  await service.authorize(id, true, "Authorize catalog tools.");
+  await service.executeNextAction(id, true);
+  await service.executeNextAction(id, true);
+  const before = (await service.loadInvestigation(id))!;
+  const parent = before.evidence.find((record) => record.sourceId === "facecheck:photo")!;
+  assert.ok(parent);
+  return { ...harness, id, before, parent };
+}
+
+test("accepting FaceCheck evidence atomically queues Decodo for only its page URL, once", async () => {
+  const { service, id, before, parent, executed } = await caseWithDecodo();
+  assert.equal(await service.executeNextAction(id, true), undefined, "unreviewed candidates do not queue Decodo");
+  const accepted = await service.validateEvidence(id, parent.id, "accepted", "Same person.");
+  assert.equal(accepted.revision, before.revision + 1);
+  assert.deepEqual(accepted.evidence, before.evidence);
+  assert.deepEqual(accepted.actions.slice(0, before.actions.length), before.actions);
+  assert.equal(accepted.actions.length, before.actions.length + 1);
+  const action = accepted.actions.at(-1)!;
+  assert.deepEqual(action, {
+    id: action.id, status: "queued", queuedByCatalog: true, sourceSeedId: findingSeedNodeId(parent.id),
+    proposedAt: accepted.updatedAt, proposalReason: "Catalog policy queued a Decodo scrape for the accepted FaceCheck result URL.",
+    spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: PUBLIC_PROFILE_URL } },
+  });
+  assert.equal(investigationSeedGraph(accepted).actionInputs.get(action.id), findingSeedNodeId(parent.id));
+  assert.deepEqual(accepted.validations.slice(before.validations.length), [{
+    id: accepted.validations.at(-1)!.id, evidenceId: parent.id, status: "accepted", reason: "Same person.",
+    at: accepted.updatedAt, operator: "local-operator",
+  }]);
+  assert.deepEqual(accepted.audit.slice(before.audit.length), [
+    { id: accepted.audit.at(-2)!.id, at: accepted.updatedAt, actor: "operator", kind: "evidence_validated", reason: "Same person.", evidenceId: parent.id, decision: "accepted" },
+    { id: accepted.audit.at(-1)!.id, at: accepted.updatedAt, actor: "system", kind: "action_queued", reason: action.proposalReason, actionId: action.id },
+  ]);
+  assert.deepEqual(await service.loadInvestigation(id), accepted);
+  const repeated = await service.validateEvidence(id, parent.id, "accepted", "Confirmed again.");
+  assert.equal(repeated.revision, accepted.revision + 1);
+  assert.deepEqual(repeated.actions, accepted.actions);
+  assert.deepEqual(repeated.audit.slice(accepted.audit.length).map((event) => event.kind), ["evidence_validated"]);
+  assert.deepEqual(executed, ["ghunt.email.v1 email:ana@gmail.com", `facecheck.photo.v1 photo:${PROFILE_PHOTO}`]);
+});
+
+test("an operator can queue Decodo once for an older accepted FaceCheck match without repeating the search", async () => {
+  const { service: legacy, createService, id, before, parent, executed, issuedIds } = await caseWithDecodo(undefined, false);
+  const accepted = await legacy.validateEvidence(id, parent.id, "accepted", "Same person.");
+  assert.deepEqual(accepted.actions, before.actions);
+  const service = createService(["decodo.url.v1"]);
+  const queued = await service.queueDecodoAction(id, parent.id);
+  const action = queued.actions.at(-1)!;
+  assert.deepEqual(action, {
+    id: action.id, status: "queued", queuedByCatalog: true, sourceSeedId: findingSeedNodeId(parent.id),
+    proposedAt: queued.updatedAt, proposalReason: "Catalog policy queued a Decodo scrape for the accepted FaceCheck result URL.",
+    spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: PUBLIC_PROFILE_URL } },
+  });
+  assert.deepEqual(queued, {
+    ...accepted, revision: accepted.revision + 1, updatedAt: action.proposedAt, actions: [...accepted.actions, action],
+    audit: [...accepted.audit, {
+      id: queued.audit.at(-1)!.id, at: action.proposedAt, actor: "operator", kind: "action_queued",
+      reason: "Operator requested Decodo scraping for an accepted FaceCheck match.", actionId: action.id, evidenceId: parent.id,
+    }],
+  });
+  assert.equal(investigationSeedGraph(queued).actionInputs.get(action.id), findingSeedNodeId(parent.id));
+  const ids = issuedIds();
+  await assert.rejects(() => service.queueDecodoAction(id, parent.id), { message: "A Decodo scrape action already exists for this FaceCheck match" });
+  assert.equal(issuedIds(), ids);
+  assert.deepEqual(await service.loadInvestigation(id), queued);
+  const reaccepted = await service.validateEvidence(id, parent.id, "accepted", "Match confirmed again.");
+  assert.deepEqual(reaccepted.actions, queued.actions);
+  assert.deepEqual(reaccepted.audit.slice(queued.audit.length).map(({ kind }) => kind), ["evidence_validated"]);
+  assert.deepEqual(executed, ["ghunt.email.v1 email:ana@gmail.com", `facecheck.photo.v1 photo:${PROFILE_PHOTO}`]);
+});
+
+test("manual Decodo queueing rejects ineligible evidence, invalid reasons and a disabled catalog without changes", async () => {
+  const { service: legacy, createService, id, before, parent, executed, issuedIds } = await caseWithDecodo(undefined, false);
+  const service = createService(["decodo.url.v1"]);
+  async function rejects(evidenceId: string, message: string, target = service, reason?: string, caseId = id) {
+    const snapshot = await service.loadInvestigation(id);
+    const ids = issuedIds();
+    await assert.rejects(() => target.queueDecodoAction(caseId, evidenceId, reason), { message });
+    assert.deepEqual(await service.loadInvestigation(id), snapshot);
+    assert.equal(issuedIds(), ids);
+  }
+  const unaccepted = "Only an accepted FaceCheck match can queue a Decodo scrape";
+  await rejects(parent.id, unaccepted);
+  await legacy.validateEvidence(id, parent.id, "accepted", "Initially confirmed.");
+  await rejects(parent.id, "Decodo scraping is not enabled", legacy);
+  await rejects(parent.id, "A non-empty reason is required", service, " ");
+  await legacy.validateEvidence(id, parent.id, "rejected", "Incorrect match.");
+  await rejects(parent.id, unaccepted);
+  const other = before.evidence[0]!.id;
+  await legacy.validateEvidence(id, other, "accepted", "Reviewed photo.");
+  await rejects(other, unaccepted);
+  await rejects("unknown", "Evidence not found: unknown");
+  await rejects("unknown", "Evidence not found: unknown", legacy);
+  await rejects(parent.id, "Investigation not found: unknown", legacy, undefined, "unknown");
+  assert.equal(executed.length, 2);
+
+  const unsafe = await caseWithDecodo("http://127.0.0.1/profile");
+  const accepted = await unsafe.service.validateEvidence(unsafe.id, unsafe.parent.id, "accepted", "Reviewed match.");
+  const ids = unsafe.issuedIds();
+  await assert.rejects(() => unsafe.service.queueDecodoAction(unsafe.id, unsafe.parent.id), { message: "FaceCheck match does not have a valid public HTTP URL" });
+  assert.deepEqual(await unsafe.service.loadInvestigation(unsafe.id), accepted);
+  assert.equal(unsafe.issuedIds(), ids);
+  assert.equal(unsafe.executed.length, 2);
+});
+
+test("overturning FaceCheck acceptance blocks a Decodo claim until re-acceptance", async () => {
+  const { service, id, parent, executed } = await caseWithDecodo();
+  const accepted = await service.validateEvidence(id, parent.id, "accepted", "Same person.");
+  const action = accepted.actions.find(({ spec }) => spec.catalogId === "decodo.url.v1")!;
+  assert.ok(action, "acceptance queued Decodo");
+  for (const status of ["rejected", "inconclusive"] as const) {
+    const overturned = await service.validateEvidence(id, parent.id, status, "Needs review.");
+    assert.equal(latestValidationStatus(overturned, parent.id), status, "last decision wins even with identical timestamps");
+    assert.equal(await service.executeNextAction(id, true), undefined);
+    assert.deepEqual(await service.loadInvestigation(id), overturned, "blocked claim leaves the queue, revision and audit unchanged");
+    assert.equal(executed.length, 2);
+  }
+  const restored = await service.validateEvidence(id, parent.id, "accepted", "Match confirmed again.");
+  assert.equal(latestValidationStatus(restored, parent.id), "accepted");
+  assert.deepEqual(restored.actions, accepted.actions);
+  const completed = await service.executeNextAction(id, true);
+  assert.equal(completed?.id, action.id);
+  assert.equal(completed?.status, "succeeded");
+  assert.equal(completed?.unsupportedObservationCount, 0);
+  assert.deepEqual(executed.slice(2), [`decodo.url.v1 url:${PUBLIC_PROFILE_URL}`]);
+  const stored = (await service.loadInvestigation(id))!;
+  assert.deepEqual(stored.evidence.slice(restored.evidence.length).map((record) => [record.actionId, record.sourceId, record.seed, record.finding?.target]), [
+    [action.id, "decodo:url", action.spec.seed, action.spec.seed],
+  ]);
+  assert.deepEqual(usernameProposals(stored), []);
+});
+
+test("Decodo cannot claim when its explicit FaceCheck parent reference does not resolve", async () => {
+  const { service, store, id, parent, executed } = await caseWithDecodo();
+  const accepted = await service.validateEvidence(id, parent.id, "accepted", "Same person.");
+  const action = accepted.actions.find(({ spec }) => spec.catalogId === "decodo.url.v1")!;
+  const { sourceSeedId: _linkedParent, ...unlinked } = action;
+  assert.equal(isActionEligibleByParentValidation(accepted, unlinked), true);
+
+  const replaceEvidence = (evidence: Investigation["evidence"]) => store.transact(id, (current) => {
+    const next = { ...current, revision: current.revision + 1, evidence };
+    return { next, result: next };
+  });
+  for (const evidence of [
+    accepted.evidence.filter(({ id }) => id !== parent.id),
+    accepted.evidence.map((record) => record.id === parent.id ? { ...record, sourceId: "other:photo" } : record),
+  ]) {
+    const before = await replaceEvidence(evidence);
+    assert.equal(await service.executeNextAction(id, true), undefined);
+    assert.deepEqual(await service.loadInvestigation(id), before);
+    assert.equal(executed.length, 2);
+  }
+});
+
+test("unsafe FaceCheck URLs and non-FaceCheck evidence never queue Decodo", async () => {
+  const { service, id, before, parent, executed } = await caseWithDecodo("http://127.0.0.1/profile");
+  let previous = before;
+  for (const evidenceId of [before.evidence[0]!.id, parent.id]) {
+    const reviewed = await service.validateEvidence(id, evidenceId, "accepted", "Reviewed evidence.");
+    assert.equal(reviewed.revision, previous.revision + 1);
+    assert.deepEqual(reviewed.actions, before.actions);
+    assert.deepEqual(reviewed.audit.slice(previous.audit.length).map((event) => [event.kind, event.evidenceId]), [["evidence_validated", evidenceId]]);
+    assert.equal(await service.executeNextAction(id, true), undefined);
+    assert.deepEqual(await service.loadInvestigation(id), reviewed);
+    previous = reviewed;
+  }
+  assert.equal(executed.length, 2);
+});
+
+test("URL catalog rejects unknown, duplicate and non-URL tools while allowing an empty list", () => {
+  const base = {
+    store: new MemoryInvestigationStore(), executor: { id: "unused", async execute() { return []; } },
+    clock: () => "2025-01-01T00:00:00.000Z", createId: () => "id",
+  };
+  assert.doesNotThrow(() => createInvestigationService({ ...base, urlCatalog: [] }));
+  for (const urlCatalog of [["unknown.tool.v1"], ["decodo.url.v1", "decodo.url.v1"], ["facecheck.photo.v1"]]) {
+    assert.throws(() => createInvestigationService({ ...base, urlCatalog: urlCatalog as ScopedCatalogId[] }),
+      { message: "The url catalog must list known URL tools exactly once" });
+  }
+});
+
+test("URL seeds and URL targets independently suppress username proposals", async () => {
+  const { investigation } = await caseWithFindings([scannerFinding("Example", { kind: "username", value: "possible_alias" }, { discovered_usernames: "extra_alias" })]);
+  const record = investigation.evidence[0]!;
+  const seed = { kind: "url", value: PUBLIC_PROFILE_URL } as const;
+  assert.deepEqual(usernameProposals({ ...investigation, evidence: [{ ...record, seed }] }), []);
+  assert.deepEqual(usernameProposals({ ...investigation, evidence: [{ ...record, finding: { ...record.finding!, target: seed } }] }), []);
 });
 
 test("photo candidates are not username proposals and AI receives photo seeds without media", async () => {

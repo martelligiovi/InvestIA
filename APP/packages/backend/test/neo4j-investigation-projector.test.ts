@@ -101,6 +101,30 @@ test("FaceCheck photo action and evidence project through PhotoSeed", async () =
   assert.ok(driver.calls.some(({ query }) => /CONSTRAINT photo_seed_unique[\s\S]*n:PhotoSeed/.test(query)));
 });
 
+test("Decodo actions and evidence are linked through a shared UrlSeed", async () => {
+  const driver = new FakeNeo4jDriver();
+  const projector = new Neo4jInvestigationProjector(driver, "neo4j");
+  const base = snapshot(4, false);
+  const seed = { kind: "url" as const, value: "https://example.org/profile" };
+  const finding = { target: seed, upstreamStatus: "Found" as const, url: seed.value, category: "Web page", reason: "Public profile", extra: { content: "Offline excerpt" }, media: {} };
+  assert.deepEqual(await projector.project({ ...base,
+    actions: [{ id: "scrape", spec: { catalogId: "decodo.url.v1", provider: "decodo", seed }, status: "succeeded", queuedByCatalog: true, proposedAt: base.createdAt, proposalReason: "Approved match" }],
+    evidence: [{ id: "page", actionId: "scrape", seed, provider: "Decodo", status: "registered", sourceId: "decodo:url", recordedAt: base.createdAt, finding }],
+  }), { revision: 4, status: "applied" });
+  const actions = driver.calls.find(({ parameters }) => Array.isArray(parameters.actions))!;
+  const evidence = driver.calls.find(({ parameters }) => Array.isArray(parameters.evidence))!;
+  assert.match(actions.query, /WHEN action\.seedKind = 'url'[\s\S]*MERGE \(s:UrlSeed \{investigationId: \$investigationId, value: action\.seedValue\}\)[\s\S]*MERGE \(a\)-\[:USES_SEED\]->\(s\)/);
+  assert.match(evidence.query, /WHEN record\.seedKind = 'url'[\s\S]*MERGE \(s:UrlSeed \{investigationId: \$investigationId, value: record\.seedValue\}\)[\s\S]*MERGE \(s\)-\[:HAS_EVIDENCE\]->\(e\)/);
+  assert.match(evidence.query, /id: record\.actionId\}\)\s*MERGE \(a\)-\[:PRODUCED\]->\(e\)/);
+  assert.ok(driver.calls.some(({ query }) => /CONSTRAINT url_seed_unique[\s\S]*n:UrlSeed/.test(query)));
+  const [action] = actions.parameters.actions as Record<string, unknown>[];
+  assert.deepEqual([action?.id, action?.catalogId, action?.provider, action?.seedKind, action?.seedValue], ["scrape", "decodo.url.v1", "decodo", "url", seed.value]);
+  const [record] = evidence.parameters.evidence as Record<string, unknown>[];
+  assert.deepEqual([record?.id, record?.actionId, record?.sourceId, record?.seedKind, record?.seedValue, record?.targetKind, record?.targetValue], ["page", "scrape", "decodo:url", "url", seed.value, "url", seed.value]);
+  assert.deepEqual(JSON.parse(String(record?.findingJson)), finding);
+  assert.ok(!actions.query.includes(seed.value) && !evidence.query.includes(seed.value));
+});
+
 test("rich scanner payload is projected without discarding target or provenance", async () => {
   const driver = new FakeNeo4jDriver();
   const projector = new Neo4jInvestigationProjector(driver, "neo4j");

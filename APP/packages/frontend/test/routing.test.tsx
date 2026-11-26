@@ -89,7 +89,7 @@ describe("App route scaffold", () => {
     expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
       "Expediente",
       "Semillas iniciales",
-      "Avance y autorización",
+      "Avance automático",
       "Cómo se abre un expediente",
     ]);
     expect(screen.getByRole("complementary", { name: "Cómo se abre un expediente" })).toBeInTheDocument();
@@ -104,24 +104,31 @@ describe("App route scaffold", () => {
     expect(container.querySelector(".new-investigation-link")).toHaveAttribute("href", "#/nueva");
   });
 
-  it("loads the workspace for its decoded identifier", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      id: "caso 42",
-      name: "Caso de prueba",
-      revision: 1,
-      createdAt: "2025-03-16T12:00:00.000Z",
-      updatedAt: "2025-03-16T12:00:00.000Z",
-      paused: false,
-      emailSeeds: [],
-      actions: [],
-      evidence: [],
-      validations: [],
-      audit: [],
-    }), { status: 200, headers: { "content-type": "application/json" } })));
-    window.history.replaceState(null, "", "/#/investigaciones/caso%2042");
+  it("loads the workspace for its decoded identifier without a case-controls popover", async () => {
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== "/investigations/caso%2042" || (init?.method ?? "GET") !== "GET") {
+        throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(input)}`);
+      }
+      return new Response(JSON.stringify({
+        id: "caso 42",
+        name: "Caso de prueba",
+        revision: 1,
+        createdAt: "2025-03-16T12:00:00.000Z",
+        updatedAt: "2025-03-16T12:00:00.000Z",
+        paused: false,
+        emailSeeds: [],
+        actions: [],
+        evidence: [],
+        validations: [],
+        audit: [],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetch);
+    window.history.replaceState(null, "", "/#/investigaciones/caso%20%342");
     const { container } = render(<App />);
     expect(await screen.findByRole("heading", { name: "Caso de prueba" })).toBeInTheDocument();
-    expect(screen.getByText("caso 42")).toBeInTheDocument();
+    expect(fetch.mock.calls.map(([input]) => String(input))).toEqual(["/investigations/caso%2042"]);
+    expect(screen.queryByText("Controles del expediente", { exact: true })).not.toBeInTheDocument();
     expect(container.querySelector(".application-shell")).toHaveClass("application-shell--quiet");
     expect(container.querySelector(".site-header .new-investigation-link")).toHaveAttribute("href", "#/nueva");
     expect(container.querySelector(".site-footer")).not.toBeInTheDocument();

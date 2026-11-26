@@ -34,6 +34,20 @@ export interface FacecheckSettingsUpdate {
   readonly testingMode?: boolean;
 }
 
+export type DecodoApiMode = "web_data" | "scraping_v2";
+
+export interface DecodoSettingsStatus {
+  readonly tokenConfigured: boolean;
+  /** Masked hint of the stored token; the token itself is never returned. */
+  readonly tokenHint: string | null;
+  readonly apiMode: DecodoApiMode;
+}
+
+export interface DecodoSettingsUpdate {
+  readonly token?: string;
+  readonly apiMode?: DecodoApiMode;
+}
+
 export interface AiSettingsView {
   readonly apiKeyConfigured: boolean;
   /** Masked hint of the stored key; the key itself is never returned. */
@@ -152,6 +166,10 @@ export class InvestigationApiClient {
     );
   }
 
+  async queueDecodoScrape(id: string, evidenceId: string): Promise<Investigation> {
+    return this.post<Investigation>(`/investigations/${pathPart(id)}/evidence/${pathPart(evidenceId)}/decodo`);
+  }
+
   async rejectEvidence(id: string, evidenceId: string, reason: string): Promise<Investigation> {
     return this.post<Investigation>(
       `/investigations/${pathPart(id)}/evidence/${pathPart(evidenceId)}/rejection`,
@@ -201,6 +219,18 @@ export class InvestigationApiClient {
 
   async removeFacecheckToken(): Promise<FacecheckSettingsView> {
     return this.send<FacecheckSettingsView>("DELETE", "/settings/facecheck/token");
+  }
+
+  async getDecodoSettings(): Promise<DecodoSettingsStatus> {
+    return this.requestJson<DecodoSettingsStatus>("/settings/decodo");
+  }
+
+  async saveDecodoSettings(update: DecodoSettingsUpdate): Promise<DecodoSettingsStatus> {
+    return this.send<DecodoSettingsStatus>("PUT", "/settings/decodo", update);
+  }
+
+  async deleteDecodoToken(): Promise<DecodoSettingsStatus> {
+    return this.send<DecodoSettingsStatus>("DELETE", "/settings/decodo/token");
   }
 
   async getAiSettings(): Promise<AiSettingsView> {

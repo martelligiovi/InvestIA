@@ -145,6 +145,157 @@ test("FaceCheck settings persist defaults, token, mode, and token deletion", asy
   assert.deepEqual(await store.load(), { token: undefined, testingMode: false });
 });
 
+test("Decodo settings mask the token, switch modes, and clear only the token", async (t) => {
+  const { app, decodo, request } = decodoSettingsHarness();
+  t.after(() => app.close());
+  const emptyView = { tokenConfigured: false, tokenHint: null, apiMode: "web_data" };
+  const maskedView = { tokenConfigured: true, tokenHint: "nvapi-…1234", apiMode: "scraping_v2" };
+  const check = async (method: "GET" | "PUT" | "DELETE", expected: object, payload?: object) => {
+    const response = await request(method, payload);
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), expected);
+    assert.ok(!response.body.includes(KEY));
+  };
+  await check("GET", emptyView);
+  await check("PUT", maskedView, { token: KEY, apiMode: "scraping_v2" });
+  await check("GET", maskedView);
+  await check("PUT", { ...maskedView, apiMode: "web_data" }, { apiMode: "web_data" });
+  assert.deepEqual(await decodo.load(), { token: KEY, apiMode: "web_data" });
+  await check("PUT", { tokenConfigured: true, tokenHint: "…", apiMode: "web_data" }, { token: "short" });
+  await check("PUT", maskedView, { token: KEY, apiMode: "scraping_v2" });
+  await check("DELETE", { ...emptyView, apiMode: "scraping_v2" });
+  await check("GET", { ...emptyView, apiMode: "scraping_v2" });
+});
+
+function decodoSettingsHarness() {
+  let record = { token: undefined as string | undefined, apiMode: "web_data" as "web_data" | "scraping_v2" };
+  let writes = 0;
+  const decodo = {
+    async load() { return { ...record }; },
+    async update(changes: { token?: string; apiMode?: typeof record.apiMode }) { writes++; record = { ...record, ...changes }; },
+    async clearToken() { writes++; record = { ...record, token: undefined }; },
+  };
+  const app = createBackendApp({} as InvestigationService, {
+    actionRunner: { run: async () => undefined }, projector: { project: async () => ({ revision: 0, status: "applied" }) }, decodo,
+  }, { frontendDistPath: "missing-frontend-dist" });
+  const local = { host: "127.0.0.1:4317", origin: "http://127.0.0.1:4317" };
+  const request = (method: "GET" | "PUT" | "DELETE", payload?: object, headers: Record<string, string> = local) =>
+    app.inject({ method, url: `/settings/decodo${method === "DELETE" ? "/token" : ""}`, headers, ...(payload === undefined ? {} : { payload }) });
+  return { app, decodo, request, get writes() { return writes; } };
+}
+
+const invalidDecodoCredentials = [
+  { token: "Bearer", apiMode: "web_data" }, { token: "Basic", apiMode: "scraping_v2" },
+  { token: " bEaReR  ", apiMode: "web_data" }, { token: "  bAsIc ", apiMode: "scraping_v2" },
+  { token: "two words", apiMode: "web_data" }, { token: "Basic two\u00a0words", apiMode: "scraping_v2" },
+  { token: "Bearer two\twords", apiMode: "web_data" },
+] as const;
+const invalidDecodoTokens = ["", "   ", "value\n", "\tvalue", "a\x00b", "a\x1fb", "a\x7fb", "a\x85b", "a\x9fb", "a\u2028b", "a\u2029b"];
+
+test("Decodo settings reject cross-origin requests and invalid bodies without writing", async (t) => {
+  const harness = decodoSettingsHarness();
+  t.after(() => harness.app.close());
+  await harness.decodo.update({ token: KEY, apiMode: "scraping_v2" });
+  const before = await harness.decodo.load();
+  for (const headers of [
+    { host: "127.0.0.1:4317", origin: "https://other.example" },
+    { host: "127.0.0.1:4317", origin: "http://127.0.0.1:9999" },
+    { host: "other.example", origin: "http://other.example" },
+  ]) {
+    for (const method of ["GET", "PUT", "DELETE"] as const) {
+      const response = await harness.request(method, method === "PUT" ? { token: "replacement" } : undefined, headers);
+      assert.equal(response.statusCode, 403);
+      assert.deepEqual(response.json(), { error: "FORBIDDEN", message: "Decodo settings can only be managed from this computer's InvestIA page" });
+    }
+  }
+  for (const payload of [
+    {}, { apiMode: "other" }, { apiMode: null }, { token: null }, { token: 3 }, { token: "value", unknown: true },
+    ...invalidDecodoTokens.map((token) => ({ token, apiMode: "web_data" })),
+  ]) {
+    const response = await harness.request("PUT", payload);
+    assert.equal(response.statusCode, 400, JSON.stringify(payload));
+    assert.deepEqual(response.json(), { error: "INVALID_REQUEST", message: "Invalid request" });
+  }
+  assert.equal(harness.writes, 1);
+  assert.deepEqual(await harness.decodo.load(), before);
+});
+
+for (const payload of invalidDecodoCredentials) {
+  test(`Decodo settings reject malformed ${payload.apiMode} credentials: ${JSON.stringify(payload.token)}`, async (t) => {
+    const harness = decodoSettingsHarness();
+    t.after(() => harness.app.close());
+    await harness.decodo.update({ token: KEY, apiMode: "scraping_v2" });
+    const response = await harness.request("PUT", payload);
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(response.json(), { error: "INVALID_REQUEST", message: "Invalid request" });
+    assert.equal(harness.writes, 1);
+    assert.deepEqual(await harness.decodo.load(), { token: KEY, apiMode: "scraping_v2" });
+  });
+}
+
+test("Decodo rejects a token-only write with the wrong scheme for the saved mode", async (t) => {
+  const harness = decodoSettingsHarness();
+  t.after(() => harness.app.close());
+  await harness.decodo.update({ token: KEY, apiMode: "scraping_v2" });
+  const before = await harness.decodo.load();
+  const response = await harness.request("PUT", { token: "Bearer dGVzdA==" });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.json(), { error: "INVALID_REQUEST", message: "Invalid request" });
+  assert.equal(harness.writes, 1);
+  assert.deepEqual(await harness.decodo.load(), before);
+});
+
+test("Decodo settings migrate under the shared lock and persist independent updates", async () => {
+  const { PostgresDecodoSettingsStore } = await import("../src/decodo-settings-store.ts");
+  class Pool implements PgPoolLike {
+    row: { token: string | null; api_mode: string } | undefined;
+    statements: { sql: string; values: unknown[] }[] = [];
+    releases = 0;
+    async query<T extends Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<PgQueryResult<T>> {
+      this.statements.push({ sql, values });
+      if (/^\s*SELECT token/i.test(sql)) return { rows: (this.row === undefined ? [] : [this.row]) as unknown as T[], rowCount: this.row === undefined ? 0 : 1 };
+      if (/^\s*INSERT INTO decodo_settings/i.test(sql)) {
+        const [token, apiMode, setToken, setMode] = values as [string | null | undefined, string | undefined, boolean, boolean];
+        this.row = {
+          token: this.row === undefined || setToken ? token ?? null : this.row.token,
+          api_mode: this.row === undefined || setMode ? apiMode ?? "web_data" : this.row.api_mode,
+        };
+      }
+      return { rows: [], rowCount: 1 };
+    }
+    async connect(): Promise<PgClientLike> { return { query: (sql, values) => this.query(sql, values), release: () => { this.releases++; } }; }
+  }
+  const pool = new Pool();
+  const store = new PostgresDecodoSettingsStore(pool);
+  await store.migrate();
+  const [begin, lock, ddl, version, commit] = pool.statements;
+  assert.equal(begin?.sql, "BEGIN");
+  assert.deepEqual(lock, { sql: "SELECT pg_advisory_xact_lock($1)", values: [1163287874] });
+  assert.match(ddl!.sql, /CREATE TABLE IF NOT EXISTS decodo_settings/);
+  assert.match(ddl!.sql, /CHECK \(id = 'decodo'\)/);
+  assert.match(ddl!.sql, /DEFAULT 'web_data' CHECK \(api_mode IN \('web_data', 'scraping_v2'\)\)/);
+  assert.match(ddl!.sql, /updated_at timestamptz NOT NULL DEFAULT NOW\(\)/i);
+  assert.match(version!.sql, /INSERT INTO backend_schema_migrations/);
+  assert.deepEqual(version!.values, [4]);
+  assert.equal(commit?.sql, "COMMIT");
+  assert.equal(pool.releases, 1);
+  assert.deepEqual(await store.load(), { token: undefined, apiMode: "web_data" });
+  await store.update({ token: KEY });
+  assert.deepEqual(await store.load(), { token: KEY, apiMode: "web_data" });
+  await store.update({ apiMode: "scraping_v2" });
+  assert.deepEqual(await store.load(), { token: KEY, apiMode: "scraping_v2" });
+  const statementsBefore = pool.statements.length;
+  await assert.rejects(store.update({ apiMode: "other" as never }), { message: "Invalid Decodo API mode" });
+  for (const changes of [...invalidDecodoTokens.map((token) => ({ token })), ...invalidDecodoCredentials]) {
+    await assert.rejects(store.update(changes), { message: "Invalid Decodo API token" });
+  }
+  assert.equal(pool.statements.length, statementsBefore);
+  assert.deepEqual(await store.load(), { token: KEY, apiMode: "scraping_v2" });
+  await store.clearToken();
+  assert.deepEqual(await store.load(), { token: undefined, apiMode: "scraping_v2" });
+  assert.ok(pool.statements.filter(({ sql }) => sql.includes("INSERT INTO decodo_settings")).every(({ sql }) => !sql.includes(KEY)));
+});
+
 test("public investigation returns FaceCheck candidate data and masks failures", async (t) => {
   const original = fixture();
   const photo = { kind: "photo" as const, value: "https://lh3.googleusercontent.com/photo" };

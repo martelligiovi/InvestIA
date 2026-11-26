@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   AI_MAX_TOKENS_RANGE,
@@ -8,6 +8,7 @@ import {
   composeAiReport,
   countOmittedAiReportFindings,
   DEFAULT_AI_REPORT_SETTINGS,
+  findingSeedNodeId,
   INVESTIGATION_NAME_MAX_LENGTH,
   USERNAME_SEED_PATTERN,
   normalizeAiReportSettings,
@@ -25,6 +26,8 @@ import { NvidiaProviderError, type NvidiaBuildGateway } from "./nvidia-build.ts"
 import type { InvestigationProjector } from "./neo4j-investigation-projector.ts";
 import type { GhuntSession } from "../../adapter-ghunt/src/index.ts";
 import { isLocalSameOriginRequest, registerGhuntRoutes } from "./ghunt-routes.ts";
+import { DECODO_API_MODES, isPublicDecodoFailure, normalizeDecodoToken } from "../../adapter-decodo/src/index.ts";
+import { isValidDecodoToken, type DecodoSettingsRecord, type DecodoSettingsStore } from "./decodo-settings-store.ts";
 import type { FacecheckSettingsRecord, FacecheckSettingsStore } from "./facecheck-settings-store.ts";
 import { registerFrontend } from "./serve-frontend.ts";
 
@@ -56,6 +59,7 @@ const UsernameBody = ReasonBody.extend({ username: z.string().trim().regex(USERN
 const UsernameDecisionBody = UsernameBody.extend({ decision: z.enum(["accepted", "rejected"]) }).strict();
 const AuthorizationBody = ReasonBody.extend({ granted: z.boolean() }).strict();
 const ValidationBody = ReasonBody.extend({ status: z.enum(["accepted", "rejected", "inconclusive"]) }).strict();
+const QueueDecodoBody = ReasonBody.partial().optional();
 const EmptyBody = z.object({}).strict().optional();
 const InvestigationParams = z.object({ id: z.string().min(1).max(200) }).strict();
 const ActionParams = InvestigationParams.extend({ actionId: z.string().min(1).max(200) }).strict();
@@ -75,6 +79,11 @@ const FacecheckSettingsBody = z.object({
   token: z.string().trim().min(1).max(512).regex(/^\S+$/).optional(),
   testingMode: z.boolean().optional(),
 }).strict().refine((body) => body.token !== undefined || body.testingMode !== undefined);
+
+const DecodoSettingsBody = z.object({
+  token: z.string().optional(),
+  apiMode: z.enum(DECODO_API_MODES).optional(),
+}).strict().refine(({ token, apiMode }) => token === undefined ? apiMode !== undefined : isValidDecodoToken(token, apiMode));
 
 const PROVIDER_ERRORS = {
   unauthorized: new HttpError(502, "AI_PROVIDER_UNAUTHORIZED", "NVIDIA Build rejected the API key"),
@@ -133,6 +142,10 @@ function publicError(error: unknown): unknown {
       "Scanner actions require an email seed already recorded in this investigation",
       "A scanner catalog action already exists for this email seed",
       "Only a proposed action can be approved",
+      "A Decodo scrape action already exists for this FaceCheck match",
+      "Only an accepted FaceCheck match can queue a Decodo scrape",
+      "FaceCheck match does not have a valid public HTTP URL",
+      "Decodo scraping is not enabled",
     ].includes(error.message)) return new HttpError(409, "CONFLICT", "Operation conflicts with the current investigation state");
   }
   return error;
@@ -147,7 +160,8 @@ async function serviceCall<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 function publicAction(action: GitHubCatalogAction): GitHubCatalogAction {
-  return action.failure === undefined ? action : { ...action, failure: "Execution failed." };
+  if (action.failure === undefined || (action.spec.catalogId === "decodo.url.v1" && isPublicDecodoFailure(action.failure))) return action;
+  return { ...action, failure: "Execution failed." };
 }
 
 function publicInvestigation(investigation: Investigation): Investigation {
@@ -174,6 +188,9 @@ export interface BackendAppAdapters {
   /** GHunt Google session routes; `session` is absent when GHunt is not installed. */
   readonly ghunt?: { readonly session?: GhuntSession };
   readonly facecheck?: FacecheckSettingsStore;
+  readonly decodo?: DecodoSettingsStore;
+  /** Request an automatic sweep without waiting for provider work in the HTTP response. */
+  readonly wakeAutomaticRunner?: () => void;
 }
 
 export interface BackendAppOptions {
@@ -314,6 +331,22 @@ export function createBackendApp(
       const { id, evidenceId } = input(EvidenceParams, request.params);
       const body = input(ValidationBody, request.body);
       const investigation = await serviceCall(() => service.validateEvidence(id, evidenceId, body.status, body.reason));
+      if (body.status === "accepted" && investigation.actions.some((action) => action.status === "queued" &&
+        action.spec.catalogId === "decodo.url.v1" && action.sourceSeedId === findingSeedNodeId(evidenceId))) {
+        adapters.wakeAutomaticRunner?.();
+      }
+      await projectPersistedState(id);
+      return reply.code(201).send(publicInvestigation(investigation));
+    },
+  );
+
+  app.post<{ Params: { id: string; evidenceId: string } }>(
+    "/investigations/:id/evidence/:evidenceId/decodo",
+    async (request, reply) => {
+      const { id, evidenceId } = input(EvidenceParams, request.params);
+      const reason = input(QueueDecodoBody, request.body)?.reason;
+      const investigation = await serviceCall(() => service.queueDecodoAction(id, evidenceId, reason));
+      adapters.wakeAutomaticRunner?.();
       await projectPersistedState(id);
       return reply.code(201).send(publicInvestigation(investigation));
     },
@@ -357,6 +390,7 @@ export function createBackendApp(
   if (ai !== undefined) registerAiRoutes(app, service, ai);
   if (adapters.ghunt !== undefined) registerGhuntRoutes(app, adapters.ghunt.session);
   if (adapters.facecheck !== undefined) registerFacecheckRoutes(app, adapters.facecheck);
+  if (adapters.decodo !== undefined) registerDecodoRoutes(app, adapters.decodo, adapters.wakeAutomaticRunner);
 
   return app;
 }
@@ -383,6 +417,36 @@ function registerFacecheckRoutes(app: FastifyInstance, settings: FacecheckSettin
     guard(request.headers);
     await settings.clearToken();
     return facecheckView(await settings.load());
+  });
+}
+
+function decodoView(record: DecodoSettingsRecord) {
+  return { tokenConfigured: record.token !== undefined, tokenHint: record.token === undefined ? null : apiKeyHint(record.token), apiMode: record.apiMode };
+}
+
+function registerDecodoRoutes(app: FastifyInstance, settings: DecodoSettingsStore, wakeAutomaticRunner?: () => void): void {
+  const localOnly = { onRequest: async (request: FastifyRequest) => {
+    if (!isLocalSameOriginRequest(request.headers)) {
+      throw new HttpError(403, "FORBIDDEN", "Decodo settings can only be managed from this computer's InvestIA page");
+    }
+  } };
+  app.get("/settings/decodo", localOnly, async () => decodoView(await settings.load()));
+  app.put("/settings/decodo", localOnly, async (request) => {
+    const body = input(DecodoSettingsBody, request.body);
+    if (body.token !== undefined) {
+      const effectiveMode = body.apiMode ?? (await settings.load()).apiMode;
+      const normalized = normalizeDecodoToken(body.token, effectiveMode);
+      if (!("token" in normalized)) throw new HttpError(400, "INVALID_REQUEST", "Invalid request");
+      await settings.update({ ...body, token: normalized.token });
+      wakeAutomaticRunner?.();
+    } else {
+      await settings.update(body);
+    }
+    return decodoView(await settings.load());
+  });
+  app.delete("/settings/decodo/token", localOnly, async () => {
+    await settings.clearToken();
+    return decodoView(await settings.load());
   });
 }
 

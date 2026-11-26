@@ -42,6 +42,9 @@ it("stacks FaceCheck candidates under the face search fed by the GHunt profile p
   const group = graph.nodes.find((node) => node.id === "leaf-group:facecheck")!;
   expect(group.members?.map((member) => member.title)).toEqual(["FaceCheck · 91 · example.org", "FaceCheck · 80 · example.org"]);
   expect(graph.edges.some((edge) => edge.from === "evidence:photo" && edge.to === "action:facecheck")).toBe(true);
+  expect(graph.edges.filter((edge) => edge.to === group.id)).toEqual([
+    expect.objectContaining({ from: "action:facecheck", to: group.id }),
+  ]);
   expect(evidenceHeading(snapshot.evidence[1]!)).toBe("Candidato de FaceCheck");
   expect(JSON.stringify(snapshot)).toBe(original);
 });

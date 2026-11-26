@@ -1,5 +1,5 @@
 import { isScannerFinding, type Observation, type RegistrationObservation, type RegistrationStatus, type ScannerFinding, type ScannerObservation } from "../domain/observation.ts";
-import { isGooglePhotoUrl, USERNAME_SEED_PATTERN, type EmailSeed, type PhotoSeed, type UsernameSeed } from "../domain/seed.ts";
+import { isGooglePhotoUrl, isSafePublicHttpUrl, urlSeed, USERNAME_SEED_PATTERN, type EmailSeed, type PhotoSeed, type UrlSeed, type UsernameSeed } from "../domain/seed.ts";
 import { findingSeedNodeId, usernameSeedNodeId } from "../domain/seed-graph.ts";
 import { usernameProposals } from "../domain/username-proposals.ts";
 import type { SeedBox } from "../domain/seed-box.ts";
@@ -9,6 +9,7 @@ import {
   DEFAULT_INVESTIGATION_NAME,
   isGhuntEligibleEmail,
   isScopedCatalogId,
+  latestValidationStatus,
   SCOPED_CATALOG_IDS,
   type ScopedCatalogId,
   type UsernameSeedRecord,
@@ -46,6 +47,8 @@ export interface InvestigationServiceDependencies {
   readonly seedCatalog?: readonly ScopedCatalogId[];
   /** Photo tools queued from GHunt profile photos; none by default. */
   readonly photoCatalog?: readonly ScopedCatalogId[];
+  /** URL tools queued from accepted FaceCheck results; none by default. */
+  readonly urlCatalog?: readonly ScopedCatalogId[];
   /** Tools not ready to run right now; their queued actions stay queued and others proceed. */
   readonly deferredCatalogIds?: () => Promise<readonly ScopedCatalogId[]>;
 }
@@ -56,8 +59,12 @@ const QUEUE_REASONS: Readonly<Record<ScopedCatalogId, string>> = {
   "maigret.username.v1": "Catalog policy queued a Maigret username search with page extraction, without recursion, for the accepted username seed.",
   "ghunt.email.v1": "Catalog policy queued a GHunt public Google account lookup for the recorded Gmail seed; it runs once a Google session is connected.",
   "facecheck.photo.v1": "Catalog policy queued a FaceCheck face search for the Google profile photo GHunt found; every candidate needs the operator's decision.",
+  "decodo.url.v1": "Catalog policy queued a Decodo scrape for the accepted FaceCheck result URL.",
 };
-const CATALOG_PROVIDERS = { "user-scanner.email.v1": "user-scanner", "gravatar.email.v1": "gravatar", "maigret.username.v1": "maigret", "ghunt.email.v1": "ghunt", "facecheck.photo.v1": "facecheck" } as const;
+const CATALOG_PROVIDERS = {
+  "user-scanner.email.v1": "user-scanner", "gravatar.email.v1": "gravatar", "maigret.username.v1": "maigret",
+  "ghunt.email.v1": "ghunt", "facecheck.photo.v1": "facecheck", "decodo.url.v1": "decodo",
+} as const;
 const EMAIL_CATALOG_IDS = SCOPED_CATALOG_IDS.filter((catalogId) => CATALOG_INPUT_KINDS[catalogId] === "email");
 
 const CATALOG_ID = "user-scanner.email.v1" as const;
@@ -146,7 +153,8 @@ function isRegistrationObservation(
 function isScannerObservation(value: unknown): value is ScannerObservation {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Partial<ScannerObservation>;
-  return candidate.kind === "scanner_finding" && (candidate.seed?.kind === "email" || candidate.seed?.kind === "username" || candidate.seed?.kind === "photo") &&
+  return candidate.kind === "scanner_finding" && (candidate.seed?.kind === "email" || candidate.seed?.kind === "username" ||
+    candidate.seed?.kind === "photo" || (candidate.seed?.kind === "url" && isSafePublicHttpUrl(candidate.seed.value))) &&
     typeof candidate.seed.value === "string" && typeof candidate.provider === "string" &&
     candidate.provider.trim().length > 0 && REGISTRATION_STATUSES.includes(candidate.status as RegistrationStatus) &&
     isScannerFinding(candidate.finding);
@@ -170,6 +178,7 @@ export class InvestigationService {
   private readonly dependencies: InvestigationServiceDependencies;
   private readonly seedCatalog: readonly ScopedCatalogId[];
   private readonly photoCatalog: readonly ScopedCatalogId[];
+  private readonly urlCatalog: readonly ScopedCatalogId[];
 
   constructor(dependencies: InvestigationServiceDependencies) {
     if (dependencies.executor.id.trim().length === 0) throw new Error("Executor id must not be empty");
@@ -183,9 +192,15 @@ export class InvestigationService {
       !photoCatalog.every((catalogId) => isScopedCatalogId(catalogId) && CATALOG_INPUT_KINDS[catalogId] === "photo")) {
       throw new Error("The photo catalog must list known photo tools exactly once");
     }
+    const urlCatalog = dependencies.urlCatalog ?? [];
+    if (new Set(urlCatalog).size !== urlCatalog.length ||
+      !urlCatalog.every((catalogId) => isScopedCatalogId(catalogId) && CATALOG_INPUT_KINDS[catalogId] === "url")) {
+      throw new Error("The url catalog must list known URL tools exactly once");
+    }
     this.dependencies = dependencies;
     this.seedCatalog = [...seedCatalog];
     this.photoCatalog = [...photoCatalog];
+    this.urlCatalog = [...urlCatalog];
   }
 
   async createInvestigation(name?: string, intention?: string, advancementMode?: AdvancementMode): Promise<Investigation> {
@@ -444,13 +459,63 @@ export class InvestigationService {
       decision: status,
     });
     return this.dependencies.store.transact(id, (current) => {
-      if (!current.evidence.some((record) => record.id === evidenceId)) throw new Error(`Evidence not found: ${evidenceId}`);
+      const record = current.evidence.find((candidate) => candidate.id === evidenceId);
+      if (record === undefined) throw new Error(`Evidence not found: ${evidenceId}`);
+      const events = [event];
+      let actions = current.actions;
+      const catalogId = "decodo.url.v1";
+      const url = record.finding?.url;
+      if (status === "accepted" && this.urlCatalog.includes(catalogId) &&
+        record.sourceId === "facecheck:photo" && isSafePublicHttpUrl(url)) {
+        const action = this.newDecodoAction(current, record.id, url, at);
+        if (action !== undefined) {
+          actions = [...actions, action];
+          events.push(auditEvent(this.dependencies.createId, at, "system", "action_queued", action.proposalReason, { actionId: action.id }));
+        }
+      }
       const next = withRevision(current, at, {
         validations: [...current.validations, decision],
-        audit: [...current.audit, event],
+        actions,
+        audit: [...current.audit, ...events],
       });
       return { next, result: next };
     });
+  }
+
+  async queueDecodoAction(
+    id: string,
+    evidenceId: string,
+    reason = "Operator requested Decodo scraping for an accepted FaceCheck match.",
+  ): Promise<Investigation> {
+    const why = reasonText(reason);
+    const at = timestamp(this.dependencies.clock);
+    return this.dependencies.store.transact(id, (current) => {
+      const record = current.evidence.find((candidate) => candidate.id === evidenceId);
+      if (record === undefined) throw new Error(`Evidence not found: ${evidenceId}`);
+      if (!this.urlCatalog.includes("decodo.url.v1")) throw new Error("Decodo scraping is not enabled");
+      if (record.sourceId !== "facecheck:photo" || latestValidationStatus(current, record.id) !== "accepted") {
+        throw new Error("Only an accepted FaceCheck match can queue a Decodo scrape");
+      }
+      const url = record.finding?.url;
+      if (!isSafePublicHttpUrl(url)) throw new Error("FaceCheck match does not have a valid public HTTP URL");
+      const action = this.newDecodoAction(current, record.id, url, at);
+      if (action === undefined) throw new Error("A Decodo scrape action already exists for this FaceCheck match");
+      const event = auditEvent(this.dependencies.createId, at, "operator", "action_queued", why, { actionId: action.id, evidenceId: record.id });
+      const next = withRevision(current, at, { actions: [...current.actions, action], audit: [...current.audit, event] });
+      return { next, result: next };
+    });
+  }
+
+  private newDecodoAction(current: Investigation, evidenceId: string, url: string, at: string): GitHubCatalogAction | undefined {
+    const catalogId = "decodo.url.v1";
+    const sourceSeedId = findingSeedNodeId(evidenceId);
+    if (current.actions.some((action) => action.spec.catalogId === catalogId && action.sourceSeedId === sourceSeedId)) return undefined;
+    return {
+      id: newId(this.dependencies.createId, "action"),
+      spec: { catalogId, provider: CATALOG_PROVIDERS[catalogId], seed: urlSeed(url) },
+      sourceSeedId, status: "queued", queuedByCatalog: true, proposedAt: at,
+      proposalReason: QUEUE_REASONS[catalogId],
+    };
   }
 
   async executeNextAction(id: string, automaticOnly = false): Promise<GitHubCatalogAction | undefined> {
@@ -496,8 +561,8 @@ export class InvestigationService {
       const registration = isRegistrationObservation(observation) && observation.provider === "github";
       if (
         (!scanner && !registration) ||
-        (observation as { seed: EmailSeed | UsernameSeed | PhotoSeed }).seed.kind !== claim.action.spec.seed.kind ||
-        (observation as { seed: EmailSeed | UsernameSeed | PhotoSeed }).seed.value !== claim.action.spec.seed.value ||
+        (observation as { seed: EvidenceRecord["seed"] }).seed.kind !== claim.action.spec.seed.kind ||
+        (observation as { seed: EvidenceRecord["seed"] }).seed.value !== claim.action.spec.seed.value ||
         (scanner && !isScopedCatalogId(claim.action.spec.catalogId))
       ) {
         unsupportedObservationCount++;
@@ -632,8 +697,9 @@ export interface CatalogBoxes {
   readonly "maigret.username.v1"?: SeedBox<UsernameSeed, Observation>;
   readonly "ghunt.email.v1"?: SeedBox<EmailSeed, Observation>;
   readonly "facecheck.photo.v1"?: SeedBox<PhotoSeed, Observation>;
+  readonly "decodo.url.v1"?: SeedBox<UrlSeed, Observation>;
 }
-type AnySeedBox = SeedBox<EmailSeed | UsernameSeed | PhotoSeed, Observation>;
+type AnySeedBox = SeedBox<EvidenceRecord["seed"], Observation>;
 
 /** Routes each claimed action to the tool registered for its catalog id. */
 export function createCatalogExecutor(boxes: CatalogBoxes): InvestigationExecutor {
@@ -642,7 +708,7 @@ export function createCatalogExecutor(boxes: CatalogBoxes): InvestigationExecuto
     if (!isScopedCatalogId(catalogId)) throw new Error(`Unknown catalog id: ${catalogId}`);
     if (box === undefined) continue;
     const kind = CATALOG_INPUT_KINDS[catalogId];
-    if (box.inputKind !== kind) throw new Error(`Catalog ${catalogId} requires ${kind === "email" ? "an email" : kind === "username" ? "a username" : "a photo"} SeedBox`);
+    if (box.inputKind !== kind) throw new Error(`Catalog ${catalogId} requires ${kind === "email" ? "an email" : `a ${kind}`} SeedBox`);
     registry.set(catalogId, box);
   }
   const boxFor = (action: GitHubCatalogAction) => {

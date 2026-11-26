@@ -1,5 +1,4 @@
-import { DEFAULT_INVESTIGATION_NAME, type Investigation } from "../domain/investigation.ts";
-import type { EmailSeed, PhotoSeed, UsernameSeed } from "../domain/seed.ts";
+import { DEFAULT_INVESTIGATION_NAME, isActionEligibleByParentValidation, type EvidenceRecord, type Investigation } from "../domain/investigation.ts";
 import { usernameProposals } from "../domain/username-proposals.ts";
 
 function markdownText(value: string): string {
@@ -11,7 +10,7 @@ function markdownText(value: string): string {
     .replace(/[\\`*_{}\[\]()#+.!|~>-]/g, (character) => `\\${character}`);
 }
 
-function seedText(seed: EmailSeed | UsernameSeed | PhotoSeed): string {
+function seedText(seed: EvidenceRecord["seed"]): string {
   return markdownText(`${seed.kind}: ${seed.value}`);
 }
 
@@ -24,11 +23,15 @@ function table(rows: readonly (readonly string[])[]): string {
   ].join("\n");
 }
 
-/** FaceCheck findings are reportable only after the operator's latest decision accepts them. */
+/** FaceCheck findings and their Decodo results require the latest FaceCheck decision to be accepted. */
 export function reportableEvidence(investigation: Investigation) {
   const latest = new Map(investigation.validations.map((decision) => [decision.evidenceId, decision.status]));
   const counts = { accepted: 0, discarded: 0, notReviewed: 0 };
   const evidence = investigation.evidence.filter((record) => {
+    if (record.sourceId === "decodo:url") {
+      const action = investigation.actions.find((candidate) => candidate.id === record.actionId);
+      return action === undefined || isActionEligibleByParentValidation(investigation, action);
+    }
     if (record.sourceId !== "facecheck:photo") return true;
     const status = latest.get(record.id);
     if (status === "accepted") {

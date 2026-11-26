@@ -22,32 +22,50 @@ function claimed(spec: GitHubCatalogAction["spec"]): ActionClaim["action"] {
 
 const scannerSpec = { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: { kind: "email", value: "person@example.org" } } as const;
 
-test("authorization covers a tool only through an explicit scope", () => {
-  const current: AuthorizationRecord = { ...base, granted: true, catalogScopes: ["user-scanner.email.v1"] };
-  const singleScope: AuthorizationRecord = { ...base, granted: true, catalogScope: "user-scanner.email.v1" };
+test("Decodo accepts an active FaceCheck or Decodo scope, but not an unrelated or unknown scope", () => {
+  for (const catalogId of SCOPED_CATALOG_IDS) {
+    const grant: AuthorizationRecord = { ...base, granted: true, catalogScopes: [catalogId] };
+    assert.equal(authorizationCovers(grant, "decodo.url.v1"), catalogId === "facecheck.photo.v1" || catalogId === "decodo.url.v1", catalogId);
+  }
+  const unknownScope = { ...base, granted: true, catalogScopes: ["unknown.tool.v1"] } as unknown as AuthorizationRecord;
+  assert.equal(authorizationCovers(unknownScope, "decodo.url.v1"), false);
+});
+
+test("other scoped tools require their own scope, and unknown catalog IDs are never covered", () => {
+  for (const recordedScope of SCOPED_CATALOG_IDS) {
+    const grant: AuthorizationRecord = { ...base, granted: true, catalogScopes: [recordedScope] };
+    const covered = SCOPED_CATALOG_IDS.filter((id) => id !== "decodo.url.v1" && authorizationCovers(grant, id));
+    assert.deepEqual(covered, recordedScope === "decodo.url.v1" ? [] : [recordedScope]);
+    assert.equal(authorizationCovers(grant, "unknown.tool.v1"), false);
+  }
+});
+
+test("the older single-scope marker authorizes only User Scanner", () => {
+  const grant: AuthorizationRecord = { ...base, granted: true, catalogScope: "user-scanner.email.v1" };
+  assert.deepEqual(SCOPED_CATALOG_IDS.filter((id) => authorizationCovers(grant, id)), ["user-scanner.email.v1"]);
+  assert.deepEqual(SCOPED_CATALOG_IDS.filter((id) => authorizationCovers({ ...grant, catalogScopes: [] }, id)), ["user-scanner.email.v1"]);
+  assert.equal(authorizationCovers({ ...grant, catalogScope: "unknown.tool.v1" } as unknown as AuthorizationRecord, "decodo.url.v1"), false);
+});
+
+test("scoped tools fail closed without a granted scope and historical GitHub keeps its original gate", () => {
   const unscoped: AuthorizationRecord = { ...base, granted: true };
-  const emptyScopes: AuthorizationRecord = { ...base, granted: true, catalogScopes: [] };
-  const revoked: AuthorizationRecord = { ...base, granted: false, catalogScopes: ["user-scanner.email.v1"] };
-  assert.equal(authorizationCovers(current, "user-scanner.email.v1"), true);
-  assert.equal(authorizationCovers(singleScope, "user-scanner.email.v1"), true, "single-scope grants stay valid");
-  assert.equal(authorizationCovers(unscoped, "user-scanner.email.v1"), false, "legacy grants never broaden");
-  assert.equal(authorizationCovers(emptyScopes, "user-scanner.email.v1"), false);
-  assert.equal(authorizationCovers(revoked, "user-scanner.email.v1"), false);
-  assert.equal(authorizationCovers(undefined, "user-scanner.email.v1"), false);
-  assert.equal(authorizationCovers(unscoped, "github.email-registration.v1"), true, "historical actions keep their gate");
-  assert.equal(authorizationCovers(current, "unknown.tool.v1"), false);
-  assert.equal(authorizationCovers(current, "gravatar.email.v1"), false, "a user-scanner grant never covers Gravatar");
-  assert.equal(authorizationCovers(singleScope, "gravatar.email.v1"), false);
-  assert.equal(authorizationCovers({ ...current, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] }, "gravatar.email.v1"), true);
+  const emptyScopes: AuthorizationRecord = { ...unscoped, catalogScopes: [] };
+  const revoked: AuthorizationRecord = { ...base, granted: false, catalogScopes: SCOPED_CATALOG_IDS };
+  for (const authorization of [undefined, revoked, emptyScopes, unscoped]) {
+    for (const catalogId of SCOPED_CATALOG_IDS) {
+      assert.equal(authorizationCovers(authorization, catalogId), false, catalogId);
+    }
+  }
+  assert.equal(authorizationCovers(unscoped, "github.email-registration.v1"), true);
+  assert.equal(authorizationCovers(revoked, "github.email-registration.v1"), false);
+  assert.equal(authorizationCovers(undefined, "github.email-registration.v1"), false);
 });
 
 test("the scoped catalog lists every consentable tool and its input kind", () => {
-  assert.deepEqual(SCOPED_CATALOG_IDS, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1"]);
+  assert.deepEqual(SCOPED_CATALOG_IDS, ["user-scanner.email.v1", "gravatar.email.v1", "maigret.username.v1", "ghunt.email.v1", "facecheck.photo.v1", "decodo.url.v1"]);
   assert.deepEqual(CATALOG_INPUT_KINDS, {
-    "user-scanner.email.v1": "email", "gravatar.email.v1": "email", "maigret.username.v1": "username", "ghunt.email.v1": "email", "facecheck.photo.v1": "photo",
+    "user-scanner.email.v1": "email", "gravatar.email.v1": "email", "maigret.username.v1": "username", "ghunt.email.v1": "email", "facecheck.photo.v1": "photo", "decodo.url.v1": "url",
   });
-  const scannerAndGravatar: AuthorizationRecord = { ...base, granted: true, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"] };
-  assert.equal(authorizationCovers(scannerAndGravatar, "maigret.username.v1"), false, "earlier grants never cover Maigret");
 });
 
 test("catalog executor routes username actions to a username box", async () => {
@@ -103,6 +121,21 @@ test("catalog executor routes photo actions to a photo box", async () => {
   assert.throws(() => createCatalogExecutor({
     "facecheck.photo.v1": { id: "wrong", inputKind: "email", async execute() { return []; } },
   } as unknown as Parameters<typeof createCatalogExecutor>[0]), /requires a photo SeedBox/);
+});
+
+test("catalog executor routes Decodo actions to a URL box", async () => {
+  const seed = { kind: "url", value: "https://example.org/profile" } as const;
+  const seen: unknown[] = [];
+  const executor = createCatalogExecutor({
+    "decodo.url.v1": { id: "decodo:url", inputKind: "url", async execute(input) { seen.push(input); return []; } },
+  });
+  const action = claimed({ catalogId: "decodo.url.v1", provider: "decodo", seed });
+  assert.deepEqual(await executor.execute(action, permit), []);
+  assert.deepEqual(seen, [seed]);
+  assert.equal(executor.sourceIdFor?.(action), "decodo:url");
+  assert.throws(() => createCatalogExecutor({
+    "decodo.url.v1": { id: "wrong", inputKind: "photo", async execute() { return []; } },
+  } as unknown as Parameters<typeof createCatalogExecutor>[0]), { message: "Catalog decodo.url.v1 requires a url SeedBox" });
 });
 
 test("catalog executor rejects a box registered under an input kind it cannot accept", () => {

@@ -99,21 +99,15 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function openCaseControls(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(await screen.findByText("Controles del expediente"));
-}
-
 describe("espacio de investigación factual", () => {
   it("muestra avance automático sin controles de propuesta, aprobación ni despacho", async () => {
     const queued = { ...action("queued"), approval: undefined, queuedByCatalog: true as const };
     const { calls } = installFetch(async () => json(snapshot({ advancementMode: "automatic", actions: [queued] })));
-    const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
     await screen.findByRole("heading", { name: "Caso de prueba" });
     expect(document.querySelector(".workspace-state-tag")).toHaveTextContent("Esperando autorización");
     expect(screen.getByRole("status")).toHaveTextContent(/cola bloqueada/i);
-    await openCaseControls(user);
-    expect(screen.getByText(/avance automático/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Autorizar expediente" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: /ejecutar siguiente/i })).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/motivo para proponer/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /proponer comprobación/i })).not.toBeInTheDocument();
@@ -167,22 +161,17 @@ describe("espacio de investigación factual", () => {
   });
 
   it("prioriza grafo y detalle sin barras operativas, con controles secundarios cerrados", async () => {
-    const { calls } = installFetch(async () => json(snapshot()));
-    const user = userEvent.setup();
+    const { calls } = installFetch(async () => json(snapshot({ authorization: { granted: true, at: createdAt, reason: "Permiso", operator: "local-operator" } })));
     render(<WorkspacePage id="case-1" />);
     await screen.findByRole("heading", { name: "Caso de prueba" });
     expect(document.querySelector(".workspace-meta-bar, .workspace-commandbar, .workspace-command-bar")).toBeNull();
-    const detail = screen.getByRole("tabpanel", { name: "Detalle" });
-    expect(within(detail).queryByRole("button", { name: /proponer comprobación/i })).not.toBeInTheDocument();
-    // Case-level controls live in the page header, not in the node detail drawer.
-    expect(within(detail).queryByText("Controles del expediente")).not.toBeInTheDocument();
-    const header = document.querySelector<HTMLElement>(".workspace-header")!;
-    const controls = within(header).getByText("Controles del expediente").closest("details")!;
-    expect(controls).not.toHaveAttribute("open");
-    expect(within(controls).getByRole("button", { name: /ejecutar siguiente/i })).not.toBeVisible();
-    await openCaseControls(user);
-    expect(within(controls).getByRole("button", { name: /ejecutar siguiente acción en cola/i })).toBeDisabled();
-    expect(within(controls).getByRole("button", { name: /actualizar expediente/i })).toBeEnabled();
+    expect(screen.queryByText("Controles del expediente")).not.toBeInTheDocument();
+    const header = within(document.querySelector<HTMLElement>(".workspace-header-actions")!);
+    for (const label of ["Usernames", "Pausar"]) expect(header.getByText(label, { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
+    for (const name of ["Obtener informe", "Generar informe con IA"]) expect(header.getByRole("button", { name })).toBeEnabled();
+    for (const name of ["Autorizar expediente", "Actualizar expediente", "Ejecutar siguiente acción en cola"]) {
+      expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    }
     expect(calls).toHaveLength(1);
   });
   it("carga, permite reintentar errores y distingue un expediente inexistente", async () => {
@@ -232,12 +221,8 @@ describe("espacio de investigación factual", () => {
     expect(within(screen.getByRole("tabpanel", { name: "Detalle" })).getByText(/Comprobación de registro en GitHub/i)).toBeInTheDocument();
   });
 
-  it("refresca explícitamente sin mutar y ofrece zoom, ajuste y pestañas móviles usables", async () => {
-    let current = snapshot();
-    const { calls } = installFetch(async (call) => {
-      if (pathOf(call) !== "/investigations/case-1" || call.init?.method !== undefined) throw new Error(`Solicitud inesperada: ${pathOf(call)}`);
-      return json(current);
-    });
+  it("ofrece zoom, ajuste y pestañas móviles usables sin mutar el expediente", async () => {
+    const { calls } = installFetch(async () => json(snapshot()));
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
     const graph = await screen.findByRole("group", { name: /grafo factual/i });
@@ -250,11 +235,7 @@ describe("espacio de investigación factual", () => {
     await user.click(screen.getByRole("tab", { name: "Detalle" }));
     expect(document.querySelector(".workspace-layout")).toHaveAttribute("data-mobile-panel", "detail");
 
-    await openCaseControls(user);
-    current = { ...current, revision: 2, name: "Versión actualizada" };
-    await user.click(screen.getByRole("button", { name: /actualizar expediente/i }));
-    expect(await screen.findByRole("heading", { name: "Versión actualizada" })).toBeInTheDocument();
-    expect(calls).toHaveLength(2);
+    expect(calls.map(pathOf)).toEqual(["/investigations/case-1"]);
     expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
   });
 
@@ -274,8 +255,7 @@ describe("espacio de investigación factual", () => {
     expect(screen.getByRole("heading", { name: "Error de ejecución" })).toBeInTheDocument();
     expect(screen.getByText("Execution failed.")).toBeInTheDocument();
     expect(screen.queryByLabelText(/motivo de validación/i)).not.toBeInTheDocument();
-    await openCaseControls(user);
-    expect(screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /ejecutar siguiente acción en cola/i })).not.toBeInTheDocument();
     expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
   });
 
@@ -296,7 +276,6 @@ describe("espacio de investigación factual", () => {
     });
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
-    await openCaseControls(user);
     const run = await screen.findByRole("button", { name: /ejecutar siguiente acción en cola/i });
     expect(run).toBeDisabled();
     expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
@@ -326,17 +305,16 @@ describe("espacio de investigación factual", () => {
     });
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
-    await openCaseControls(user);
-    const run = screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i });
+    const run = await screen.findByRole("button", { name: /ejecutar siguiente acción en cola/i });
     expect(run).toBeEnabled();
     expect(calls.some((call) => call.init?.method === "POST")).toBe(false);
     await user.click(run);
-    await waitFor(() => expect(run).toBeDisabled());
+    await waitFor(() => expect(run).not.toBeInTheDocument());
     expect(calls.filter((call) => pathOf(call).endsWith("/actions/run"))).toHaveLength(1);
     expect(calls.some((call) => /approval|proposals/.test(pathOf(call)))).toBe(false);
   });
 
-  it("conserva propuestas históricas sin controles de aprobación y otorga/revoca autorización aparte", async () => {
+  it("conserva propuestas históricas sin aprobarlas al autorizar el expediente", async () => {
     let current = snapshot({ actions: [action()] });
     const { calls } = installFetch(async (call) => {
       const path = pathOf(call);
@@ -358,17 +336,12 @@ describe("espacio de investigación factual", () => {
     expect(screen.getByText(/Propuesta histórica conservada/i)).toBeInTheDocument();
     expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
 
-    await openCaseControls(user);
-    await user.type(screen.getByLabelText(/motivo de autorización/i), "Permiso expreso");
-    await user.click(screen.getByRole("button", { name: /otorgar autorización/i }));
-    await waitFor(() => expect(screen.getByText(/Autorización otorgada/i)).toBeInTheDocument());
-    await user.clear(screen.getByLabelText(/motivo de autorización/i));
-    await user.type(screen.getByLabelText(/motivo de autorización/i), "Retiro del permiso");
-    await user.click(screen.getByRole("button", { name: /revocar autorización/i }));
-    expect(calls.filter((call) => pathOf(call).endsWith("/authorization")).map(bodyOf)).toEqual([
-      { granted: true, reason: "Permiso expreso" },
-      { granted: false, reason: "Retiro del permiso" },
-    ]);
+    const authorize = screen.getByRole("button", { name: "Autorizar expediente" });
+    await user.click(authorize);
+    await waitFor(() => expect(authorize).not.toBeInTheDocument());
+    expect(screen.getByText(/Propuesta histórica conservada/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /revocar autorización|ejecutar siguiente/i })).not.toBeInTheDocument();
+    expect(calls.filter((call) => call.init?.method === "POST").map(pathOf)).toEqual(["/investigations/case-1/authorization"]);
   });
 
   it("valida evidencia con historial/procedencia y presenta informe como texto inocuo, también pausada", async () => {
@@ -462,7 +435,7 @@ describe("espacio de investigación factual", () => {
     window.history.replaceState(null, "", "/");
   });
 
-  it("invalida el informe al cambiar la revisión por actualización o mutación", async () => {
+  it("invalida el informe al autorizar el expediente", async () => {
     let current = snapshot();
     const report = "# Informe de revisión";
     installFetch(async (call) => {
@@ -480,16 +453,7 @@ describe("espacio de investigación factual", () => {
     await user.click(await screen.findByRole("button", { name: /obtener informe/i }));
     expect(await screen.findByLabelText(/vista previa del informe/i)).toHaveTextContent(report);
 
-    await openCaseControls(user);
-    current = { ...current, revision: current.revision + 1, name: "Revisión nueva" };
-    await user.click(screen.getByRole("button", { name: /actualizar expediente/i }));
-    await waitFor(() => expect(screen.queryByLabelText(/vista previa del informe/i)).not.toBeInTheDocument());
-    expect(screen.queryByRole("link", { name: /descargar markdown/i })).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /obtener informe/i }));
-    expect(await screen.findByLabelText(/vista previa del informe/i)).toBeInTheDocument();
-    await user.type(screen.getByLabelText(/motivo de autorización/i), "Permiso expreso");
-    await user.click(screen.getByRole("button", { name: /otorgar autorización/i }));
+    await user.click(screen.getByRole("button", { name: "Autorizar expediente" }));
     await waitFor(() => expect(screen.queryByLabelText(/vista previa del informe/i)).not.toBeInTheDocument());
     expect(screen.queryByRole("link", { name: /descargar markdown/i })).not.toBeInTheDocument();
   });
@@ -547,32 +511,40 @@ describe("espacio de investigación factual", () => {
     expect(graphTab).toHaveAttribute("aria-selected", "true");
   });
 
-  it("bloquea controles y declara el estado desconocido cuando mutación y refetch fallan", async () => {
+  it("bloquea controles si fallan la mutación y la lectura, y permite recuperar la vista sin mutar", async () => {
     let loads = 0;
     const { calls } = installFetch(async (call) => {
       const path = pathOf(call);
       if (path === "/investigations/case-1") {
         loads += 1;
-        return loads === 1
-          ? json(snapshot({ actions: [action("queued")] }))
-          : json({ error: "UNAVAILABLE", message: "lectura no disponible" }, 503);
+        if (loads === 1) return json(snapshot({ actions: [action("queued")] }));
+        if (loads === 2) return json({ error: "UNAVAILABLE", message: "lectura no disponible" }, 503);
+        return json(snapshot({ revision: 2, name: "Versión actualizada", actions: [action("queued")] }));
       }
       if (path.endsWith("/authorization")) return json({ error: "UNAVAILABLE", message: "respuesta perdida" }, 503);
       throw new Error(`Ruta inesperada: ${path}`);
     });
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
-    await openCaseControls(user);
-    await user.type(screen.getByLabelText(/motivo de autorización/i), "Permiso expreso");
-    await user.click(screen.getByRole("button", { name: /otorgar autorización/i }));
+    const authorize = await screen.findByRole("button", { name: "Autorizar expediente" });
+    await user.click(authorize);
 
     const alert = await screen.findByText(/no se pudo confirmar la operación/i);
     expect(alert).toHaveTextContent(/lectura no disponible/i);
     expect(alert).toHaveTextContent(/estado.*desconocido|no se pudo.*refrescar/i);
     expect(alert).not.toHaveTextContent(/se volvió a consultar/i);
-    expect(screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /otorgar autorización/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /ejecutar siguiente acción en cola/i })).not.toBeInTheDocument();
+    expect(authorize).toBeDisabled();
     expect(calls.filter((call) => pathOf(call) === "/investigations/case-1")).toHaveLength(2);
+    const refresh = screen.getByRole("button", { name: "Actualizar expediente" });
+    expect(refresh.closest(".workspace-alert")).toHaveTextContent("La vista puede estar desactualizada.");
+    await user.click(refresh);
+    await screen.findByRole("heading", { name: "Versión actualizada" });
+    expect(authorize).toBeEnabled();
+    expect(refresh).not.toBeInTheDocument();
+    expect(calls.map((call) => `${call.init?.method ?? "GET"} ${pathOf(call)}`)).toEqual([
+      "GET /investigations/case-1", "POST /investigations/case-1/authorization", "GET /investigations/case-1", "GET /investigations/case-1",
+    ]);
   });
 
   it("si una mutación falla vuelve a leer el snapshot antes de exponer los gates", async () => {
@@ -588,14 +560,14 @@ describe("espacio de investigación factual", () => {
     });
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
-    await openCaseControls(user);
-    await user.type(screen.getByLabelText(/motivo de autorización/i), "Permiso expreso");
-    await user.click(screen.getByRole("button", { name: /otorgar autorización/i }));
+    const authorize = await screen.findByRole("button", { name: "Autorizar expediente" });
+    await user.click(authorize);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/respuesta perdida/i);
-    await waitFor(() => expect(loads).toBe(2));
+    await waitFor(() => expect(authorize).toBeEnabled());
+    expect(loads).toBe(2);
     expect(calls.filter((call) => pathOf(call) === "/investigations/case-1")).toHaveLength(2);
-    expect(screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /ejecutar siguiente acción en cola/i })).not.toBeInTheDocument();
   });
 });
 
@@ -629,29 +601,24 @@ describe("acciones GHunt", () => {
     const queued: GitHubCatalogAction = { id: "ghunt-1", spec: { catalogId: "ghunt.email.v1", provider: "ghunt", seed }, status: "queued", queuedByCatalog: true, proposedAt: createdAt, proposalReason: "Consulta Gmail" };
     const current = snapshot({ advancementMode: "manual", authorization: { granted: true, at: createdAt, reason: "Permiso", operator: "local-operator", catalogScopes: ["ghunt.email.v1"] }, actions: [queued] });
     const { calls } = installFetch(async (call) => pathOf(call) === "/settings/ghunt" ? json({ available: true, state: "connected", account: null }) : json(current));
-    const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
-    await openCaseControls(user);
-    const run = screen.getByRole("button", { name: /ejecutar siguiente acción en cola/i });
-    await waitFor(() => expect(run).toBeEnabled());
+    const run = await screen.findByRole("button", { name: /ejecutar siguiente acción en cola/i });
+    expect(run).toBeEnabled();
     expect(document.querySelector(".workspace-state-tag")).toHaveTextContent("Avance manual");
     expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
     expect(calls.filter((call) => pathOf(call) === "/settings/ghunt")).toHaveLength(1);
   });
 
-  it("indica cuando la autorización previa no cubre GHunt", async () => {
+  it("indica cuando una autorización de user-scanner no cubre GHunt", async () => {
     const queued: GitHubCatalogAction = { id: "ghunt-1", spec: { catalogId: "ghunt.email.v1", provider: "ghunt", seed }, status: "queued", queuedByCatalog: true, proposedAt: createdAt, proposalReason: "Consulta Gmail" };
-    installFetch(async (call) => pathOf(call) === "/settings/ghunt" ? json({ available: true, state: "connected", account: null }) : json(snapshot({ actions: [queued], authorization: { granted: true, at: createdAt, reason: "Anterior", operator: "local-operator" } })));
+    installFetch(async (call) => pathOf(call) === "/settings/ghunt" ? json({ available: true, state: "connected", account: null }) : json(snapshot({ actions: [queued], authorization: { granted: true, at: createdAt, reason: "Anterior", operator: "local-operator", catalogScopes: ["user-scanner.email.v1"] } })));
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
     const list = await screen.findByText(/Lista accesible de nodos/i).then((summary) => summary.closest("details")!);
     await user.click(list.querySelector("summary")!);
     await user.click(within(list).getByRole("button", { name: /Acción: ghunt-1/i }));
-    expect(screen.getByText(/renovar la autorización.*GHunt/i)).toBeInTheDocument();
-    await openCaseControls(user);
-    expect(screen.getByRole("button", { name: "Otorgar autorización" })).toBeDisabled();
-    await user.type(screen.getByLabelText("Motivo de autorización"), "Autorizar GHunt");
-    expect(screen.getByRole("button", { name: "Otorgar autorización" })).toBeEnabled();
+    expect(screen.getByText("El expediente requiere autorización para ejecutar GHunt.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Autorizar expediente" })).toBeEnabled();
   });
 });
 
@@ -804,15 +771,16 @@ describe("desplegables del encabezado", () => {
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
     await screen.findByRole("heading", { name: "Caso de prueba" });
-    const controls = screen.getByText("Controles del expediente").closest("details")!;
-    await openCaseControls(user);
+    const pause = screen.getByText("Pausar", { selector: "summary" });
+    const controls = pause.closest("details")!;
+    await user.click(pause);
     expect(controls).toHaveAttribute("open");
-    await user.click(within(controls).getByLabelText("Motivo de autorización"));
+    await user.click(within(controls).getByLabelText("Motivo para pausar el expediente"));
     expect(controls).toHaveAttribute("open");
     await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
     expect(controls).not.toHaveAttribute("open");
 
-    await openCaseControls(user);
+    await user.click(pause);
     await user.keyboard("{Escape}");
     expect(controls).not.toHaveAttribute("open");
   });

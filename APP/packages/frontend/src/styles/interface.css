@@ -104,9 +104,6 @@ input[type="checkbox"]::before { font-size: 12px; }
 .create-section-heading h2 { font-size: 24px; }
 .field-hint { font-size: 13px; line-height: 1.5; }
 .remove-email-button { min-height: 46px; border-radius: var(--radius); font-size: 14px; }
-.create-advancement-field { border-color: var(--line); border-radius: 8px; background: var(--linen); }
-.create-advancement-field > label { font-weight: 600; }
-.create-advancement-field > span { font-size: 13px; line-height: 1.5; }
 .form-error { border-radius: 0 var(--radius) var(--radius) 0; }
 .create-guide { grid-template-columns: minmax(0, 1fr); border-top-color: var(--line-strong); }
 .create-guide h2 { font-size: 22px; }
@@ -124,7 +121,7 @@ input[type="checkbox"]::before { font-size: 12px; }
 .workspace-popover { border-color: var(--line-strong); border-radius: var(--radius-panel); font-size: 14px; }
 .workspace-header-reason { font-size: 13px; }
 .workspace-header-reason input { border-radius: var(--radius); background: #fff; font-size: 15px; }
-.workspace-alert, .workspace-claimed-warning { border-radius: 0 var(--radius) var(--radius) 0; font-size: 14px; }
+.workspace-alert, .workspace-claimed-warning, .workspace-queue-notice { border-radius: 0 var(--radius) var(--radius) 0; font-size: 14px; }
 .workspace-claimed-warning { border-left-color: #96713B; background: #FAF3E7; }
 
 .graph-description summary, .graph-node-list summary { font-size: 12px; }
@@ -159,7 +156,7 @@ input[type="checkbox"]::before { font-size: 12px; }
 .detail-control > p, .detail-history > p, .detail-empty { font-size: 14px; line-height: 1.55; }
 .fact-list { font-size: 14px; line-height: 1.5; }
 .detail-warning, .detail-note { border-radius: 0 var(--radius) var(--radius) 0; font-size: 13px; line-height: 1.55; }
-.detail-control .form-field textarea, .workspace-case-controls .form-field textarea { font-size: 15px; }
+.detail-control .form-field textarea { font-size: 15px; }
 .detail-history ol { font-size: 14px; }
 .workspace-state-value { font-size: 12px; }
 
