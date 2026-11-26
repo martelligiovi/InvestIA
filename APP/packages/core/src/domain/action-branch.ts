@@ -16,22 +16,26 @@ function append<K, V>(index: Map<K, V[]>, key: K, value: V): void {
 /** Follow explicit provenance only; equal seed values never establish ownership. */
 export function actionBranch(investigation: Investigation, rootId: InvestigationActionId): ActionBranch {
   const childrenBySeed = new Map<string, InvestigationActionId[]>();
+  const childrenByAction = new Map<InvestigationActionId, InvestigationActionId[]>();
   const evidenceByAction = new Map<InvestigationActionId, EvidenceRecord[]>();
   for (const action of investigation.actions) {
     if (action.sourceSeedId !== undefined) append(childrenBySeed, action.sourceSeedId, action.id);
+    else if (action.sourceActionId !== undefined) append(childrenByAction, action.sourceActionId, action.id);
   }
   for (const evidence of investigation.evidence) append(evidenceByAction, evidence.actionId, evidence);
 
   const actionIds = new Set([rootId]);
   const evidenceIds = new Set<EvidenceId>();
+  const enqueue = (child: string) => {
+    if (child === rootId) throw new Error("Cannot replace a cyclic action branch");
+    actionIds.add(child);
+  };
   // Set iteration visits entries added during traversal as well as the initial root.
   for (const actionId of actionIds) {
+    for (const child of childrenByAction.get(actionId) ?? []) enqueue(child);
     for (const evidence of evidenceByAction.get(actionId) ?? []) {
       evidenceIds.add(evidence.id);
-      for (const child of childrenBySeed.get(findingSeedNodeId(evidence.id)) ?? []) {
-        if (child === rootId) throw new Error("Cannot replace a cyclic action branch");
-        actionIds.add(child);
-      }
+      for (const child of childrenBySeed.get(findingSeedNodeId(evidence.id)) ?? []) enqueue(child);
     }
   }
   return { actionIds, evidenceIds };

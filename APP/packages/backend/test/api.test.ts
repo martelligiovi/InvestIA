@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   authorizationCovers,
   createCatalogExecutor,
+  createInitialInvestigation,
   createInvestigationService,
   findingSeedNodeId,
   isActionEligibleByParentValidation,
@@ -142,6 +143,44 @@ function makeHarness(executorFailure?: string) {
     get executions() { return executions; },
   };
 }
+
+test("HTTP rerun queues only the confirmed action from a current local snapshot", async (t) => {
+  const harness = makeHarness();
+  const { app } = harness;
+  t.after(() => app.close());
+  const at = "2025-02-01T00:00:00.000Z";
+  const root: GitHubCatalogAction = { id: "completed", status: "succeeded", proposedAt: at, completedAt: at, proposalReason: "Fixture",
+    queuedByCatalog: true, spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: { kind: "email", value: "fixture@example.org" } } };
+  const id = "rerun-case";
+  await harness.store.create({ ...createInitialInvestigation(id, at), revision: 3, advancementMode: "manual",
+    authorization: { granted: true, at, operator: "local-operator", catalogScopes: ["user-scanner.email.v1"], reason: "Fixture grant" },
+    emailSeeds: [root.spec.seed as { kind: "email"; value: string }], actions: [root, { ...root, id: "unrelated" }],
+    evidence: [{ id: "old-result", actionId: root.id, seed: root.spec.seed, provider: "Fixture", status: "registered", sourceId: "user-scanner:email", recordedAt: at }],
+  });
+  const path = `/investigations/${id}`;
+  const headers = { host: "localhost:4317", origin: "http://localhost:4317" };
+  const prior = (await app.inject({ method: "GET", url: path })).json<Investigation>();
+  const rerunUrl = `${path}/actions/${root.id}/rerun`;
+  for (const [requestHeaders, payload, status, error, message] of [
+    [{ ...headers, origin: "https://unrelated.example" }, { expectedRevision: prior.revision }, 403, "FORBIDDEN", "Reruns require a local same-origin request"],
+    [headers, { expectedRevision: prior.revision, actionId: "sibling" }, 400, "INVALID_REQUEST", "Invalid request"],
+    [headers, { expectedRevision: prior.revision - 1 }, 409, "CONFLICT", "The action cannot be rerun in the current state"],
+  ] as const) {
+    const rejected = await app.inject({ method: "POST", url: rerunUrl, headers: requestHeaders, payload });
+    assert.equal(rejected.statusCode, status);
+    assert.deepEqual(rejected.json(), { error, message });
+    assert.deepEqual((await app.inject({ method: "GET", url: path })).json(), prior);
+    assert.equal(harness.executions, 0);
+  }
+  const queued = await app.inject({ method: "POST", url: rerunUrl, headers, payload: { expectedRevision: prior.revision } });
+  assert.equal(queued.statusCode, 202);
+  const current = queued.json<Investigation>();
+  assert.equal(current.revision, prior.revision + 1);
+  assert.equal(current.actions.find((item) => item.id === root.id)?.status, "queued");
+  assert.deepEqual(current.evidence, prior.evidence);
+  assert.deepEqual(current.actions.filter((item) => item.id !== root.id), prior.actions.filter((item) => item.id !== root.id));
+  assert.equal(harness.executions, 0, "posting the request does not bypass manual mode or execute a provider directly");
+});
 
 test("HTTP username seeds queue Maigret and reject invalid or duplicate input without changes", async (t) => {
   const harness = makeHarness();

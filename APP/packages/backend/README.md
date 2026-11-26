@@ -107,6 +107,7 @@ After `pnpm --dir APP build`, the backend serves the built frontend at `/` and i
 - `POST /investigations/:id/actions/:actionId/approval`
 - `POST /investigations/:id/actions/run`
 - `POST /investigations/:id/evidence/:evidenceId/validation` with `accepted`, `rejected`, or `inconclusive`
+- `POST /investigations/:id/actions/:actionId/rerun` with `{ expectedRevision }` queues a replacement for one terminal, enabled action and returns `202` with the updated investigation. This requires a local same-origin request and the investigation's current grant. A stale revision, paused case, or overlapping in-flight branch returns `409` without changing evidence. Manual mode stays manual. Prior findings and descendants remain active until success atomically replaces them; a failure keeps the prior tree.
 - `POST /investigations/:id/evidence/:evidenceId/decodo` with no body or a strict `{ reason?: string }` body. Queues Decodo for an already-accepted FaceCheck match and returns `201` with the updated investigation. Returns `409` when Decodo is disabled, the match is ineligible, or an action already exists; returns `404` for a missing investigation or evidence record.
 - `POST /investigations/:id/evidence/:evidenceId/rejection`
 - `POST /investigations/:id/pause`, `POST /investigations/:id/resume`

@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import {
   authorizationCovers,
+  canReplaceActionResults,
   DEFAULT_INVESTIGATION_NAME,
+  pendingRerunDescendants,
+  withoutActionResults,
   findingSeedNodeId,
   gravatarFindingTargetsEmail,
   isActionEligibleByParentValidation,
@@ -216,6 +219,11 @@ function isStoredAction(value: unknown): boolean {
   if (approvalPresent && !isApproval(value.approval)) return false;
   if (value.queuedByCatalog !== undefined && value.queuedByCatalog !== true) return false;
   if (value.sourceSeedId !== undefined && !isNonEmptyString(value.sourceSeedId)) return false;
+  if (value.sourceActionId !== undefined && (!isNonEmptyString(value.sourceActionId) || value.sourceActionId === value.id || value.sourceSeedId !== undefined)) return false;
+  if (value.lastRerunFailed !== undefined && (value.lastRerunFailed !== true || !["failed", "succeeded"].includes(String(value.status)))) return false;
+  if (value.rerun !== undefined && (!isRecord(value.rerun) || !["queued", "claimed"].includes(String(value.status)) ||
+    !["failed", "succeeded"].includes(String(value.rerun.previousStatus)) || typeof value.rerun.fingerprint !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.rerun.fingerprint))) return false;
   if (["queued", "claimed", "succeeded", "failed"].includes(String(value.status)) &&
     !approvalPresent && value.queuedByCatalog !== true) return false;
 
@@ -390,8 +398,9 @@ export class PostgresInvestigationStore implements InvestigationStore {
         return { ...legacy, status: "proposed" as const, proposalReason };
       });
       const changed = actions.some((candidate, index) => candidate !== current.actions[index]);
+      const rerunDescendants = pendingRerunDescendants(changed ? { ...current, actions } : current);
       // Unlinked catalog Gravatar entries still waiting for their scanner are never dispatched.
-      const action = actions.find((candidate) => candidate.status === "queued" &&
+      const action = actions.find((candidate) => candidate.status === "queued" && !rerunDescendants.has(candidate.id) &&
         (candidate.queuedByCatalog === true || candidate.approval !== undefined) &&
         (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) &&
         !(input.deferredCatalogIds ?? []).includes(candidate.spec.catalogId) &&
@@ -426,8 +435,21 @@ export class PostgresInvestigationStore implements InvestigationStore {
       if (action?.status !== "claimed" || action.claim?.id !== input.claimId) {
         throw new InvestigationClaimConflictError();
       }
+      const { rerun, ...active } = action;
+      if (rerun !== undefined && (input.result.kind === "failure" || !canReplaceActionResults(current, action))) {
+        const { claim: _replacementClaim, ...prior } = active;
+        const restored = { ...prior, status: rerun.previousStatus, lastRerunFailed: true as const };
+        const next = revise(current, input.completedAt, {
+          actions: current.actions.map((candidate) => candidate.id === action.id ? restored : candidate),
+          audit: [...current.audit, { ...input.auditEvent, kind: "action_failed", actionId: action.id,
+            reason: input.result.kind === "failure" ? "Replacement execution failed; prior results were retained." : "Prior results changed during execution; the replacement was not applied." }],
+        });
+        return { next, result: next };
+      }
+      const basis = rerun === undefined ? current : withoutActionResults(current, action.id);
+      const { failure: _priorFailure, unsupportedObservationCount: _priorCount, ...completedFields } = active;
       const completed = {
-        ...action,
+        ...(rerun === undefined ? active : completedFields),
         status: input.result.kind === "success" ? "succeeded" as const : "failed" as const,
         completedAt: input.completedAt,
         ...(input.result.kind === "failure" ? { failure: input.result.error } : {
@@ -437,7 +459,7 @@ export class PostgresInvestigationStore implements InvestigationStore {
       const followUps = input.result.kind === "success" ? (input.followUps ?? []).filter(({ action: followUp }, index, all) =>
         all.findIndex(({ action: other }) => other.spec.catalogId === followUp.spec.catalogId &&
           other.spec.seed.kind === followUp.spec.seed.kind && other.spec.seed.value === followUp.spec.seed.value) === index) : [];
-      const actions = current.actions.map((candidate) => candidate.id === input.actionId ? completed : candidate);
+      const actions = basis.actions.map((candidate) => candidate.id === input.actionId ? completed : candidate);
       const followUpEvents: typeof input.auditEvent[] = [];
       for (const followUp of followUps) {
         const existingIndex = actions.findIndex((existing) => existing.spec.catalogId === followUp.action.spec.catalogId &&
@@ -449,7 +471,7 @@ export class PostgresInvestigationStore implements InvestigationStore {
         }
         const existing = actions[existingIndex]!;
         // Convert only an unclaimed legacy catalog sibling; never rewrite completed or human-approved work.
-        if (existing.spec.catalogId !== "gravatar.email.v1" || existing.status !== "queued" ||
+        if (rerun !== undefined || existing.spec.catalogId !== "gravatar.email.v1" || existing.status !== "queued" ||
           existing.queuedByCatalog !== true || existing.sourceSeedId !== undefined || existing.approval !== undefined) continue;
         const { queuedByCatalog: _legacyEligibility, ...legacy } = existing;
         actions[existingIndex] = { ...legacy, status: followUp.action.status, proposalReason: followUp.action.proposalReason,
@@ -457,12 +479,12 @@ export class PostgresInvestigationStore implements InvestigationStore {
           ...(followUp.action.queuedByCatalog === true ? { queuedByCatalog: true as const } : {}) };
         followUpEvents.push({ ...followUp.auditEvent, actionId: existing.id });
       }
-      const next = revise(current, input.completedAt, {
+      const next = revise(basis, input.completedAt, {
         actions,
         evidence: input.result.kind === "success"
-          ? [...current.evidence, ...input.result.evidence]
-          : current.evidence,
-        audit: [...current.audit, { ...input.auditEvent, actionId: input.actionId }, ...followUpEvents],
+          ? [...basis.evidence, ...input.result.evidence]
+          : basis.evidence,
+        audit: [...basis.audit, { ...input.auditEvent, actionId: input.actionId }, ...followUpEvents],
       });
       return { next, result: next };
     });

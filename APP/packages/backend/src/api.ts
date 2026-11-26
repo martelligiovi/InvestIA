@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
+  ActionRerunConflictError,
   AI_MAX_TOKENS_RANGE,
   AI_REASONING_EFFORTS,
   buildAiReportMessages,
@@ -67,6 +68,7 @@ const AuthorizationBody = ReasonBody.extend({ granted: z.boolean() }).strict();
 const ValidationBody = ReasonBody.extend({ status: z.enum(["accepted", "rejected", "inconclusive"]) }).strict();
 const QueueDecodoBody = ReasonBody.partial().optional();
 const EmptyBody = z.object({}).strict().optional();
+const ActionRerunBody = z.object({ expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) }).strict();
 const InvestigationParams = z.object({ id: z.string().min(1).max(200) }).strict();
 const ActionParams = InvestigationParams.extend({ actionId: z.string().min(1).max(200) }).strict();
 const EvidenceParams = InvestigationParams.extend({ evidenceId: z.string().min(1).max(200) }).strict();
@@ -131,6 +133,7 @@ function publicError(error: unknown): unknown {
   if (error instanceof NvidiaProviderError) return PROVIDER_ERRORS[error.kind];
   if (error instanceof InvestigationNotFoundError) return new HttpError(404, "NOT_FOUND", "Investigation not found");
   if (error instanceof InvestigationClaimConflictError) return new HttpError(409, "CONFLICT", "Action state changed; reload before retrying");
+  if (error instanceof ActionRerunConflictError) return new HttpError(409, "CONFLICT", "The action cannot be rerun in the current state");
   if (isErrorCode(error, "23505")) return new HttpError(409, "CONFLICT", "The requested record already exists");
   if (error instanceof Error) {
     if (error.message === "A valid email seed is required" || error.message === "A valid username seed is required") {
@@ -340,6 +343,16 @@ export function createBackendApp(
       return publicAction(action);
     },
   );
+
+  app.post<{ Params: { id: string; actionId: string } }>("/investigations/:id/actions/:actionId/rerun", async (request, reply) => {
+    if (!isLocalSameOriginRequest(request.headers)) throw new HttpError(403, "FORBIDDEN", "Reruns require a local same-origin request");
+    const { id, actionId } = input(ActionParams, request.params);
+    const { expectedRevision } = input(ActionRerunBody, request.body);
+    const investigation = await serviceCall(() => service.requestActionRerun(id, actionId, expectedRevision));
+    await projectPersistedState(id);
+    if (investigation.advancementMode === "automatic") adapters.wakeAutomaticRunner?.();
+    return reply.code(202).send(publicInvestigation(investigation));
+  });
 
   app.post<{ Params: { id: string } }>("/investigations/:id/actions/run", async (request) => {
     const { id } = input(InvestigationParams, request.params);

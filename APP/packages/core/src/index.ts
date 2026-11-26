@@ -79,6 +79,7 @@ export {
   type InvestigationServiceDependencies,
 } from "./application/investigation-service.ts";
 export { actionBranch, withoutActionResults, type ActionBranch } from "./domain/action-branch.ts";
+export { ActionRerunConflictError, canReplaceActionResults, pendingRerunDescendants } from "./domain/action-rerun.ts";
 export { usernameProposals, type UsernameProposal } from "./domain/username-proposals.ts";
 export { compileInvestigationReport } from "./application/compile-report.ts";
 export {

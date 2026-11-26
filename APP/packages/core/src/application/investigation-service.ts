@@ -2,11 +2,14 @@ import { isScannerFinding, type Observation, type RegistrationObservation, type 
 import { isGooglePhotoUrl, isSafePublicHttpUrl, urlSeed, USERNAME_SEED_PATTERN, type EmailSeed, type PhotoSeed, type UrlSeed, type UsernameSeed } from "../domain/seed.ts";
 import { findingSeedNodeId, usernameSeedNodeId } from "../domain/seed-graph.ts";
 import { usernameProposals } from "../domain/username-proposals.ts";
+import { ActionRerunConflictError, prepareActionRerun } from "../domain/action-rerun.ts";
 import type { SeedBox } from "../domain/seed-box.ts";
 import {
+  authorizationCovers,
   CATALOG_INPUT_KINDS,
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
+  isActionEligibleByParentValidation,
   isGhuntEligibleEmail,
   isScopedCatalogId,
   latestValidationStatus,
@@ -518,6 +521,26 @@ export class InvestigationService {
     };
   }
 
+  async requestActionRerun(id: string, actionId: InvestigationActionId, expectedRevision: number): Promise<Investigation> {
+    const at = timestamp(this.dependencies.clock);
+    return this.dependencies.store.transact(id, (current) => {
+      const action = getAction(current, actionId);
+      const enabled = [...this.seedCatalog, ...this.photoCatalog, ...this.urlCatalog, "maigret.username.v1"];
+      if (current.revision !== expectedRevision || current.paused || !enabled.includes(action.spec.catalogId) ||
+        !authorizationCovers(current.authorization, action.spec.catalogId) || !isActionEligibleByParentValidation(current, action)) {
+        throw new ActionRerunConflictError();
+      }
+      const queued = prepareActionRerun(current, action);
+      const event = auditEvent(this.dependencies.createId, at, "operator", "action_rerun_requested",
+        "Requested a replacement execution; prior results remain until a successful replacement.", { actionId });
+      const next = withRevision(current, at, {
+        actions: current.actions.map((candidate) => candidate.id === actionId ? queued : candidate),
+        audit: [...current.audit, event],
+      });
+      return { next, result: next };
+    });
+  }
+
   async executeNextAction(id: string, automaticOnly = false): Promise<GitHubCatalogAction | undefined> {
     const claimedAt = timestamp(this.dependencies.clock);
     const deferred = this.dependencies.deferredCatalogIds === undefined ? [] : await this.dependencies.deferredCatalogIds();
@@ -615,7 +638,7 @@ export class InvestigationService {
       const action: GitHubCatalogAction = {
         id: newId(this.dependencies.createId, "action"),
         spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: scanned },
-        status: "proposed", proposedAt: completedAt,
+        sourceActionId: claim.action.id, status: "proposed", proposedAt: completedAt,
         proposalReason: "User Scanner did not find Gravatar; the operator may approve a public profile lookup.",
       };
       followUps.push({ action, auditEvent: auditEvent(this.dependencies.createId, completedAt, "system", "action_proposed", action.proposalReason, { actionId: action.id }) });

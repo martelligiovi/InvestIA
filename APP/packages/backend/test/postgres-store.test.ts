@@ -4,6 +4,7 @@ import {
   createCatalogExecutor,
   createInitialInvestigation,
   createInvestigationService,
+  findingSeedNodeId,
   type ClaimActionRequest,
   type CompleteActionInput,
   type Investigation,
@@ -137,9 +138,83 @@ function makeStoreHarness(seedCatalog: readonly ScopedCatalogId[] = ["user-scann
   return { database, store, service };
 }
 
-function auditEvent(id: string, kind: "action_claimed" | "action_succeeded"): CompleteActionInput["auditEvent"] {
+function auditEvent(id: string, kind: "action_claimed" | "action_succeeded" | "action_failed"): CompleteActionInput["auditEvent"] {
   return { id, at: "2025-03-01T00:01:00.000Z", actor: "system", kind, reason: "offline test" };
 }
+
+async function rerunFixture(childStatus: "queued" | "claimed" = "queued") {
+  const { store, service } = makeStoreHarness(["user-scanner.email.v1", "gravatar.email.v1"]);
+  const at = "2025-03-01T00:00:00.000Z";
+  const seed = { kind: "email", value: "owner@example.org" } as const;
+  const run = {
+    id: "root", status: "succeeded", spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed },
+    proposedAt: at, completedAt: at, proposalReason: "Fixture scan", queuedByCatalog: true,
+  } as const;
+  const first = { id: "old", actionId: run.id, seed, status: "registered", sourceId: "user-scanner:email", provider: "Fixture", recordedAt: at } as const;
+  const child = {
+    ...run, id: "child", status: childStatus, sourceSeedId: findingSeedNodeId(first.id),
+    spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed },
+    ...(childStatus === "claimed" ? { claim: { id: "in-flight", claimedAt: at } } : {}),
+  } as const;
+  const created: Investigation = {
+    ...createInitialInvestigation("rerun-case", at), advancementMode: "manual", emailSeeds: [seed],
+    authorization: { granted: true, catalogScopes: ["user-scanner.email.v1", "gravatar.email.v1"], at, reason: "Fixture grant", operator: "local-operator" },
+    actions: [child, run, { ...run, id: "sibling" }], evidence: [first, { ...first, id: "sibling-result", actionId: "sibling" }],
+  };
+  await store.create(created);
+  const claimRequest: ClaimActionRequest = { investigationId: created.id, claimId: "new-claim", claimedAt: at, auditEvent: auditEvent("new-claim-audit", "action_claimed") };
+  const evidence = { ...first, id: "replacement" };
+  return { store, service, created, run, claimRequest, evidence };
+}
+
+test("a rerun keeps its previous results until successful completion commits the new branch", async () => {
+  const { store, service, created, run, claimRequest, evidence } = await rerunFixture();
+  const pending = await service.requestActionRerun(created.id, run.id, created.revision);
+  assert.equal(pending.revision, created.revision + 1);
+  assert.deepEqual(pending.evidence, created.evidence);
+  assert.deepEqual(pending.actions.map(({ id, status }) => [id, status]), [["child", "queued"], ["root", "queued"], ["sibling", "succeeded"]]);
+  assert.equal(await store.claimNextAction({ ...claimRequest, automaticOnly: true }), undefined);
+  assert.equal((await store.claimNextAction(claimRequest))?.action.id, "root", "the old child cannot dispatch ahead of its replacement");
+  assert.deepEqual((await store.get(created.id))?.evidence, created.evidence);
+  const followUp = { ...created.actions[0]!, id: "new-child", sourceSeedId: findingSeedNodeId(evidence.id) };
+  const result = await store.completeAction({ investigationId: created.id, actionId: run.id, claimId: claimRequest.claimId,
+    completedAt: claimRequest.claimedAt, auditEvent: auditEvent("success", "action_succeeded"),
+    result: { kind: "success", evidence: [evidence], unsupportedObservationCount: 0 },
+    followUps: [{ action: followUp, auditEvent: { ...auditEvent("queue", "action_succeeded"), kind: "action_queued", actionId: followUp.id } }],
+  });
+  assert.equal(result.revision, pending.revision + 2);
+  assert.deepEqual(result.actions.map(({ id, status }) => [id, status]), [["root", "succeeded"], ["sibling", "succeeded"], ["new-child", "queued"]]);
+  assert.deepEqual(result.evidence.map(({ id }) => id), ["sibling-result", "replacement"]);
+  assert.deepEqual(await store.get(created.id), result);
+});
+
+test("a provider failure or a changed previous branch never discards prior results", async () => {
+  for (const conflict of [false, true]) {
+    const { store, service, created, run, claimRequest, evidence } = await rerunFixture();
+    await service.requestActionRerun(created.id, run.id, created.revision);
+    await store.claimNextAction(claimRequest);
+    if (conflict) await service.validateEvidence(created.id, "old", "accepted", "Review during replacement");
+    const before = (await store.get(created.id))!;
+    const result = await store.completeAction({ investigationId: created.id, actionId: run.id, claimId: claimRequest.claimId,
+      completedAt: claimRequest.claimedAt, auditEvent: auditEvent("terminal", conflict ? "action_succeeded" : "action_failed"),
+      result: conflict ? { kind: "success", evidence: [evidence], unsupportedObservationCount: 0 } : { kind: "failure", error: "fixture failure" },
+    });
+    assert.deepEqual(result.evidence, before.evidence);
+    assert.deepEqual(result.validations, before.validations);
+    assert.deepEqual(result.actions.filter(({ id }) => id !== run.id), before.actions.filter(({ id }) => id !== run.id));
+    assert.equal(result.actions.find(({ id }) => id === run.id)?.status, "succeeded");
+    assert.equal(result.actions.find(({ id }) => id === run.id)?.lastRerunFailed, true);
+    assert.equal(result.audit.at(-1)?.kind, "action_failed");
+    assert.equal(result.revision, before.revision + 1);
+  }
+});
+
+test("prevents a rerun from overlapping an already-claimed child and leaves the snapshot unchanged", async () => {
+  const { store, service, created, run } = await rerunFixture("claimed");
+  const before = await store.get(created.id);
+  await assert.rejects(service.requestActionRerun(created.id, run.id, created.revision), { name: "ActionRerunConflictError" });
+  assert.deepEqual(await store.get(created.id), before);
+});
 
 test("GHunt persists, waits when deferred, and requires a scope that names it", async () => {
   const { database, store, service } = makeStoreHarness(["ghunt.email.v1", "user-scanner.email.v1"]);
