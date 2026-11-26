@@ -1,5 +1,14 @@
+import {
+  decodoSourceContentHash,
+  stripModelReasoning,
+  type AiChatMessage,
+  type EvidenceAiNormalization,
+  type NormalizedPageData,
+} from "../domain/evidence-normalization.ts";
 import type { Investigation, ValidationStatus } from "../domain/investigation.ts";
 import { reportableEvidence } from "./compile-report.ts";
+
+export { stripModelReasoning, type AiChatMessage };
 
 export const AI_REASONING_EFFORTS = ["default", "low", "medium", "high"] as const;
 export type AiReasoningEffort = (typeof AI_REASONING_EFFORTS)[number];
@@ -11,11 +20,6 @@ export interface AiReportSettings {
   readonly temperature: number;
   readonly topP: number;
   readonly maxTokens: number;
-}
-
-export interface AiChatMessage {
-  readonly role: "system" | "user";
-  readonly content: string;
 }
 
 export const DEFAULT_AI_REPORT_SETTINGS: AiReportSettings = {
@@ -81,6 +85,15 @@ export const AI_REPORT_SYSTEM_PROMPT = [
   "No agregues una sección con los datos utilizados: el sistema la anexa automáticamente al final del informe.",
 ].join("\n");
 
+const COMPACT_DECODO_METADATA_KEYS = ["title", "status_code", "source", "api_mode", "content_truncated"] as const;
+const AI_NORMALIZED_PAGE_NOTE = "Extracted by AI from the stored raw page; verify against factual appendix.";
+
+interface AiNormalizedPageInput extends NormalizedPageData {
+  readonly model: string;
+  readonly generatedAt: string;
+  readonly note: string;
+}
+
 interface FindingInput {
   readonly evidenceId: string;
   /** Exactly one: the email, confirmed username, profile photo or URL the producing action ran on. */
@@ -93,14 +106,39 @@ interface FindingInput {
   readonly url?: string;
   readonly category?: string;
   readonly metadata?: Readonly<Record<string, string | boolean | number>>;
+  readonly aiNormalizedPage?: AiNormalizedPageInput;
   readonly operatorValidation: ValidationStatus | "pending";
   readonly operatorReason?: string;
 }
 
-function findingInputs(investigation: Investigation): FindingInput[] {
+function compactDecodoMetadata(
+  extra: Readonly<Record<string, string | boolean | number>>,
+): Readonly<Record<string, string | boolean | number>> {
+  const result: Record<string, string | boolean | number> = {};
+  for (const key of COMPACT_DECODO_METADATA_KEYS) {
+    const value = extra[key];
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+function findingInputs(
+  investigation: Investigation,
+  normalizations?: ReadonlyMap<string, EvidenceAiNormalization>,
+): FindingInput[] {
   return reportableEvidence(investigation).evidence.map((evidence) => {
     const decision = investigation.validations.filter((item) => item.evidenceId === evidence.id).at(-1);
     const finding = evidence.finding;
+    const normalization = evidence.sourceId === "decodo:url" && finding !== undefined
+      ? normalizations?.get(evidence.id)
+      : undefined;
+    const useNormalization = normalization !== undefined &&
+      normalization.sourceContentHash === decodoSourceContentHash(evidence);
+    const metadata = finding === undefined
+      ? undefined
+      : useNormalization
+        ? compactDecodoMetadata(finding.extra)
+        : finding.extra;
     return {
       evidenceId: evidence.id,
       ...(evidence.seed.kind === "username" ? { usernameSeed: evidence.seed.value }
@@ -110,17 +148,28 @@ function findingInputs(investigation: Investigation): FindingInput[] {
       target: finding?.target.value ?? evidence.seed.value,
       ...(finding !== undefined && finding.url.length > 0 ? { url: finding.url } : {}),
       ...(finding !== undefined && finding.category.length > 0 ? { category: finding.category } : {}),
-      ...(finding !== undefined && Object.keys(finding.extra).length > 0 ? { metadata: finding.extra } : {}),
+      ...(metadata !== undefined && Object.keys(metadata).length > 0 ? { metadata } : {}),
+      ...(useNormalization ? {
+        aiNormalizedPage: {
+          model: normalization.model,
+          generatedAt: normalization.generatedAt,
+          note: AI_NORMALIZED_PAGE_NOTE,
+          ...normalization.data,
+        },
+      } : {}),
       operatorValidation: decision?.status ?? "pending",
       ...(decision !== undefined ? { operatorReason: decision.reason } : {}),
     };
   });
 }
 
-function selectFindings(investigation: Investigation): { readonly findings: FindingInput[]; readonly total: number } {
+function selectFindings(
+  investigation: Investigation,
+  normalizations?: ReadonlyMap<string, EvidenceAiNormalization>,
+): { readonly findings: FindingInput[]; readonly total: number } {
   const findings: FindingInput[] = [];
   let used = 0;
-  const all = findingInputs(investigation);
+  const all = findingInputs(investigation, normalizations);
   for (const finding of all) {
     const size = JSON.stringify(finding).length;
     if (used + size > MAX_FINDINGS_CHARACTERS) break;
@@ -131,14 +180,20 @@ function selectFindings(investigation: Investigation): { readonly findings: Find
 }
 
 /** Number of findings left out of the provider request because of its size budget. */
-export function countOmittedAiReportFindings(investigation: Investigation): number {
-  const { findings, total } = selectFindings(investigation);
+export function countOmittedAiReportFindings(
+  investigation: Investigation,
+  normalizations?: ReadonlyMap<string, EvidenceAiNormalization>,
+): number {
+  const { findings, total } = selectFindings(investigation, normalizations);
   return total - findings.length;
 }
 
 /** Builds the provider request from persisted facts only; findings beyond the budget are counted, not sent. */
-export function buildAiReportMessages(investigation: Investigation): readonly AiChatMessage[] {
-  const { findings, total } = selectFindings(investigation);
+export function buildAiReportMessages(
+  investigation: Investigation,
+  normalizations?: ReadonlyMap<string, EvidenceAiNormalization>,
+): readonly AiChatMessage[] {
+  const { findings, total } = selectFindings(investigation, normalizations);
   const data = {
     investigation: {
       name: investigation.name ?? null,
@@ -164,11 +219,6 @@ export function buildAiReportMessages(investigation: Investigation): readonly Ai
       ].join("\n"),
     },
   ];
-}
-
-/** Removes inline chain-of-thought some reasoning models emit before the answer. */
-export function stripModelReasoning(content: string): string {
-  return content.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 }
 
 export interface ComposeAiReportInput {
