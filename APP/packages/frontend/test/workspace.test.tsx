@@ -244,7 +244,7 @@ describe("espacio de investigación factual", () => {
       spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed } };
     const child: GitHubCatalogAction = { ...root, id: "child-1", sourceActionId: root.id, status: "succeeded" };
     const before = snapshot({ advancementMode: "manual", actions: [root, child], evidence: [evidence()],
-      authorization: { ...approval, granted: true, catalogScopes: [root.spec.catalogId] } });
+      authorization: { ...approval, granted: true, catalogScopes: ["user-scanner.email.v1"] } });
     const rerun = { previousStatus: "succeeded" as const, fingerprint: "fixture-digest" };
     let current = before;
     const { calls } = installFetch(async (call) => {
