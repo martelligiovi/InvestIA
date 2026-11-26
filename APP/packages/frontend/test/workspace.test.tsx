@@ -301,6 +301,39 @@ describe("espacio de investigación factual", () => {
     }
   }, 12_000);
 
+  it("permite ampliar una autorización histórica para reejecutar una acción terminal", async () => {
+    const root: GitHubCatalogAction = {
+      ...action("succeeded"),
+      spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed },
+    };
+    let current = snapshot({
+      advancementMode: "manual",
+      actions: [root],
+      authorization: { ...approval, granted: true, catalogScope: "user-scanner.email.v1" },
+    });
+    const { calls } = installFetch(async (call) => {
+      if (pathOf(call) === "/investigations/case-1") return json(current);
+      if (pathOf(call) === "/investigations/case-1/authorization") {
+        current = {
+          ...current, revision: current.revision + 1,
+          authorization: { ...approval, granted: true, catalogScopes: ["gravatar.email.v1"] },
+        };
+        return json(current);
+      }
+      throw new Error(`Ruta inesperada: ${pathOf(call)}`);
+    });
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const list = await screen.findByText(/Lista accesible de nodos/i).then((entry) => entry.closest("details")!);
+    await user.click(list.querySelector("summary")!);
+    await user.click(within(list).getByRole("button", { name: /Acción: action-1/i }));
+    expect(screen.getByRole("button", { name: "Reejecutar" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Autorizar expediente" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reejecutar" })).toBeEnabled());
+    expect(calls.filter(({ init }) => init?.method === "POST").map(pathOf))
+      .toEqual(["/investigations/case-1/authorization"]);
+  });
+
   it("muestra un fallo terminal de catálogo histórico sin ofrecer reejecución", async () => {
     const { calls } = installFetch(async (call) => {
       if (pathOf(call) === "/investigations/case-1") return json(snapshot({ actions: [action("failed")] }));

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { authorizationCovers, usernameProposals, type ValidationStatus } from "@investia/core";
+import { authorizationCovers, isScopedCatalogId, usernameProposals, type ValidationStatus } from "@investia/core";
 import { InvestigationApiClient } from "../api/client";
 import { AsciiArt } from "../components/AsciiArt";
 import { InvestigationGraph } from "../components/InvestigationGraph";
@@ -138,6 +138,11 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const queuedActions = investigation.actions.filter((action) => action.status === "queued" && (action.queuedByCatalog === true || action.approval !== undefined));
   const coveredQueue = queuedActions.filter((action) => authorizationCovers(investigation.authorization, action.spec.catalogId));
   const uncoveredCount = queuedActions.length - coveredQueue.length;
+  const uncoveredTerminalCount = investigation.actions.filter((action) =>
+    (action.status === "succeeded" || action.status === "failed") &&
+    isScopedCatalogId(action.spec.catalogId) &&
+    !authorizationCovers(investigation.authorization, action.spec.catalogId),
+  ).length;
   const claimedActions = investigation.actions.filter((action) => action.status === "claimed");
   const hasDispatchableAction = coveredQueue.some((action) => {
     if (action.spec.catalogId === "ghunt.email.v1") return ghuntConnected === true;
@@ -270,12 +275,14 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
         <p className="workspace-claimed-warning" role="status">Generando el informe con IA en NVIDIA Build. Puede tardar varios minutos; el resultado aparece al final de la página.</p>
       )}
 
-      {(uncoveredCount > 0 || investigation.authorization?.granted !== true) && (
+      {(uncoveredCount > 0 || uncoveredTerminalCount > 0 || investigation.authorization?.granted !== true) && (
         <div className="workspace-claimed-warning workspace-notice-with-action">
           <div>
-            <span role="status">Esperando autorización: {uncoveredCount === 0
-              ? "el expediente no tiene permiso para ejecutar las herramientas configuradas."
-              : `${uncoveredCount === 1 ? "1 acción en cola bloqueada" : `${uncoveredCount} acciones en cola bloqueadas`}.`}</span>
+            <span role="status">Esperando autorización: {uncoveredCount > 0
+              ? `${uncoveredCount === 1 ? "1 acción en cola bloqueada" : `${uncoveredCount} acciones en cola bloqueadas`}.`
+              : investigation.authorization?.granted !== true
+                ? "el expediente no tiene permiso para ejecutar las herramientas configuradas."
+                : "hay acciones anteriores fuera del permiso actual; autorizá el expediente si querés reejecutarlas."}</span>
             <p className="dispatch-note">Autorizar habilita semillas actuales y futuras con user-scanner (módulos loud y cross-scan), Gravatar, Maigret, GHunt, FaceCheck (envía la foto de perfil de Google y usa créditos fuera del modo prueba) y Decodo (solo URL públicas de coincidencias de FaceCheck aceptadas, nunca la foto ni la miniatura).</p>
           </div>
           <button className="workspace-button workspace-button--quiet" type="button" disabled={controlsDisabled}
