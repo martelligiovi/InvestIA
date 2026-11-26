@@ -86,7 +86,7 @@ export function createDecodoAdapter(options: DecodoAdapterOptions): SeedBox<UrlS
       response = await fetcher(api.endpoint, {
         method: "POST", redirect: "error", signal,
         headers: { Authorization: `${api.scheme} ${token}`, Accept: "application/json", "Content-Type": "application/json" },
-        body: JSON.stringify({ url: targetUrl, ...(headless ? { headless: "html" } : {}), markdown: true }),
+        body: JSON.stringify({ url: targetUrl, ...(headless ? { headless: "html" } : {}) }),
       });
     } catch (error) {
       throw new Error(timedOut(signal, error) ? FAILURE.timeout : FAILURE.request);

@@ -39,7 +39,9 @@ function assertRequest(call: ReturnType<typeof fixture>["calls"][number], endpoi
   assert.equal(headers.get("authorization"), authorization);
   assert.equal(headers.get("accept"), "application/json");
   assert.equal(headers.get("content-type"), "application/json");
-  assert.deepEqual(JSON.parse(String(call.init.body)), { url: seed.value, ...(headless ? { headless: "html" } : {}), markdown: true });
+  const body = JSON.parse(String(call.init.body)) as Record<string, unknown>;
+  assert.equal("markdown" in body, false);
+  assert.deepEqual(body, { url: seed.value, ...(headless ? { headless: "html" } : {}) });
 }
 
 async function assertFailure(work: Promise<unknown>, message: string) {
@@ -288,13 +290,14 @@ test("bounds title, description, preview, content and links without storing part
   const urls = Array.from({ length: 14 }, (_, i) => `https://example.org/${i}/${"z".repeat(140)}`);
   const { adapter } = fixture([
     () => scraped(article + urls.map((url) => `<a href="${url}">Link</a>`).join(" ")),
+    () => scraped(`<p>${"y".repeat(6500)}</p>`),
     () => scraped(urls.map((_, i) => `[Link ${i}](https://example.org/${i})`).join("\n")),
   ]);
   const [observation] = await adapter.execute(seed);
   const extra = observation!.finding.extra;
   assert.equal(extra.title, "T".repeat(240));
   assert.equal(extra.description, "D".repeat(400));
-  assert.equal(extra.preview, "x".repeat(400));
+  assert.equal(extra.preview, "D".repeat(400));
   assert.equal(extra.content, "x".repeat(6000));
   assert.equal(extra.content_truncated, true);
   assert.equal(extra.content_length, 6570);
@@ -302,7 +305,213 @@ test("bounds title, description, preview, content and links without storing part
   const links = String(extra.links).split("\n");
   assert.deepEqual(links, urls.slice(0, 7));
   assert.equal(extra.extracted_links_count, links.length);
+  const [noMeta] = await adapter.execute(seed);
+  assert.equal(noMeta?.finding.extra.description, undefined);
+  assert.equal(noMeta?.finding.extra.preview, "y".repeat(400));
   const [short] = await adapter.execute(seed);
   assert.equal(short?.finding.extra.extracted_links_count, 10);
   assert.deepEqual(String(short?.finding.extra.links).split("\n"), Array.from({ length: 10 }, (_, i) => `https://example.org/${i}`));
+});
+
+test("strips large navigation chrome, skip-links, ARIA chrome, and asset URLs while prioritizing main profile content and links", async () => {
+  const navNoise = Array.from({ length: 60 }, (_, i) => `<a href="https://example.org/nav-${i}">Navigation menu item ${i}</a>`).join(" ");
+  const assetLinks = [
+    "https://cdn.example.org/avatar.webp?size=256",
+    "https://cdn.example.org/photo.png",
+    "https://cdn.example.org/cover.jpg",
+    "https://cdn.example.org/banner.jpeg",
+    "https://cdn.example.org/badge.gif",
+    "https://cdn.example.org/icon.svg",
+    "https://cdn.example.org/favicon.ico",
+    "https://cdn.example.org/app.css?v=2",
+    "https://cdn.example.org/bundle.js",
+    "https://cdn.example.org/module.mjs",
+    "https://cdn.example.org/legacy.cjs",
+    "https://cdn.example.org/font.woff",
+    "https://cdn.example.org/font.woff2",
+    "https://cdn.example.org/font.ttf",
+    "https://cdn.example.org/font.eot",
+  ].map((href) => `<a href="${href}">Asset</a>`).join(" ");
+  const mainRepoLinks = Array.from({ length: 9 }, (_, i) =>
+    `<article><h2>repo-${i}</h2><p>Deterministic generic parser utility module ${i}.</p><a href="https://example.org/u/ada/repo-${i}">repo-${i}</a></article>`,
+  ).join("");
+  const html = `<!doctype html><html><head><title>Ada Lovelace (@ada)</title></head><body>
+    <a href="#main-content">Skip to main content</a>
+    <header>${navNoise}<div role="search"><a href="https://example.org/search">Search</a></div></header>
+    <div role="navigation"><a href="https://example.org/explore">Explore</a></div>
+    <div class="outer-banner">Outside wrapper note before main<a href="https://example.org/outer-link-1">Outer 1</a><a href="https://example.org/outer-link-2">Outer 2</a></div>
+    <aside><a href="https://example.org/sponsors">Sidebar sponsor promo</a></aside>
+    <main id="main-content">
+      <h1>Ada Lovelace</h1>
+      <p>Mathematician and computing pioneer building open analytical algorithms and numerical engines in London.</p>
+      <a href="https://adalovelace.example.com/publications">Publications</a>
+      ${assetLinks}
+      ${mainRepoLinks}
+    </main>
+  </body></html>`;
+  const { adapter } = fixture([() => scraped(html)]);
+  const [observation] = await adapter.execute(seed);
+  const extra = observation!.finding.extra;
+  const content = String(extra.content);
+  assert.equal(extra.content_format, "html");
+  assert.equal(extra.content_truncated, false);
+  assert.equal(extra.preview, "Ada Lovelace");
+  assert.match(content, /Ada Lovelace/);
+  assert.match(content, /Mathematician and computing pioneer/);
+  assert.match(content, /repo-8/);
+  assert.doesNotMatch(content, /Skip to main content|Navigation menu item|Sidebar sponsor promo|Outside wrapper note|Explore|Search/);
+  const links = String(extra.links).split("\n");
+  assert.equal(links.length, 10);
+  assert.equal(links[0], "https://adalovelace.example.com/publications");
+  assert.deepEqual(links.slice(1), Array.from({ length: 9 }, (_, i) => `https://example.org/u/ada/repo-${i}`));
+});
+
+test("extracts rich public profile HTML cleanly without false login-gate rejection when sign-in dialogs and forms are present", async () => {
+  const html = `<!doctype html><html><head>
+    <title>Elena Rostova — Principal Systems Engineer</title>
+    <meta property="og:description" content="Principal Systems Engineer working on distributed storage, consensus protocols, and fault-tolerant runtimes.">
+  </head><body>
+    <div>Jump to content</div>
+    <header><nav><a href="https://example.org/login">Sign in</a> <a href="https://example.org/join">Sign up</a></nav></header>
+    <main>
+      <h1>Elena Rostova</h1>
+      <p>Principal Systems Engineer with twelve years of experience designing distributed storage engines, consensus protocols, and deterministic simulation frameworks.</p>
+      <section>
+        <h2>Experience</h2>
+        <p>Lead Architect at Horizon Storage Lab — built multi-region replication and automated recovery pipelines for petabyte-scale clusters.</p>
+        <p>Senior Engineer at Aurora Systems — authored open-source diagnostics and observability libraries used across production infrastructure.</p>
+      </section>
+      <p>Website: <a href="https://rostova.dev/research">rostova.dev/research</a></p>
+      <div role="dialog" aria-modal="true">
+        <div class="modal-shell">
+          <div class="modal-header"><h2>Sign in to view full profile</h2><p>Unclosed paragraph inside nested dialog</div>
+          <form action="/session">
+            <label>Email <input type="email" name="email"></label>
+            <label>Password <input type="password" name="password"></label>
+            <a href="https://example.org/password-reset">Forgot password?</a>
+            <button type="submit">Sign in</button>
+          </form>
+        </div>
+      </div>
+      <dialog>
+        <h2>Create your account</h2>
+        <form><input type="password"><input type="submit" value="Sign up"></form>
+      </dialog>
+      <div hidden><p>Hidden draft biography and <a href="https://example.org/hidden">hidden link</a></p></div>
+      <div aria-hidden="true"><p>Decorative clone text and <a href="https://example.org/decorative">decorative link</a></p></div>
+      <p>Selected talk: Deterministic Testing for Consensus Engines at SystemsConf.</p>
+    </main>
+  </body></html>`;
+  const { adapter } = fixture([() => scraped(html)]);
+  const [observation] = await adapter.execute(seed);
+  const extra = observation!.finding.extra;
+  const content = String(extra.content);
+  assert.equal(extra.title, "Elena Rostova — Principal Systems Engineer");
+  assert.equal(extra.description, "Principal Systems Engineer working on distributed storage, consensus protocols, and fault-tolerant runtimes.");
+  assert.equal(extra.preview, extra.description);
+  assert.match(content, /Principal Systems Engineer with twelve years of experience/);
+  assert.match(content, /Selected talk: Deterministic Testing for Consensus Engines/);
+  assert.doesNotMatch(content, /Jump to content|Sign in to view full profile|Forgot password|Create your account|Hidden draft|Decorative clone/);
+  assert.equal(extra.links, "https://rostova.dev/research");
+  assert.equal(extra.extracted_links_count, 1);
+});
+
+test("strips large footer language chrome and prefers meta or twitter description for preview", async () => {
+  const languages = Array.from({ length: 120 }, (_, i) => `<li><a href="https://example.org/?lang=lang-${i}">Language option ${i}</a></li>`).join("");
+  const htmlWithMeta = `<!doctype html><html><head>
+    <title>Marco Silva</title>
+    <meta name="description" content="Open-source maintainer focused on compilers and static analysis.">
+  </head><body>
+    <div>Ir al contenido principal</div>
+    <div role="main">
+      <h1>Marco Silva</h1>
+      <p>Maintainer of portable compiler toolchains, incremental typecheckers, and intermediate representations for modern languages.</p>
+    </div>
+    <footer><ul>${languages}</ul></footer>
+    <div role="contentinfo"><p>Copyright 2026 Example Platform — Terms — Privacy — Cookies</p></div>
+  </body></html>`;
+  const htmlWithTwitter = `<!doctype html><html><head>
+    <title>Marco Silva</title>
+    <meta name="twitter:description" content="Compiler engineer and static analysis researcher.">
+  </head><body><article><p>First article paragraph with enough detail.</p></article></body></html>`;
+  const { adapter } = fixture([() => scraped(htmlWithMeta), () => scraped(htmlWithTwitter)]);
+  const [first] = await adapter.execute(seed);
+  assert.equal(first?.finding.extra.description, "Open-source maintainer focused on compilers and static analysis.");
+  assert.equal(first?.finding.extra.preview, "Open-source maintainer focused on compilers and static analysis.");
+  assert.equal(first?.finding.extra.content_truncated, false);
+  assert.doesNotMatch(String(first?.finding.extra.content), /Ir al contenido|Language option|Copyright 2026/);
+  assert.equal(first?.finding.extra.links, undefined);
+  const [second] = await adapter.execute(seed);
+  assert.equal(second?.finding.extra.description, "Compiler engineer and static analysis researcher.");
+  assert.equal(second?.finding.extra.preview, "Compiler engineer and static analysis researcher.");
+});
+
+test("still rejects modal or dialog password login walls when substantive non-chrome body is sparse", async () => {
+  const { adapter, calls } = fixture([
+    () => scraped('<body><main><p>View this profile.</p></main><div role="dialog" aria-modal="true"><h1>Sign in</h1><form><input type="password"><button>Sign in</button></form></div></body>'),
+    () => scraped('<body><dialog open><h1>Log in</h1><form><input type="password"><button>Log in</button></form></dialog></body>'),
+  ]);
+  await assertFailure(adapter.execute(seed), "Decodo target requires login");
+  await assertFailure(adapter.execute(seed), "Decodo target requires login");
+  assert.equal(calls.length, 2);
+});
+
+test("deduplicates repeated boilerplate blocks in both HTML and Markdown before clipping to 6000 chars", async () => {
+  const repeatedNotice = "You cannot perform that action right now. Please reload the page to refresh your session state.";
+  const repeatedHtml = Array.from({ length: 80 }, (_, i) =>
+    `<div class="toast">${i % 2 === 0 ? repeatedNotice : `  ${repeatedNotice.toUpperCase()}  `}</div>`,
+  ).join("");
+  const html = `<!doctype html><html><head><title>Deduplicated Page</title></head><body><main>
+    <h1>Project Overview</h1>
+    <p>Clean technical documentation describing the architecture and verification invariants of the project.</p>
+    ${repeatedHtml}
+    <p>Final section confirming deterministic output after duplicate banner removal.</p>
+  </main></body></html>`;
+  const repeatedMdBlock = "> We value your privacy and use cookies to personalize content and analyze traffic across sessions.";
+  const markdown = [
+    "[Skip to main content](#main)",
+    "* [Home](https://example.org/)\n* [Sign in](https://example.org/login)",
+    "# Field Notes",
+    repeatedMdBlock,
+    "Detailed field notes covering distributed systems, storage layout, and verification methodology.",
+    repeatedMdBlock.toUpperCase(),
+    `  ${repeatedMdBlock}  `,
+    "Closing remarks on reproducible builds.",
+  ].join("\n\n");
+  const { adapter } = fixture([() => scraped(html), () => scraped(markdown)]);
+
+  const [htmlObs] = await adapter.execute(seed);
+  const htmlContent = String(htmlObs?.finding.extra.content);
+  assert.equal(htmlObs?.finding.extra.content_truncated, false);
+  assert.equal(htmlContent.split(/cannot perform that action/i).length - 1, 1);
+  assert.match(htmlContent, /Final section confirming deterministic output/);
+
+  const [mdObs] = await adapter.execute(seed);
+  const mdContent = String(mdObs?.finding.extra.content);
+  assert.equal(mdObs?.finding.extra.content_format, "markdown");
+  assert.equal(mdObs?.finding.extra.title, "Field Notes");
+  assert.equal(mdObs?.finding.extra.preview, "Detailed field notes covering distributed systems, storage layout, and verification methodology.");
+  assert.equal(mdObs?.finding.extra.description, mdObs?.finding.extra.preview);
+  assert.doesNotMatch(mdContent, /Skip to main content/i);
+  assert.equal(mdContent.split(/value your privacy and use cookies/i).length - 1, 1);
+  assert.match(mdContent, /Closing remarks on reproducible builds/);
+});
+
+test("preserves XSS entity escaping across title, description, preview, and cleaned content", async () => {
+  const html = `<!doctype html><html><head>
+    <title>Alert &lt;script&gt;alert(1)&lt;/script&gt;</title>
+    <meta name="description" content="Bio &lt;img src=x onerror=alert(1)&gt; safe">
+  </head><body><main>
+    <p>Inline &#60;svg onload=alert(1)&#62; and &lt;/main&gt;&lt;script&gt;evil()&lt;/script&gt; text.</p>
+  </main></body></html>`;
+  const { adapter } = fixture([() => scraped(html)]);
+  const [observation] = await adapter.execute(seed);
+  const extra = observation!.finding.extra;
+  assert.equal(extra.title, "Alert &lt;script>alert(1)&lt;/script>");
+  assert.equal(extra.description, "Bio &lt;img src=x onerror=alert(1)> safe");
+  assert.equal(extra.preview, "Bio &lt;img src=x onerror=alert(1)> safe");
+  assert.equal(extra.content, "Inline &lt;svg onload=alert(1)> and &lt;/main>&lt;script>evil()&lt;/script> text.");
+  for (const field of [extra.title, extra.description, extra.preview, extra.content]) {
+    assert.doesNotMatch(String(field), /<[a-z!/]/i);
+  }
 });
