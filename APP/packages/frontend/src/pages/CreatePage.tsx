@@ -5,6 +5,7 @@ import { investigationHash } from "../routing";
 import { AsciiArt } from "../components/AsciiArt";
 
 const RECOVERY_STORAGE_KEY = "investia.creation-recovery.v1";
+const CURRENT_CONSENT_SCOPE = "catalog-decodo-v1" as const;
 const EMAIL_MAX_LENGTH = 320;
 const EMAIL_PATTERN = /^(?!\.)(?!.*\.\.)([A-Z0-9_'+.\-]*)[A-Z0-9_+-]@([A-Z0-9][A-Z0-9-]*\.)+[A-Z]{2,}$/i;
 const EMAIL_SEED_REASON = "Semilla inicial aportada al crear la investigación.";
@@ -19,7 +20,9 @@ interface RecoveryRecord {
   readonly advancementMode: "automatic" | "manual";
   readonly emails: readonly string[];
   readonly completedEmails: readonly string[];
+  /** New submissions authorize under the current disclosure scope; older receipts never upgrade on retry. */
   readonly consent?: boolean;
+  readonly consentScope?: string;
   readonly authorizationConfirmed?: boolean;
   readonly investigationId?: string;
 }
@@ -54,14 +57,16 @@ function readRecovery(): RecoveryRecord | null {
     const phase: RecoveryPhase = investigationId === undefined
       ? storedPhase === "partial" ? "uncertain" : storedPhase
       : "partial";
+    const currentConsent = candidate.consent === true && candidate.consentScope === CURRENT_CONSENT_SCOPE;
     return {
       version: 1,
       phase,
       name: candidate.name,
       intention: candidate.intention ?? "",
       advancementMode: candidate.advancementMode ?? "manual",
-      consent: candidate.consent === true,
-      authorizationConfirmed: candidate.consent === true && candidate.authorizationConfirmed === true,
+      consent: currentConsent,
+      ...(currentConsent ? { consentScope: CURRENT_CONSENT_SCOPE } : {}),
+      authorizationConfirmed: currentConsent && candidate.authorizationConfirmed === true,
       emails: candidate.emails,
       completedEmails: candidate.completedEmails.filter((email) => candidate.emails?.includes(email)),
       ...(investigationId === undefined ? {} : { investigationId }),
@@ -115,8 +120,6 @@ export function CreatePage() {
   const [recovery, setRecovery] = useState<RecoveryRecord | null>(recoveryAtLoad);
   const [name, setName] = useState(recoveryAtLoad?.name ?? "");
   const [intention, setIntention] = useState(recoveryAtLoad?.intention ?? "");
-  const [manualMode, setManualMode] = useState(recoveryAtLoad?.advancementMode === "manual");
-  const [consent, setConsent] = useState(recoveryAtLoad?.consent === true);
   const [emailRows, setEmailRows] = useState<readonly EmailDraft[]>(() =>
     (recoveryAtLoad?.emails ?? [""]).map((value, index) => ({ key: index + 1, value })),
   );
@@ -275,8 +278,9 @@ export function CreatePage() {
       phase: "creating",
       name: validated.name,
       intention: intention.trim(),
-      advancementMode: manualMode ? "manual" : "automatic",
-      consent,
+      advancementMode: "automatic",
+      consent: true,
+      consentScope: CURRENT_CONSENT_SCOPE,
       authorizationConfirmed: false,
       emails: validated.emails,
       completedEmails: [],
@@ -592,24 +596,12 @@ export function CreatePage() {
             <section className="create-section" aria-labelledby="create-section-run">
               <div className="create-section-heading">
                 <span className="create-section-index" aria-hidden="true">03</span>
-                <h2 id="create-section-run">Avance y autorización</h2>
+                <h2 id="create-section-run">Avance automático</h2>
               </div>
-              <div className="create-options">
-                <div className="form-field create-advancement-field">
-                  <label>
-                    <input type="checkbox" checked={manualMode} onChange={(event) => setManualMode(event.currentTarget.checked)} />
-                    Elegir avance manual
-                  </label>
-                  <span>El avance automático es la opción predeterminada.</span>
-                </div>
-                <div className="form-field create-advancement-field">
-                  <label>
-                    <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.currentTarget.checked)} aria-describedby="creation-consent-hint" />
-                    Autorizar consultas del catálogo
-                  </label>
-                  <span id="creation-consent-hint">Autorizás semillas actuales y futuras hasta revocar. user-scanner puede enviar correos/notificaciones (loud) y explorar usuarios, enlaces y emails descubiertos (cross-scan); Gravatar consulta el perfil público, Maigret busca usernames aceptados, GHunt consulta cuentas Gmail y FaceCheck envía la foto de perfil de Google a facecheck.id para buscar caras parecidas (gasta créditos fuera del modo prueba). Decodo recibe la URL pública de cada coincidencia de FaceCheck aceptada, nunca la foto ni la miniatura. Automático avanza sin aprobación por nodo; sin marcar, espera autorización.</span>
-                </div>
-              </div>
+              <p className="document-note">
+                Al crear el expediente, autorizás las semillas actuales y futuras del caso para el inicio automático con las herramientas configuradas: user-scanner, Gravatar, Maigret, GHunt, FaceCheck y Decodo. Decodo solo recibe las URL públicas de las coincidencias de FaceCheck que aceptes, nunca la foto ni la miniatura. Podés pausar el avance en cualquier momento desde el expediente.
+              </p>
+              <p className="field-hint">user-scanner incluye módulos loud (pueden enviar correos o notificaciones) y cross-scan de datos descubiertos; FaceCheck envía la foto de perfil de Google a facecheck.id y usa créditos fuera del modo prueba.</p>
             </section>
             {formError !== "" && <p className="form-error" role="alert">{formError}</p>}
           </fieldset>
@@ -626,9 +618,8 @@ export function CreatePage() {
           <ol>
             <li><span aria-hidden="true">01</span>Nombrá el caso y escribí su intención.</li>
             <li><span aria-hidden="true">02</span>Sumá los correos que ya conocés como semillas.</li>
-            <li><span aria-hidden="true">03</span>Elegí cómo avanza y si autorizás consultas.</li>
+            <li><span aria-hidden="true">03</span>Creá el expediente para iniciar el avance automático.</li>
           </ol>
-          <p>Nada se ejecuta fuera de lo que autorices; podés pausar o revocar después.</p>
         </aside>
       </div>
     </section>

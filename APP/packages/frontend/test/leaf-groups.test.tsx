@@ -67,6 +67,21 @@ it("keeps explicit branches separate and lays out downstream actions after their
   expect(graph.nodes.find((node) => node.id === "leaf-group:scan")?.members).toHaveLength(6);
 });
 
+it("keeps a scanner leaf group ahead of a later standalone branch", () => {
+  const base = snapshot(3);
+  const graph = buildWorkspaceGraph({ ...base, actions: [...base.actions,
+    { id: "lookup", spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: email },
+      status: "queued", queuedByCatalog: true, proposedAt: at, proposalReason: "Public profile",
+      sourceSeedId: findingSeedNodeId("e2") }],
+  });
+  expect(graph.edges.filter(({ from }) => from === "action:scan").map(({ to }) => to))
+    .toEqual(["leaf-group:scan", "evidence:e2"]);
+  const group = graph.nodes.find(({ id }) => id === "leaf-group:scan")!;
+  const branch = graph.nodes.find(({ id }) => id === "evidence:e2")!;
+  expect(group.members?.map((node) => node.evidence?.id)).toEqual(["e0", "e1"]);
+  expect(group.y).toBeLessThan(branch.y);
+});
+
 it("keeps related observations of a linked Gravatar profile out of the leaf group", () => {
   const base = snapshot(35);
   const url = "https://gravatar.com/example";

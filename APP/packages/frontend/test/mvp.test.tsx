@@ -35,6 +35,10 @@ function investigation(emailSeeds: string[] = []): Investigation {
   };
 }
 
+function authorizedInvestigation(emailSeeds: string[] = []): Investigation {
+  return { ...investigation(emailSeeds), authorization: { granted: true, at: createdAt, reason: "Autorización de prueba", operator: "local-operator" } };
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -139,10 +143,10 @@ describe("creación nombrada y recuperación", () => {
     routeTo("#/nueva");
     const user = userEvent.setup();
     const first = render(<App />);
-    const consent = screen.getByRole("checkbox", { name: /autorizar consultas/i });
-    expect(consent).not.toBeChecked();
-    expect(consent).toHaveAccessibleDescription(/Decodo.*URL.*FaceCheck.*aceptad.*nunca.*foto/i);
-    await user.click(consent);
+    const advancement = screen.getByRole("region", { name: "Avance automático" });
+    expect(advancement).toHaveTextContent(/semillas actuales y futuras/i);
+    expect(advancement).toHaveTextContent(/Decodo.*URL públicas.*FaceCheck.*nunca.*foto/i);
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText(/nombre de la investigación/i), "Consentido");
     await user.type(screen.getByLabelText(/intención de la investigación/i), "Revisar exposición");
     await user.type(screen.getByLabelText(/correo electrónico 1/i), "uno@example.test");
@@ -162,25 +166,46 @@ describe("creación nombrada y recuperación", () => {
     expect(calls.filter((call) => requestPath(call).endsWith("/authorization"))).toHaveLength(failure === "response_lost" ? 1 : 2);
     expect(calls.filter((call) => requestPath(call).endsWith("/emails"))).toHaveLength(1);
   });
-  it.each([false, true])("reconcilia semillas completas sin perder autorización pendiente ni reautorizar una revocación (recibo %s)", async (confirmed) => {
+  it.each([
+    ["autorización pendiente", false, false], ["revocación sin recibo", false, true], ["revocación con recibo", true, true],
+  ] as const)("reconcilia semillas completas con %s sin sobrescribir revocaciones", async (_case, confirmed, revoked) => {
     window.sessionStorage.setItem("investia.creation-recovery.v1", JSON.stringify({ version: 1, phase: "partial", name: "Caso",
       intention: "Revisar", advancementMode: "automatic", emails: ["uno@example.test"], completedEmails: ["uno@example.test"],
-      investigationId: "case-1", consent: true, authorizationConfirmed: confirmed }));
+      investigationId: "case-1", consent: true, consentScope: "catalog-decodo-v1", authorizationConfirmed: confirmed }));
     const { calls } = installFetch(async (call) => json({ ...investigation(["uno@example.test"]),
-      ...(confirmed || requestPath(call).endsWith("/authorization") ? { authorization: { granted: !confirmed, at: createdAt, reason: "Cambio", operator: "local-operator" } } : {}) }));
+      ...(revoked || requestPath(call).endsWith("/authorization") ? { authorization: { granted: !revoked, at: createdAt, reason: "Cambio", operator: "local-operator" } } : {}) }));
     routeTo("#/nueva");
     const user = userEvent.setup();
     render(<App />);
-    if (!confirmed) {
+    if (!revoked) {
       await screen.findByText(/autorización pendiente de confirmación/i);
       expect(window.location.hash).toBe("#/nueva");
       await user.click(screen.getByRole("button", { name: /reintentar correos pendientes/i }));
     }
     await screen.findByRole("heading", { name: "Cuaderno de otoño" });
-    expect(calls.filter((call) => requestPath(call).endsWith("/authorization"))).toHaveLength(confirmed ? 0 : 1);
+    expect(calls.filter((call) => requestPath(call).endsWith("/authorization"))).toHaveLength(revoked ? 0 : 1);
     expect(calls.filter((call) => call.init?.method === "POST" && !requestPath(call).endsWith("/authorization"))).toHaveLength(0);
   });
-  it.each(["automatic", "manual"])("exige intención y recupera el borrador con modo %s", async (mode) => {
+  it.each([undefined, false, true])("does not upgrade an old v1 receipt on retry (%s)", async (consent) => {
+    window.sessionStorage.setItem("investia.creation-recovery.v1", JSON.stringify({
+      version: 1, phase: "partial", investigationId: "case-1", name: "Caso anterior",
+      intention: "Revisar", advancementMode: "manual", emails: ["uno@example.test"],
+      completedEmails: [], consent, authorizationConfirmed: false,
+    }));
+    const { calls } = installFetch(async (call) =>
+      json(investigation(requestPath(call).endsWith("/emails") ? ["uno@example.test"] : [])));
+    routeTo("#/nueva");
+    render(<App />);
+    const retry = await screen.findByRole("button", { name: /reintentar correos pendientes/i });
+    await waitFor(() => expect(screen.queryByText(/comprobando los correos guardados/i)).not.toBeInTheDocument());
+    await userEvent.setup().click(retry);
+    await waitFor(() => expect(calls.filter((call) => requestPath(call) === "/investigations/case-1").length)
+      .toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(screen.queryByText(/comprobando y guardando/i)).not.toBeInTheDocument());
+    expect(calls.map(requestPath)).not.toContain("/investigations/case-1/authorization");
+    expect(calls.map(requestPath)).not.toContain("/investigations");
+  });
+  it("exige intención y recupera el borrador de creación automática", async () => {
     const { calls } = installFetch(async () => { throw new Error("respuesta incierta"); });
     routeTo("#/nueva");
     const user = userEvent.setup();
@@ -191,18 +216,17 @@ describe("creación nombrada y recuperación", () => {
     expect(await screen.findByText("Ingresá la intención de la investigación.")).toBeInTheDocument();
     expect(calls).toHaveLength(0);
     await user.type(screen.getByLabelText(/intención de la investigación/i), "  Verificar exposición  ");
-    if (mode === "manual") await user.click(screen.getByRole("checkbox", { name: /avance manual/i }));
     await user.click(screen.getByRole("button", { name: /crear investigación/i }));
     await screen.findByText(/No se pudo confirmar si se creó/i);
-    expect(bodyOf(calls[0]!)).toEqual({ name: "Caso", intention: "Verificar exposición", advancementMode: mode });
+    expect(bodyOf(calls[0]!)).toEqual({ name: "Caso", intention: "Verificar exposición", advancementMode: "automatic" });
     expect(JSON.parse(window.sessionStorage.getItem("investia.creation-recovery.v1")!)).toMatchObject({
-      intention: "Verificar exposición", advancementMode: mode,
+      intention: "Verificar exposición", advancementMode: "automatic", consent: true,
     });
     cleanup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: /Ya revisé el historial/i }));
     expect(screen.getByLabelText(/intención de la investigación/i)).toHaveValue("Verificar exposición");
-    expect(screen.getByRole("checkbox", { name: /avance manual/i })).toHaveProperty("checked", mode === "manual");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(calls).toHaveLength(1);
   });
   it("valida nombres Unicode acotados y todos los correos antes de crear", async () => {
@@ -237,14 +261,14 @@ describe("creación nombrada y recuperación", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("crea el nombre y varias semillas email sin proponer, autorizar ni ejecutar acciones", async () => {
+  it("crea el expediente automático y lo autoriza antes de agregar las semillas, sin despachar desde el navegador", async () => {
     const callsData: Array<{ path: string; body: unknown }> = [];
     installFetch(async (call) => {
       const path = requestPath(call);
       callsData.push({ path, body: bodyOf(call) });
       if (path === "/investigations") return json(investigation());
-      if (path === "/investigations/case-1") return json(investigation(["uno@example.test", "dos+prueba@example.test"]));
-      if (path.endsWith("/emails")) return json(investigation(["uno@example.test", "dos+prueba@example.test"]));
+      if (path.endsWith("/authorization")) return json(authorizedInvestigation());
+      if (path === "/investigations/case-1" || path.endsWith("/emails")) return json(authorizedInvestigation(["uno@example.test", "dos+prueba@example.test"]));
       throw new Error(`Unexpected request ${path}`);
     });
     routeTo("#/nueva");
@@ -260,20 +284,22 @@ describe("creación nombrada y recuperación", () => {
     await user.type(screen.getByLabelText(/correo electrónico 2/i), "dos+prueba@example.test");
     await user.click(screen.getByRole("button", { name: /crear investigación/i }));
 
-    expect(await screen.findByText("case-1")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Cuaderno de otoño" });
     expect(callsData.map(({ path }) => path)).toEqual([
       "/investigations",
+      "/investigations/case-1/authorization",
       "/investigations/case-1/emails",
       "/investigations/case-1/emails",
       "/investigations/case-1",
     ]);
     expect(callsData.map(({ body }) => body)).toEqual([
       { name: boundedUnicodeName, intention: "Verificar registro", advancementMode: "automatic" },
+      { granted: true, reason: expect.stringContaining("semillas actuales y futuras") },
       { email: "uno@example.test", reason: expect.any(String) },
       { email: "dos+prueba@example.test", reason: expect.any(String) },
       undefined,
     ]);
-    expect(callsData.every(({ path }) => !/authorization|proposals|actions\/run/u.test(path))).toBe(true);
+    expect(callsData.every(({ path }) => !/proposals|actions\/run/u.test(path))).toBe(true);
   });
 
   it("bloquea envíos dobles mientras la creación sigue pendiente", async () => {
@@ -281,7 +307,7 @@ describe("creación nombrada y recuperación", () => {
     const createPending = new Promise<Response>((resolve) => { finishCreate = resolve; });
     const { calls } = installFetch(async (call) => {
       if (requestPath(call) === "/investigations") return createPending;
-      return json(investigation(["uno@example.test"]));
+      return json(authorizedInvestigation(["uno@example.test"]));
     });
     routeTo("#/nueva");
     const user = userEvent.setup();
@@ -293,7 +319,8 @@ describe("creación nombrada y recuperación", () => {
 
     expect(calls.filter((call) => requestPath(call) === "/investigations")).toHaveLength(1);
     finishCreate(json(investigation()));
-    expect(await screen.findByText("case-1")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Cuaderno de otoño" });
+    expect(calls.filter((call) => requestPath(call).endsWith("/authorization"))).toHaveLength(1);
   });
 
   it("conserva el progreso parcial y reintenta solo semillas aún ausentes tras releer", async () => {
@@ -304,7 +331,7 @@ describe("creación nombrada y recuperación", () => {
       calls.push(call);
       const path = requestPath(call);
       if (path === "/investigations") return json(investigation());
-      if (path === "/investigations/case-1") return json(investigation(serverEmails));
+      if (path.endsWith("/authorization") || path === "/investigations/case-1") return json(authorizedInvestigation(serverEmails));
       if (path.endsWith("/emails")) {
         const email = (bodyOf(call) as { email: string }).email;
         if (email === "dos@example.test" && !failedSecondPost) {
@@ -328,7 +355,7 @@ describe("creación nombrada y recuperación", () => {
     expect(await screen.findByText(/se guardó 1 de 2 correos/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /reintentar correos pendientes/i }));
-    expect(await screen.findByText("case-1")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Cuaderno de otoño" });
     const emailPosts = calls.filter((call) => requestPath(call).endsWith("/emails"));
     expect(emailPosts.map((call) => (bodyOf(call) as { email: string }).email)).toEqual([
       "uno@example.test",
@@ -346,7 +373,7 @@ describe("creación nombrada y recuperación", () => {
       calls.push(call);
       const path = requestPath(call);
       if (path === "/investigations") return json(investigation());
-      if (path === "/investigations/case-1") return json(investigation(serverEmails));
+      if (path.endsWith("/authorization") || path === "/investigations/case-1") return json(authorizedInvestigation(serverEmails));
       if (path.endsWith("/emails")) {
         const email = (bodyOf(call) as { email: string }).email;
         serverEmails = [...serverEmails, email];
@@ -371,7 +398,7 @@ describe("creación nombrada y recuperación", () => {
     firstRender.unmount();
 
     render(<App />);
-    expect(await screen.findByText("case-1")).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Cuaderno de otoño" });
     expect(calls.filter((call) => requestPath(call).endsWith("/emails"))).toHaveLength(2);
     expect(window.sessionStorage.length).toBe(0);
   });

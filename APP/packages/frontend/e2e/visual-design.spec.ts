@@ -17,8 +17,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(page.getByRole("heading", { name: "Nueva investigación", exact: true })).toBeVisible();
     await checkLayout();
     expect(await page.locator("#create-title").evaluate((el) => parseFloat(getComputedStyle(el).fontSize))).toBeLessThanOrEqual(48);
-    await expect(page.getByRole("checkbox", { name: "Elegir avance manual" })).not.toBeChecked();
-    await expect(page.getByRole("checkbox", { name: "Autorizar consultas del catálogo" })).not.toBeChecked();
+    const advancement = page.getByRole("region", { name: "Avance automático" });
+    await expect(advancement).toContainText(/Decodo.*URL públicas.*FaceCheck/);
+    await expect(page.getByRole("checkbox")).toHaveCount(0);
     await page.getByRole("button", { name: "+ Agregar correo", exact: true }).click();
     await expect(page.locator("input[type=email]")).toHaveCount(2);
     await page.getByRole("button", { name: "Quitar correo 2", exact: true }).click();
@@ -36,6 +37,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await checkLayout();
     await expect(page.getByRole("button", { name: "Obtener informe", exact: true })).toBeVisible();
     await expect(page.locator(".workspace-pause-disclosure summary")).toBeVisible();
+    await expect(page.getByText("Controles del expediente", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Autorizar expediente" })).toHaveCount(0);
     const title = await page.locator(".workspace-title-block h1").boundingBox();
     expect(title!.height, "case titles should not monopolize the mobile header").toBeLessThan(100);
     for (const name of ["Acercar grafo", "Alejar grafo", "Centrar nodo seleccionado"]) {

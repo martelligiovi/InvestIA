@@ -94,6 +94,58 @@ it("keeps the accepted FaceCheck match and its Decodo results on one branch whil
   expect(fallback.nodes.find((node) => node.id === "evidence:page")?.title).toBe("Decodo · example.net");
 });
 
+it("omits the discarded-only group when accepted FaceCheck candidates already branch to Decodo", async () => {
+  const secondScrape = { ...decodo, id: "scrape-other", sourceSeedId: findingSeedNodeId("other"),
+    spec: { ...decodo.spec, seed: { kind: "url" as const, value: "https://example.org/other" } } };
+  const investigation = snapshot({ actions: [facecheck, decodo, secondScrape],
+    validations: [decision("accepted"), decision("accepted", "other"), decision("rejected", "third")] });
+  const graph = buildWorkspaceGraph(investigation);
+  expect(graph.nodes.filter((node) => node.kind === "leaf-group")).toEqual([]);
+  expect(graph.nodes.filter((node) => node.evidence?.actionId === facecheck.id).map((node) => node.id))
+    .toEqual(["evidence:match", "evidence:other"]);
+  expect(graph.edges.map(({ from, to }) => [from, to])).toEqual([
+    ["evidence:match", "action:scrape"], ["evidence:other", "action:scrape-other"],
+    ["action:facecheck", "evidence:match"], ["action:facecheck", "evidence:other"],
+  ]);
+
+  const calls = installWorkspaceApi(investigation, () => decodoStatus(false));
+  render(<WorkspacePage id="case" />);
+  const canvas = within(await screen.findByRole("group", { name: /grafo factual/i }));
+  expect(canvas.queryByRole("button", { name: /Grupo de semillas:|Evidencia: third\./ })).not.toBeInTheDocument();
+  for (const name of [/Acción: facecheck\./, /Evidencia: match\./, /Evidencia: other\./]) {
+    fireEvent.click(canvas.getByRole("button", { name }));
+    fireEvent.click(screen.getByRole("button", { name: "Revisar candidatos · todo revisado" }));
+    const review = within(screen.getByRole("dialog", { name: /Revisar candidatos de FaceCheck/ }));
+    fireEvent.click(review.getByRole("tab", { name: "Descartados (1)" }));
+    expect(review.getAllByRole("listitem")).toHaveLength(1);
+    fireEvent.click(review.getByRole("button", { name: "Cerrar revisión" }));
+  }
+  expect(calls.every((call) => call.startsWith("GET "))).toBe(true);
+});
+
+it("keeps the no-acceptance group connected after the only Decodo parent is rejected", async () => {
+  const investigation = snapshot({ validations: [decision("accepted"), decision("rejected"),
+    decision("rejected", "other"), decision("rejected", "third")] });
+  const graph = buildWorkspaceGraph(investigation);
+  const group = graph.nodes.find((node) => node.id === "leaf-group:facecheck");
+  const producer = graph.nodes.find((node) => node.id === "action:facecheck")!;
+  expect(group).toMatchObject({ title: "Ningún candidato aceptado", members: [], x: producer.x + 402 });
+  expect(graph.edges.filter(({ to }) => to === group?.id)).toEqual([
+    expect.objectContaining({ from: producer.id, to: group?.id }),
+  ]);
+  expect(graph.edges).toContainEqual(expect.objectContaining({ from: "evidence:match", to: "action:scrape" }));
+
+  const calls = installWorkspaceApi(investigation, () => decodoStatus(true));
+  render(<WorkspacePage id="case" />);
+  const canvas = within(await screen.findByRole("group", { name: /grafo factual/i }));
+  fireEvent.click(canvas.getByRole("button", { name: /Ningún candidato aceptado/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Revisar candidatos · todo revisado" }));
+  const review = within(screen.getByRole("dialog", { name: /Revisar candidatos de FaceCheck/ }));
+  fireEvent.click(review.getByRole("tab", { name: "Descartados (3)" }));
+  expect(review.getAllByRole("listitem")).toHaveLength(3);
+  expect(calls.every((call) => call.startsWith("GET "))).toBe(true);
+});
+
 it("shows public page metadata and safe links, and renders scraped markup only as text", () => {
   const investigation = withPage();
   const node = buildWorkspaceGraph(investigation).nodes.find((item) => item.id === "evidence:page")!;
@@ -120,14 +172,14 @@ it("shows public page metadata and safe links, and renders scraped markup only a
 });
 
 it("explains all queued Decodo blockers and links to the source page and token settings", async () => {
-  installWorkspaceApi(snapshot({ authorization: { ...authorization, catalogScopes: ["facecheck.photo.v1"] },
+  installWorkspaceApi(snapshot({ authorization: { ...authorization, granted: false },
     validations: [decision("accepted"), decision("rejected")] }), () => decodoStatus(false));
   render(<WorkspacePage id="case" />);
   const graph = await screen.findByRole("group", { name: /grafo factual/i });
   fireEvent.click(within(graph).getByRole("button", { name: /Acción: scrape\./i }));
   const detail = within(screen.getByRole("complementary"));
   expect(detail.getByRole("link", { name: pageSeed.value })).toHaveAttribute("rel", "noopener noreferrer");
-  expect(detail.getByText(/renovar la autorización.*Decodo/i)).toBeInTheDocument();
+  expect(detail.getByText("El expediente requiere autorización para ejecutar Decodo.")).toBeInTheDocument();
   expect(detail.getByText(/FaceCheck.*ya no está aceptada/i)).toBeInTheDocument();
   expect(await detail.findByRole("link", { name: "Configurar Decodo" })).toHaveAttribute("href", "#/ajustes");
 });
@@ -173,7 +225,7 @@ it("queues one candidate or all eligible accepted candidates from a FaceCheck le
   expect(detail.getAllByRole("button", { name: /^Aplicar Decodo a FaceCheck/ })).toHaveLength(3);
   expect(detail.queryByRole("button", { name: /^Aplicar Decodo a .*?(example\.net|example\.com|127\.0\.0\.1)/ })).not.toBeInTheDocument();
   expect(detail.getByRole("button", { name: "Aplicar Decodo a aceptados (3)" })).toBeEnabled();
-  expect(detail.getByText(/renovar la autorización.*Decodo/i)).toBeInTheDocument();
+  expect(detail.queryByText(/autorización.*Decodo/i)).not.toBeInTheDocument();
   expect(await detail.findByRole("link", { name: "Configurar Decodo" })).toHaveAttribute("href", "#/ajustes");
 
   await act(async () => { fireEvent.click(detail.getByRole("button", { name: `Aplicar Decodo a ${linkedin}` })); });
@@ -229,17 +281,17 @@ it("queues Decodo from a single accepted candidate without a reason, then refres
   expect(calls.filter((call) => call.startsWith("POST "))).toHaveLength(1);
 });
 
-it("keeps manual dispatch enabled for a covered action after Decodo is queued without consent", async () => {
+it("keeps inline manual dispatch available for an authorized legacy queue including Decodo", async () => {
   const seed = { kind: "email", value: "fixture@example.org" } as const;
   const scanner: GitHubCatalogAction = {
     id: "scanner", spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed },
     status: "queued", queuedByCatalog: true, proposedAt: at, proposalReason: "Email seed",
   };
-  let current = snapshot({ advancementMode: "manual", emailSeeds: [seed], actions: [facecheck, scanner],
+  let current = snapshot({ advancementMode: "manual", emailSeeds: [seed], actions: [facecheck, scanner, decodo],
     authorization: { ...authorization, catalogScopes: ["facecheck.photo.v1", "user-scanner.email.v1"] } });
   const runNext = vi.fn(() => {
-    const completed = { ...scanner, status: "succeeded" as const, completedAt: at };
-    current = { ...current, revision: current.revision + 1, actions: [facecheck, decodo, completed] };
+    const completed = { ...current.actions.find((action) => action.status === "queued")!, status: "succeeded" as const, completedAt: at };
+    current = { ...current, revision: current.revision + 1, actions: current.actions.map((action) => action.id === completed.id ? completed : action) };
     return json({ action: completed });
   });
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -250,27 +302,21 @@ it("keeps manual dispatch enabled for a covered action after Decodo is queued wi
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   }));
   render(<WorkspacePage id="case" />);
-  const refresh = await screen.findByText("Actualizar expediente", { selector: "button" });
-  const controls = refresh.closest("details")!;
-  controls.open = true;
-  const dispatch = within(controls).getByRole("button", { name: "Ejecutar siguiente acción en cola" });
-  expect(dispatch).toBeEnabled();
-
-  current = { ...current, revision: current.revision + 1, actions: [facecheck, decodo, scanner] };
-  await act(async () => { fireEvent.click(refresh); });
-  const graph = screen.getByRole("group", { name: /grafo factual/i });
-  fireEvent.click(within(graph).getByRole("button", { name: /Acción: scrape\./i }));
-  expect(within(screen.getByRole("complementary")).getByText(/renovar la autorización.*Decodo/i)).toBeInTheDocument();
+  const dispatch = await screen.findByRole("button", { name: "Ejecutar siguiente acción en cola" });
   expect(dispatch).toBeEnabled();
   expect(runNext).not.toHaveBeenCalled();
   await act(async () => { fireEvent.click(dispatch); });
   expect(runNext).toHaveBeenCalledTimes(1);
-  expect(dispatch).toBeDisabled();
+  expect(dispatch).toBeEnabled();
+  await act(async () => { fireEvent.click(dispatch); });
+  expect(runNext).toHaveBeenCalledTimes(2);
+  expect(dispatch).not.toBeInTheDocument();
 });
 
 it.each([
   ["the token is missing", snapshot(), false],
-  ["the old grant does not cover Decodo", snapshot({ authorization: { ...authorization, catalogScopes: ["facecheck.photo.v1"] } }), true],
+  ["the old grant is unscoped", snapshot({ authorization: { ...authorization, catalogScopes: [] } }), true],
+  ["the grant covers only User Scanner", snapshot({ authorization: { ...authorization, catalogScopes: ["user-scanner.email.v1"] } }), true],
   ["the operator rejected the previously accepted match", snapshot({ validations: [decision("accepted"), decision("rejected")] }), true],
 ] as const)("does not poll queued Decodo when %s", async (_reason, investigation, configured) => {
   vi.useFakeTimers();
@@ -283,18 +329,99 @@ it.each([
   expect(calls.every((call) => call.startsWith("GET "))).toBe(true);
 });
 
-it("polls eligible automatic Decodo work only after confirming configuration, without dispatching from the browser", async () => {
+it.each([
+  ["missing", undefined],
+  ["revoked", { ...authorization, granted: false }],
+] as const)("blocks automatic polling until %s authorization is granted inline", async (_reason, blockedGrant) => {
+  vi.useFakeTimers();
+  let current = snapshot({ authorization: blockedGrant });
+  const calls: string[] = [];
+  let releaseGrant!: () => void;
+  const pendingGrant = new Promise<void>((resolve) => { releaseGrant = resolve; });
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = `${init?.method ?? "GET"} ${String(input)}`;
+    calls.push(request);
+    if (request === "GET /investigations/case") return json(current);
+    if (request === "GET /settings/decodo") return decodoStatus(true);
+    if (request === "POST /investigations/case/authorization") {
+      expect(JSON.parse(String(init?.body))).toEqual({ granted: true,
+        reason: "Autorización del expediente confirmada para ejecutar las herramientas configuradas." });
+      await pendingGrant;
+      current = snapshot({ revision: 2 });
+      return json(current);
+    }
+    throw new Error(`Unexpected request: ${request}`);
+  }));
+  await act(async () => { render(<WorkspacePage id="case" />); });
+  const warning = screen.getByRole("status");
+  expect(warning).toHaveTextContent(/Esperando autorización: 1 acción en cola bloqueada/);
+  expect(warning.closest(".workspace-claimed-warning")).toHaveTextContent(/semillas actuales y futuras.*user-scanner.*FaceCheck.*Decodo/i);
+  const authorize = screen.getByRole("button", { name: "Autorizar expediente" });
+  expect(authorize).toBeEnabled();
+  expect(screen.queryByLabelText("Motivo de autorización")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Ejecutar siguiente/ })).not.toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+  expect(calls).toEqual(["GET /investigations/case", "GET /settings/decodo"]);
+  expect(current.revision).toBe(1);
+  await act(async () => { fireEvent.click(authorize); });
+  expect(authorize).toBeDisabled();
+  await act(async () => { releaseGrant(); });
+  expect(authorize).not.toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(calls.slice(2)).toEqual(["POST /investigations/case/authorization", "GET /investigations/case", "GET /investigations/case"]);
+});
+
+it("polls Decodo under a pre-Decodo scoped grant once the token is confirmed, without renewal or browser dispatch", async () => {
   vi.useFakeTimers();
   let resolveSettings!: (response: Response) => void;
   const pendingSettings = new Promise<Response>((resolve) => { resolveSettings = resolve; });
-  const calls = installWorkspaceApi(snapshot(), () => pendingSettings);
+  const calls = installWorkspaceApi(snapshot({ authorization: { ...authorization, catalogScopes: ["facecheck.photo.v1"] } }), () => pendingSettings);
   await act(async () => { render(<WorkspacePage id="case" />); });
+  const graph = within(screen.getByRole("group", { name: /grafo factual/i }));
+  expect(screen.queryByText("Esperando autorización")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Autorizar expediente" })).not.toBeInTheDocument();
   await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
   expect(calls.filter((call) => call === "GET /investigations/case")).toHaveLength(1);
 
   await act(async () => { resolveSettings(decodoStatus(true)); });
+  expect(graph.getByRole("button", { name: /Acción: scrape\..*Estado: En cola\./ })).toBeInTheDocument();
   await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
   expect(calls.filter((call) => call === "GET /investigations/case")).toHaveLength(2);
   expect(calls).toContain("GET /settings/decodo");
   expect(calls.every((call) => call.startsWith("GET "))).toBe(true);
+  fireEvent.click(graph.getByRole("button", { name: /Acción: scrape\./ }));
+  expect(within(screen.getByRole("complementary")).queryByText(/renovar la autorización|requiere autorización para ejecutar Decodo/)).not.toBeInTheDocument();
+});
+
+it("keeps the discarded stack connected when the only Decodo branch has a rejected parent", () => {
+  const graph = buildWorkspaceGraph(snapshot({ validations: [
+    decision("accepted"), decision("rejected", "other"),
+    decision("rejected", "third"), decision("rejected"),
+  ] }));
+  const group = graph.nodes.find(({ id }) => id === "leaf-group:facecheck");
+  expect(group).toMatchObject({ title: "Ningún candidato aceptado", members: [] });
+  expect(graph.edges.filter(({ to }) => to === group?.id)).toEqual([
+    expect.objectContaining({ from: "action:facecheck" }),
+  ]);
+});
+
+it("keeps existing scanner stack branch order with linked Gravatar work", () => {
+  const email = { kind: "email", value: "fixture@example.org" } as const;
+  const scanner: GitHubCatalogAction = {
+    id: "scanner", spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: email },
+    status: "succeeded", queuedByCatalog: true, proposedAt: at, proposalReason: "Email seed",
+  };
+  const profile: GitHubCatalogAction = {
+    ...scanner, id: "profile", status: "queued", sourceSeedId: findingSeedNodeId("c"),
+    spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: email },
+  };
+  const evidence: EvidenceRecord[] = ["a", "b", "c"].map((id) => ({
+    id, actionId: scanner.id, seed: email, provider: "Scanner", status: "registered",
+    sourceId: "user-scanner:email", recordedAt: at,
+  }));
+  const graph = buildWorkspaceGraph(snapshot({
+    actions: [scanner, profile], emailSeeds: [email], evidence, validations: [],
+  }));
+  expect(graph.edges.filter(({ from }) => from === "action:scanner").map(({ to }) => to))
+    .toEqual(["leaf-group:scanner", "evidence:c"]);
 });

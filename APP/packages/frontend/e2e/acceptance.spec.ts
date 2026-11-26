@@ -111,11 +111,6 @@ async function openDisclosure(page: Page, selector: string): Promise<void> {
   if (!await disclosure.evaluate((element) => (element as HTMLDetailsElement).open)) await disclosure.locator("summary").click();
 }
 
-async function closeDisclosure(page: Page, selector: string): Promise<void> {
-  const disclosure = page.locator(selector);
-  if (await disclosure.evaluate((element) => (element as HTMLDetailsElement).open)) await disclosure.locator("summary").click();
-}
-
 async function closeNodeList(page: Page): Promise<void> {
   const list = page.locator(".graph-node-list");
   const summary = list.locator("summary");
@@ -173,7 +168,7 @@ async function openNodeList(page: Page): Promise<void> {
 }
 
 for (const outcome of ["information", "failure", "blocked", "empty"] as const) {
-  test(`mocked creation consent and connected result: ${outcome}`, async ({ page }) => {
+  test(`mocked automatic creation and connected result: ${outcome}`, async ({ page }) => {
     const at = "2025-03-16T12:00:00.000Z";
     let current: Investigation = { id: "mock-result", name: "Resultado simulado", intention: "Comprobar exposición",
       advancementMode: "automatic", revision: 0, createdAt: at, updatedAt: at, paused: false,
@@ -190,16 +185,21 @@ for (const outcome of ["information", "failure", "blocked", "empty"] as const) {
           expect(req.postDataJSON()).toMatchObject({ granted: true, reason: expect.stringContaining("semillas actuales y futuras") });
           current = { ...current, authorization: { granted: true, at, reason: req.postDataJSON().reason, operator: "local-operator" } };
         } else if (url.pathname.endsWith("/emails")) {
-          expect(current.authorization?.granted === true).toBe(outcome !== "blocked");
+          expect(current.authorization?.granted).toBe(true);
           const seed = { kind: "email" as const, value: req.postDataJSON().email };
           const status = outcome === "blocked" ? "queued" : outcome === "failure" ? "failed" : "succeeded";
-          current = { ...current, revision: 3, emailSeeds: [seed], actions: [{ id: "mock-action", status, queuedByCatalog: true,
+          current = { ...current, revision: 3, emailSeeds: [seed],
+            ...(outcome === "blocked" ? { authorization: { ...current.authorization!, granted: false } } : {}),
+            actions: [{ id: "mock-action", status, queuedByCatalog: true,
             spec: { catalogId: "github.email-registration.v1", provider: "github", seed }, proposedAt: at, proposalReason: "Catálogo",
             ...(outcome === "failure" ? { failure: `Error simulado: ${"detalle".repeat(80)}` } : {}),
             ...(outcome === "blocked" ? {} : { completedAt: at }) }],
             evidence: outcome === "information" ? [{ id: "mock-evidence", actionId: "mock-action", seed, provider: "github",
               status: "registered", sourceId: "mock-observer", recordedAt: at }] : [] };
-        } else expect(url.pathname).toBe("/investigations");
+        } else {
+          expect(url.pathname).toBe("/investigations");
+          expect(req.postDataJSON()).toMatchObject({ advancementMode: "automatic" });
+        }
       }
       return route.fulfill({ json: current });
     });
@@ -208,17 +208,18 @@ for (const outcome of ["information", "failure", "blocked", "empty"] as const) {
     await page.getByLabel("Nombre de la investigación").fill(current.name!);
     await page.getByLabel("Intención de la investigación").fill(current.intention!);
     await page.getByLabel("Correo electrónico 1").fill("mock@example.test");
-    const consent = page.getByRole("checkbox", { name: "Autorizar consultas del catálogo" });
-    await expect(consent).not.toBeChecked();
-    if (outcome !== "blocked") await consent.check();
+    await expect(page.getByRole("heading", { name: "Avance automático" })).toBeVisible();
+    await expect(page.getByRole("checkbox")).toHaveCount(0);
     await page.getByRole("button", { name: "Crear investigación" }).click();
     await expect(page.getByRole("heading", { name: current.name! })).toBeVisible();
-    expect(writes).toEqual(["/investigations", ...(outcome === "blocked" ? [] : ["/investigations/mock-result/authorization"]), "/investigations/mock-result/emails"]);
+    expect(writes).toEqual(["/investigations", "/investigations/mock-result/authorization", "/investigations/mock-result/emails"]);
     const graph = page.locator("svg.investigation-graph");
     if (outcome === "blocked") {
       await expect(page.locator(".workspace-state-tag")).toHaveText("Esperando autorización");
       await expect(graph.locator(".graph-node--action")).toContainText("Esperando autorización");
       await expect(graph.locator(".graph-node--result, .graph-node--evidence")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Autorizar expediente" })).toBeEnabled();
+      await expect(page.getByLabel("Motivo de autorización")).toHaveCount(0);
       return;
     }
     const result = graph.locator(outcome === "information" ? ".graph-node--evidence" : ".graph-node--result");
@@ -371,7 +372,7 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await expect(page.locator(".site-header")).toBeVisible();
   await page.getByLabel("Nombre de la investigación").fill(investigationName);
   await page.getByLabel("Intención de la investigación").fill("Comprobar exposición pública sin atribuir identidad.");
-  await page.getByLabel("Elegir avance manual").check();
+  await expect(page.getByRole("heading", { name: "Avance automático" })).toBeVisible();
   await page.getByLabel("Correo electrónico 1").fill(firstEmail);
   await page.getByRole("button", { name: /Agregar correo/ }).click();
   await page.getByLabel("Correo electrónico 2").fill(secondEmail);
@@ -420,19 +421,22 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   }
   await page.setViewportSize(DESKTOP);
 
-  await page.getByRole("button", { name: "Crear investigación" }).click();
-  await expect(page.getByRole("heading", { name: investigationName })).toBeVisible();
+  // The form no longer creates manual cases; reproduce a legacy case through the local test API.
+  const created = await request.post(`${BASE_URL}/investigations`, { data: {
+    name: investigationName, intention: "Comprobar exposición pública sin atribuir identidad.", advancementMode: "manual",
+  } });
+  expect(created.status()).toBe(201);
+  const { id } = await created.json() as Investigation;
+  for (const email of [firstEmail, secondEmail]) {
+    const seed = await request.post(`${BASE_URL}/investigations/${encodeURIComponent(id)}/emails`, { data: { email, reason: "Semilla de prueba" } });
+    expect(seed.status()).toBe(201);
+  }
+  await page.goto(`/#/investigaciones/${encodeURIComponent(id)}`);
   const defaultNodeList = page.locator(".graph-node-list");
   await expect(defaultNodeList).toBeVisible();
   expect(await defaultNodeList.evaluate((element) => (element as HTMLDetailsElement).open)).toBe(false);
   await expect(page.locator(".workspace-meta-bar, .workspace-commandbar, .workspace-command-bar")).toHaveCount(0);
-  const caseControls = page.locator(".workspace-case-controls");
-  expect(await caseControls.evaluate((element) => (element as HTMLDetailsElement).open)).toBe(false);
-  await openDisclosure(page, ".workspace-case-controls");
-  const reference = page.getByLabel(/^Referencia completa:/);
-  await expect(reference).toBeVisible();
-  const id = (await reference.textContent())?.trim();
-  expect(id).toBeTruthy();
+  await expect(page.getByText("Controles del expediente", { exact: true })).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole("heading", { name: investigationName })).toBeVisible();
 
@@ -456,16 +460,15 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   const action = state.investigation.actions[0]!;
   await expect(page.getByRole("button", { name: /Proponer comprobación|Aprobar acción/ })).toHaveCount(0);
   await expect(page.getByLabel("Motivo para proponer")).toHaveCount(0);
-  await openDisclosure(page, ".workspace-case-controls");
   const dispatch = page.getByRole("button", { name: "Ejecutar siguiente acción en cola" });
-  await expect(dispatch).toBeDisabled();
+  const authorize = page.getByRole("button", { name: "Autorizar expediente" });
+  await expect(dispatch).toHaveCount(0);
   await openNodeList(page);
   await page.locator(".graph-node-list").getByRole("button", { name: new RegExp(`^Acción: ${action.id}\\.`) }).click();
   await expect(page.getByLabel("Motivo de aprobación")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Aprobar acción" })).toHaveCount(0);
-  await openDisclosure(page, ".workspace-case-controls");
-  await page.getByLabel("Motivo de autorización").fill("Autorizar el alcance del expediente, sin aprobación por nodo.");
-  await page.getByRole("button", { name: "Otorgar autorización" }).click();
+  await authorize.click();
+  await expect(authorize).toHaveCount(0);
   await expect.poll(async () => (await readState(request, id!)).investigation.authorization?.granted).toBe(true);
   state = await readState(request, id!);
   expect(state.investigation.actions[0]?.status).toBe("queued");
@@ -480,7 +483,6 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await page.getByLabel("Motivo para pausar el expediente").fill("Pausar antes del despacho explícito.");
   await page.getByRole("button", { name: "Pausar expediente" }).click();
   await expect.poll(async () => (await readState(request, id!)).investigation.paused).toBe(true);
-  await openDisclosure(page, ".workspace-case-controls");
   await expect(dispatch).toBeDisabled();
   const blockedDispatch = await request.post(`${BASE_URL}/investigations/${encodeURIComponent(id!)}/actions/run`);
   expect(blockedDispatch.status()).toBe(200);
@@ -494,13 +496,11 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await page.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin despachar automáticamente.");
   await page.getByRole("button", { name: "Reanudar expediente" }).click();
   await expect.poll(async () => (await readState(request, id!)).investigation.paused).toBe(false);
-  await openDisclosure(page, ".workspace-case-controls");
   await expect(dispatch).toBeEnabled();
   state = await readState(request, id!);
   expect(state.executionCount).toBe(0);
   expect(count(state, "POST /investigations/:id/actions/run")).toBe(1);
 
-  await openDisclosure(page, ".workspace-case-controls");
   await dispatch.click();
   await expect.poll(async () => (await readState(request, id!)).investigation.actions[0]?.status).toBe("succeeded");
   state = await readState(request, id!);
@@ -526,12 +526,14 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
     "action_succeeded",
   ]);
 
-  // Keep the remaining manual action queued and independently revoke case authorization.
-  await openDisclosure(page, ".workspace-case-controls");
-  await page.getByLabel("Motivo de autorización").fill("Retirar autorización antes de la siguiente acción.");
-  await page.getByRole("button", { name: "Revocar autorización" }).click();
-  await expect.poll(async () => (await readState(request, id!)).investigation.authorization?.granted).toBe(false);
-  await expect(dispatch).toBeDisabled();
+  // Keep the remaining manual action queued and revoke the case through the local API.
+  const revoked = await request.post(`${BASE_URL}/investigations/${encodeURIComponent(id)}/authorization`, { data: {
+    granted: false, reason: "Retirar autorización antes de la siguiente acción.",
+  } });
+  expect(revoked.status()).toBe(200);
+  await page.reload();
+  await expect(authorize).toBeEnabled();
+  await expect(dispatch).toHaveCount(0);
   state = await readState(request, id!);
   expect(state.investigation.actions[1]?.status).toBe("queued");
   expect(state.executionCount).toBe(1);
@@ -627,7 +629,6 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
     expect(node.bottom).toBeLessThanOrEqual(fitGeometry.viewport.bottom + 1);
   }
 
-  await closeDisclosure(page, ".workspace-case-controls");
   const mobileGraphTab = page.getByRole("tab", { name: "Grafo" });
   const mobileDetailTab = page.getByRole("tab", { name: "Detalle" });
   await page.setViewportSize(MOBILE);
@@ -754,10 +755,9 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   console.log("Outside-graph touch scroll", await page.evaluate(() => window.scrollY));
   await touchSession.send("Emulation.setTouchEmulationEnabled", { enabled: false });
   await touchSession.detach();
-  await openDisclosure(page, ".workspace-case-controls");
-  await expect(page.getByRole("button", { name: "Actualizar expediente" })).toBeVisible();
-  await expect(dispatch).toBeDisabled();
-  await closeDisclosure(page, ".workspace-case-controls");
+  await expect(page.getByRole("button", { name: "Actualizar expediente" })).toHaveCount(0);
+  await expect(authorize).toBeVisible();
+  await expect(dispatch).toHaveCount(0);
   for (const width of [320, 768, 1024]) {
     await page.setViewportSize({ width, height: 941 });
     await expectNoHorizontalOverflow(page, `${width}px workspace detail`);
@@ -870,58 +870,31 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
 test("automatic default drains on the backend without node approval or browser execution requests", async ({ page, request }) => {
   const suffix = randomUUID().slice(0, 10);
   const intention = `Comprobar exposición pública ${suffix}`;
-  const browserDispatches: string[] = [];
+  const browserWrites: string[] = [];
   page.on("request", (req) => {
-    if (/\/actions\/(run|proposals)|\/approval$/.test(new URL(req.url()).pathname)) browserDispatches.push(req.url());
+    if (req.method() === "POST") browserWrites.push(new URL(req.url()).pathname);
   });
   await page.goto("/");
   await page.getByRole("link", { name: /Nueva investigación/ }).last().click();
   await page.getByLabel("Nombre de la investigación").fill(`Automático ${suffix}`);
   await page.getByLabel("Intención de la investigación").fill(intention);
-  await expect(page.getByLabel("Elegir avance manual")).not.toBeChecked();
+  await expect(page.getByRole("heading", { name: "Avance automático" })).toBeVisible();
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
   await page.getByLabel("Correo electrónico 1").fill(`automatic-${suffix}@example.test`);
   await page.getByRole("button", { name: /Agregar correo/ }).click();
   await page.getByLabel("Correo electrónico 2").fill(`automatic-second-${suffix}@example.test`);
   await page.getByRole("button", { name: "Crear investigación" }).click();
   await expect(page.getByRole("heading", { name: `Automático ${suffix}` })).toBeVisible();
-  await openDisclosure(page, ".workspace-case-controls");
-  const id = (await page.getByLabel(/^Referencia completa:/).textContent())!.trim();
-  const initial = await readState(request, id);
-  const before = initial.executionCount;
-  expect(initial.investigation.advancementMode).toBe("automatic");
-  expect(initial.investigation.intention).toBe(intention);
-  expect(initial.investigation.actions).toHaveLength(2);
-  expect(initial.investigation.actions.every((action) => action.status === "queued" && action.approval === undefined)).toBe(true);
-  await expect(page.getByRole("button", { name: /Ejecutar siguiente/ })).toHaveCount(0);
-  await expect(page.getByText(/Avance automático:/)).toBeVisible();
-  await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(initial.enumerationCount + 1);
-  expect((await readState(request, id)).executionCount, "no authorization means no background execution").toBe(before);
-
-  await openDisclosure(page, ".workspace-pause-disclosure");
-  await page.getByLabel("Motivo para pausar el expediente").fill("Revisar alcance antes de ejecutar.");
-  await page.getByRole("button", { name: "Pausar expediente" }).click();
-  await openDisclosure(page, ".workspace-case-controls");
-  await page.getByLabel("Motivo de autorización").fill("Autorizar el caso mientras permanece pausado.");
-  await page.getByRole("button", { name: "Otorgar autorización" }).click();
-  let paused = await readState(request, id);
-  await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(paused.enumerationCount + 1);
-  expect((await readState(request, id)).executionCount, "pause blocks an authorized automatic queue").toBe(before);
-  await openDisclosure(page, ".workspace-case-controls");
-  await page.getByLabel("Motivo de autorización").fill("Retirar autorización durante la revisión.");
-  await page.getByRole("button", { name: "Revocar autorización" }).click();
-  await openDisclosure(page, ".workspace-pause-disclosure");
-  await page.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin volver a otorgar autorización.");
-  await page.getByRole("button", { name: "Reanudar expediente" }).click();
-  paused = await readState(request, id);
-  await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(paused.enumerationCount + 1);
-  expect((await readState(request, id)).executionCount, "revocation blocks the resumed queue").toBe(before);
-
-  await openDisclosure(page, ".workspace-case-controls");
-  await page.getByLabel("Motivo de autorización").fill("Autorizar el alcance revisado del expediente.");
-  await page.getByRole("button", { name: "Otorgar autorización" }).click();
+  const id = decodeURIComponent(new URL(page.url()).hash.split("/").at(-1)!);
+  await expect(page.getByRole("button", { name: /Autorizar expediente|Ejecutar siguiente/ })).toHaveCount(0);
   await expect.poll(async () => (await readState(request, id)).investigation.actions.map((action) => action.status)).toEqual(["succeeded", "succeeded"]);
   const completed = await readState(request, id);
-  expect(completed.executionCount).toBe(before + 2);
+  expect(completed.investigation.advancementMode).toBe("automatic");
+  expect(completed.investigation.intention).toBe(intention);
+  expect(completed.investigation.authorization?.granted).toBe(true);
+  expect(completed.investigation.audit.slice(0, 2).map((event) => event.kind)).toEqual(["authorization_changed", "email_seed_added"]);
+  const actionIds = new Set(completed.investigation.actions.map((action) => action.id));
+  expect(completed.executionCalls.filter((call) => actionIds.has(call.actionId))).toHaveLength(2);
   expect(completed.investigation.evidence).toHaveLength(2);
   expect(completed.investigation.actions.every((action) => action.approval === undefined && !action.proposalReason.includes(intention))).toBe(true);
   expect(completed.investigation.audit.some((event) => event.kind === "action_approved" || event.kind === "action_proposed")).toBe(false);
@@ -931,7 +904,42 @@ test("automatic default drains on the backend without node approval or browser e
   await page.reload();
   await expect(page.getByRole("heading", { name: `Automático ${suffix}` })).toBeVisible();
   await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(completed.enumerationCount + 1);
-  expect((await readState(request, id)).executionCount, "reload and later sweeps never repeat terminal actions").toBe(before + 2);
-  expect(browserDispatches).toEqual([]);
+  expect((await readState(request, id)).executionCount, "reload and later sweeps never repeat terminal actions").toBe(completed.executionCount);
+  const path = `/investigations/${encodeURIComponent(id)}`;
+  expect(browserWrites).toEqual(["/investigations", `${path}/authorization`, `${path}/emails`, `${path}/emails`]);
   expect(completed.workerErrors).toEqual([]);
+});
+
+test("an existing automatic queue respects pause and revocation until authorized inline", async ({ page, request }) => {
+  const name = `Recuperación automática ${randomUUID()}`;
+  const created = await request.post(`${BASE_URL}/investigations`, { data: {
+    name, intention: "Comprobar las condiciones de la cola.", advancementMode: "automatic",
+  } });
+  expect(created.status()).toBe(201);
+  const { id } = await created.json() as Investigation;
+  const path = `${BASE_URL}/investigations/${encodeURIComponent(id)}`;
+  expect((await request.post(`${path}/pause`, { data: { reason: "Revisar antes de ejecutar." } })).ok()).toBe(true);
+  expect((await request.post(`${path}/authorization`, { data: { granted: true, reason: "Autorización de prueba." } })).ok()).toBe(true);
+  expect((await request.post(`${path}/emails`, { data: { email: "recovery@example.test", reason: "Semilla de prueba." } })).status()).toBe(201);
+
+  const paused = await readState(request, id);
+  await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(paused.enumerationCount + 1);
+  expect((await readState(request, id)).executionCount, "pause blocks an authorized automatic queue").toBe(paused.executionCount);
+  expect((await request.post(`${path}/authorization`, { data: { granted: false, reason: "Retirar autorización durante la revisión." } })).ok()).toBe(true);
+  await page.goto(`/#/investigaciones/${encodeURIComponent(id)}`);
+  await expect(page.getByRole("heading", { name })).toBeVisible();
+  await openDisclosure(page, ".workspace-pause-disclosure");
+  await page.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin cambiar la autorización.");
+  await page.getByRole("button", { name: "Reanudar expediente" }).click();
+  await expect.poll(async () => (await readState(request, id)).investigation.paused).toBe(false);
+  const resumed = await readState(request, id);
+  await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(resumed.enumerationCount + 1);
+  expect((await readState(request, id)).executionCount, "revocation still blocks the resumed queue").toBe(paused.executionCount);
+
+  const authorize = page.getByRole("button", { name: "Autorizar expediente" });
+  await authorize.click();
+  await expect(authorize).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Ejecutar siguiente/ })).toHaveCount(0);
+  await expect.poll(async () => (await readState(request, id)).investigation.actions[0]?.status).toBe("succeeded");
+  expect((await readState(request, id)).executionCount).toBe(paused.executionCount + 1);
 });

@@ -107,9 +107,8 @@ function DecodoPageDetails({ finding }: { readonly finding: ScannerFinding }) {
 
 /** The FaceCheck search behind a candidate group, a single candidate or the search action itself. */
 function facecheckActionOf(node: WorkspaceNode): string | undefined {
-  if (node.kind === "leaf-group") {
-    const first = node.members?.[0]?.evidence;
-    return first?.sourceId === "facecheck:photo" ? first.actionId : undefined;
+  if (node.kind === "leaf-group" && node.hiddenMembers !== undefined) {
+    return node.producerActionId ?? node.members?.[0]?.evidence?.actionId;
   }
   if (node.kind === "evidence" && node.evidence?.sourceId === "facecheck:photo") return node.evidence.actionId;
   if (node.kind === "action" && node.action?.spec.catalogId === "facecheck.photo.v1") return node.action.id;
@@ -135,7 +134,7 @@ function canQueueDecodo(investigation: Investigation, evidence: EvidenceRecord |
 
 function DecodoReadinessNotes({ investigation, decodoConfigured }: Pick<WorkspaceDetailsProps, "investigation" | "decodoConfigured">) {
   return <>
-    {!authorizationCovers(investigation.authorization, "decodo.url.v1") && <p className="detail-note">Es necesario renovar la autorización para Decodo desde Controles del expediente.</p>}
+    {!authorizationCovers(investigation.authorization, "decodo.url.v1") && <p className="detail-note">El expediente requiere autorización para ejecutar Decodo.</p>}
     {decodoConfigured === false && <p className="detail-note">Falta el token de Decodo. <a href="#/ajustes">Configurar Decodo</a></p>}
   </>;
 }
@@ -281,7 +280,7 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                 </dl>
                 </details>
                 {node.action.spec.catalogId === "ghunt.email.v1" && node.action.status === "queued" && <>
-                  {!authorizationCovers(investigation.authorization, node.action.spec.catalogId) && <p className="detail-note">Es necesario renovar la autorización para GHunt desde Controles del expediente.</p>}
+                  {!authorizationCovers(investigation.authorization, node.action.spec.catalogId) && <p className="detail-note">El expediente requiere autorización para ejecutar GHunt.</p>}
                   {ghuntConnected === false && <p className="detail-note"><span className="workspace-state-value">Requiere login</span> · <a href="#/ajustes?seccion=ghunt">Conectar Google</a></p>}
                   {ghuntConnected === null && <p className="detail-note">No se pudo confirmar la conexión de Google.</p>}
                 </>}

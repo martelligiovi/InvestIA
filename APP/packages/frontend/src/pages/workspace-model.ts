@@ -13,6 +13,7 @@ export interface WorkspaceNode {
   readonly seedValue?: string;
   readonly action?: GitHubCatalogAction;
   readonly evidence?: EvidenceRecord;
+  readonly producerActionId?: string;
   readonly profileSeed?: ProfileSeed;
   readonly members?: readonly WorkspaceNode[];
   /** FaceCheck candidates the operator discarded: left out of the graph, still reviewable. */
@@ -295,11 +296,12 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
       : leaves.every((leaf) => leaf.profileSeed !== undefined)
       ? `${leaves.length} semillas de Gravatar` : `${leaves.length} resultados sin acciones`;
     const members = (review?.visible ?? leaves).map((node) => ({ ...node, groupId: id }));
-    for (const leaf of leaves) {
-      groupedIds.add(leaf.id);
-      visualSeedIds.set(findingSeedNodeId(leaf.evidence!.id), id);
-    }
-    nodes.push({ id, kind: "leaf-group", title, state: "leaf_group", members,
+    for (const leaf of leaves) groupedIds.add(leaf.id);
+    if (facecheck && members.length === 0 && nodes.some((node) =>
+      node.evidence?.actionId === actionId && !groupedIds.has(node.id) && !relatedIds.has(node.id) &&
+      latestDecision.get(node.evidence.id) === "accepted")) continue;
+    for (const leaf of leaves) visualSeedIds.set(findingSeedNodeId(leaf.evidence!.id), id);
+    nodes.push({ id, kind: "leaf-group", title, state: "leaf_group", members, producerActionId: actionId,
       ...(review !== undefined ? { hiddenMembers: review.discarded } : {}),
       accessibleLabel: `Grupo de semillas: ${title}.`,
       x: 836, y: TOP, width: NODE_WIDTH, height: NODE_HEIGHT });
@@ -325,7 +327,7 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
   }
   const rowsByDepth = new Map<number, number>();
   const laidOut = visibleNodes.map((node) => {
-    const producer = node.evidence?.actionId ?? node.action?.id ??
+    const producer = node.evidence?.actionId ?? node.action?.id ?? node.producerActionId ??
       (node.kind === "leaf-group" ? node.members?.[0]?.evidence?.actionId : undefined);
     const depth = node.kind === "seed" ? 0 : node.kind === "action" ? actionDepth(node.action!.id) :
       producer !== undefined && actionIds.has(producer) ? actionDepth(producer) + 1 : 2;
@@ -363,11 +365,12 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
   }
 
   for (const node of laidOut) {
-    if (node.kind !== "result" || node.action === undefined) continue;
-    const from = nodeById.get(`action:${node.action.id}`);
-    if (from !== undefined) {
+    const producer = node.kind === "leaf-group" ? node.producerActionId : node.kind === "result" ? node.action?.id : undefined;
+    if (producer === undefined) continue;
+    const from = nodeById.get(`action:${producer}`);
+    if (from !== undefined && !edges.some((edge) => edge.from === from.id && edge.to === node.id)) {
       edges.push({
-        id: `action-result:${node.action.id}`,
+        id: `action-${node.kind === "leaf-group" ? "group" : "result"}:${producer}`,
         from: from.id,
         to: node.id,
         path: orthogonalPath(from, node),

@@ -197,6 +197,22 @@ it("hides discarded candidates from the graph and counts only accepted and unrev
   expect(visible(investigation()).title).toBe("3 candidatos por revisar");
 });
 
+it("connects a discarded-only group to its producer and opens review from the group", () => {
+  const snapshot = investigation([decision("gh", "rejected", 1), decision("li", "rejected", 2), decision("ig", "rejected", 3)]);
+  const graph = buildWorkspaceGraph(snapshot);
+  const action = graph.nodes.find((node) => node.id === "action:facecheck")!;
+  const group = graph.nodes.find((node) => node.id === "leaf-group:facecheck")!;
+  expect(group).toMatchObject({ title: "Ningún candidato aceptado", x: action.x + 402, members: [] });
+  expect(graph.edges.filter((edge) => edge.to === group.id)).toEqual([
+    expect.objectContaining({ from: action.id, to: group.id }),
+  ]);
+  const onReview = vi.fn();
+  render(<WorkspaceDetails investigation={snapshot} node={group} disabled={false} onValidate={vi.fn()} onReviewFacecheck={onReview} />);
+  expect(screen.getByRole("heading", { name: "Ningún candidato aceptado" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Revisar candidatos · todo revisado" }));
+  expect(onReview).toHaveBeenCalledExactlyOnceWith("facecheck");
+});
+
 it("tells in the group detail that discarded candidates are hidden and still reviewable", () => {
   const snapshot = investigation([decision("gh", "accepted", 1), decision("li", "rejected", 2), decision("ig", "rejected", 3)]);
   const group = buildWorkspaceGraph(snapshot).nodes.find((node) => node.id === "leaf-group:facecheck")!;

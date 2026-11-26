@@ -8,7 +8,7 @@ import { WorkspaceDetails } from "../components/WorkspaceDetails";
 import { FacecheckReview } from "../components/FacecheckReview";
 import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
-import { actionDisplayState, hasCatalogAuthorization, workspaceHeadline } from "./workspace-status";
+import { actionDisplayState, workspaceHeadline } from "./workspace-status";
 
 function revealElement(element: HTMLElement) {
   const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -24,6 +24,7 @@ type MobilePanel = "graph" | "detail";
 
 /** Matches the drawer's grid-track transition in workspace.css. */
 const DRAWER_SETTLE_MS = 560;
+const AUTO_AUTHORIZATION_REASON = "Autorización del expediente confirmada para ejecutar las herramientas configuradas.";
 
 function LoadingWorkspace() {
   return (
@@ -56,7 +57,6 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("graph");
   const [detailOpen, setDetailOpen] = useState(false);
   const [facecheckReview, setFacecheckReview] = useState<string | null>(null);
-  const [authorizationReason, setAuthorizationReason] = useState("");
   const [pauseReason, setPauseReason] = useState("");
   const [formError, setFormError] = useState("");
   const graphTabRef = useRef<HTMLButtonElement>(null);
@@ -134,7 +134,6 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   if (investigation === null || graph === null) return <LoadingWorkspace />;
   const selectedNode: WorkspaceNode | null = findWorkspaceNode(graph, selectedId) ?? graph.nodes[0] ?? null;
   const selectedNodeId = selectedNode?.id ?? null;
-  const authorizationGranted = hasCatalogAuthorization(investigation);
   const automatic = investigation.advancementMode === "automatic";
   const queuedActions = investigation.actions.filter((action) => action.status === "queued" && (action.queuedByCatalog === true || action.approval !== undefined));
   const coveredQueue = queuedActions.filter((action) => authorizationCovers(investigation.authorization, action.spec.catalogId));
@@ -182,18 +181,6 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     event.preventDefault();
     setMobilePanel(nextPanel);
     (nextPanel === "graph" ? graphTabRef : detailTabRef).current?.focus();
-  }
-
-  async function updateAuthorization(granted: boolean) {
-    if (authorizationReason.trim() === "") {
-      setFormError("Escribí un motivo para cambiar la autorización.");
-      return;
-    }
-    const saved = await controller.mutate((api, investigationId) => api.setAuthorization(investigationId, granted, authorizationReason));
-    if (saved) {
-      setAuthorizationReason("");
-      setFormError("");
-    }
   }
 
   async function togglePause() {
@@ -246,40 +233,6 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
           </div>
         </div>
         <div className="workspace-header-actions">
-          <details className="workspace-case-controls workspace-disclosure">
-            <summary>Controles del expediente</summary>
-            <div className="workspace-popover workspace-case-panel">
-              <p className="case-reference">Referencia <code className="break-value" aria-label={`Referencia completa: ${investigation.id}`}>{investigation.id}</code> · Revisión {investigation.revision} · Actualizado {investigation.updatedAt}</p>
-              <button className="workspace-button workspace-button--quiet" type="button" disabled={controller.busy} onClick={() => void controller.refresh()}>
-                {controller.busy ? "Actualizando…" : "Actualizar expediente"}
-              </button>
-              <p>{investigation.authorization === undefined ? "Sin autorización registrada" : authorizationGranted ? "Autorización otorgada" : investigation.authorization.granted ? "Autorización previa: requiere consentimiento para las herramientas nuevas del catálogo" : "Autorización revocada"}</p>
-              <p className="dispatch-note">Autorizar habilita user-scanner con módulos loud que pueden enviar correos o notificaciones y cross-scan de usuarios, enlaces y emails descubiertos, la consulta del perfil público de Gravatar, la búsqueda de usernames aceptados con Maigret en unos 500 sitios, GHunt para correos Gmail y la búsqueda facial con FaceCheck.id, que envía la foto de perfil de Google a facecheck.id y gasta créditos fuera del modo prueba. Decodo recibe la URL pública de cada coincidencia de FaceCheck aceptada, nunca la foto ni la miniatura. Revocar o pausar no cancela una ejecución en curso.</p>
-              <label className="form-field">
-                <span>Motivo de autorización</span>
-                <textarea value={authorizationReason} maxLength={2_000} onChange={(event) => { setAuthorizationReason(event.currentTarget.value); setFormError(""); }} disabled={controlsDisabled} rows={2} />
-              </label>
-              <div className="authorization-actions">
-                <button className="workspace-button" type="button" disabled={controlsDisabled || authorizationReason.trim() === "" || authorizationGranted} onClick={() => void updateAuthorization(true)}>Otorgar autorización</button>
-                <button className="workspace-button" type="button" disabled={controlsDisabled || authorizationReason.trim() === "" || investigation.authorization?.granted !== true} onClick={() => void updateAuthorization(false)}>Revocar autorización</button>
-              </div>
-              <p>{queuedActions.length} acción{queuedActions.length === 1 ? "" : "es"} en cola{investigation.paused || (uncoveredCount > 0 && coveredQueue.length === 0) ? " bloqueada" : uncoveredCount > 0 ? " con autorización parcial" : " habilitada"}.</p>
-              {automatic ? (
-                <p className="dispatch-note">Avance automático: el servidor procesa la cola cuando el expediente está autorizado y sin pausa.</p>
-              ) : (
-                <>
-                  <button className="workspace-button" type="button" disabled={!dispatchEligible} onClick={() => void runNextAction()}>Ejecutar siguiente acción en cola</button>
-                  <p className="dispatch-note">Avance manual: cola del expediente, no del nodo seleccionado. Solo se ejecuta al presionar este control; las propuestas requieren aprobación previa.</p>
-                </>
-              )}
-              <ul className="dispatch-gates" aria-label="Condiciones para ejecutar">
-                <li>Pausa: {investigation.paused ? "bloquea nuevas acciones" : "sin pausa"}</li>
-                <li>Autorización: {authorizationGranted ? "otorgada" : coveredQueue.length > 0 ? "parcial" : "no otorgada"}</li>
-                <li>Catálogo: {queuedActions.length > 0 ? "acción disponible" : "sin acción en cola"}</li>
-                <li>Vista: {controller.stale ? "desactualizada" : "snapshot leído"}</li>
-              </ul>
-            </div>
-          </details>
           <details className="workspace-usernames-disclosure workspace-disclosure">
             <summary>Usernames{usernameProposalCount > 0 ? ` (${usernameProposalCount})` : ""}</summary>
             <div className="workspace-popover workspace-usernames-panel">
@@ -317,9 +270,27 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
         <p className="workspace-claimed-warning" role="status">Generando el informe con IA en NVIDIA Build. Puede tardar varios minutos; el resultado aparece al final de la página.</p>
       )}
 
-
-      {uncoveredCount > 0 && (
-        <p className="workspace-claimed-warning" role="status">Esperando autorización: {uncoveredCount} acción{uncoveredCount === 1 ? "" : "es"} en cola bloqueada. {coveredQueue.length > 0 ? "Las demás acciones conservan su autorización." : "No se ejecutan consultas hasta otorgar autorización explícita al expediente."}</p>
+      {(uncoveredCount > 0 || investigation.authorization?.granted !== true) && (
+        <div className="workspace-claimed-warning workspace-notice-with-action">
+          <div>
+            <span role="status">Esperando autorización: {uncoveredCount === 0
+              ? "el expediente no tiene permiso para ejecutar las herramientas configuradas."
+              : `${uncoveredCount === 1 ? "1 acción en cola bloqueada" : `${uncoveredCount} acciones en cola bloqueadas`}.`}</span>
+            <p className="dispatch-note">Autorizar habilita semillas actuales y futuras con user-scanner (módulos loud y cross-scan), Gravatar, Maigret, GHunt, FaceCheck (envía la foto de perfil de Google y usa créditos fuera del modo prueba) y Decodo (solo URL públicas de coincidencias de FaceCheck aceptadas, nunca la foto ni la miniatura).</p>
+          </div>
+          <button className="workspace-button workspace-button--quiet" type="button" disabled={controlsDisabled}
+            onClick={() => void controller.mutate((api, investigationId) => api.setAuthorization(investigationId, true, AUTO_AUTHORIZATION_REASON))}>
+            Autorizar expediente
+          </button>
+        </div>
+      )}
+      {!automatic && hasDispatchableAction && (
+        <div className="workspace-queue-notice workspace-notice-with-action">
+          <span role="status">Acciones en cola · avance manual.</span>
+          <button className="workspace-button workspace-button--quiet" type="button" disabled={!dispatchEligible} onClick={() => void runNextAction()}>
+            Ejecutar siguiente acción en cola
+          </button>
+        </div>
       )}
       {claimedActions.length > 0 && (
         <p className="workspace-claimed-warning" role="status">
@@ -328,7 +299,14 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
       )}
 
       {controller.operationError !== "" && <p className="workspace-alert" role="alert">{controller.operationError}</p>}
-      {controller.stale && <p className="workspace-alert" role="alert">La vista puede estar desactualizada. Actualizá el expediente antes de usar sus controles.</p>}
+      {controller.stale && (
+        <div className="workspace-alert workspace-notice-with-action">
+          <span role="alert">La vista puede estar desactualizada. Actualizá el expediente antes de usar sus controles.</span>
+          <button className="workspace-button workspace-button--quiet" type="button" disabled={controller.busy} onClick={() => void controller.refresh()}>
+            {controller.busy ? "Actualizando…" : "Actualizar expediente"}
+          </button>
+        </div>
+      )}
       {formError !== "" && <p className="workspace-alert" role="alert">{formError}</p>}
 
       <div className="workspace-mobile-tabs" role="tablist" aria-label="Panel del expediente">
