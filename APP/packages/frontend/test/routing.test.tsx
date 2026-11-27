@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
@@ -19,8 +19,9 @@ describe("parseHashRoute", () => {
     expect(parseHashRoute("#/nueva")).toEqual({ kind: "create" });
   });
 
-  it("recognizes the AI settings route", () => {
+  it("recognizes the integration settings route and the Google deep link", () => {
     expect(parseHashRoute("#/ajustes")).toEqual({ kind: "settings" });
+    expect(parseHashRoute("#/ajustes?seccion=ghunt")).toEqual({ kind: "settings" });
     expect(parseHashRoute("#/ajustes/extra")).toEqual({ kind: "not-found" });
   });
 
@@ -55,8 +56,13 @@ describe("App route scaffold", () => {
       headers: { "content-type": "application/json" },
     })));
     const user = userEvent.setup();
+    window.history.replaceState(null, "", "/#/");
     const { container } = render(<App />);
     expect(await screen.findByText("Todavía no hay investigaciones.")).toBeInTheDocument();
+    expect(screen.getByText("Semillas", { exact: true })).toBeInTheDocument();
+    expect(screen.getByText("Evidencia", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("Decisión", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText("Vos validás; nada se confirma solo.")).not.toBeInTheDocument();
     expect(container.querySelector(".application-shell")).toHaveClass("application-shell--home");
     expect(screen.getByRole("complementary", { name: "Investigaciones anteriores" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "InvestIA, inicio" })).toHaveAttribute("href", "#/");
@@ -85,14 +91,16 @@ describe("App route scaffold", () => {
     expect(screen.getByLabelText("Nombre de la investigación")).toHaveAccessibleDescription(/Hasta/u);
     expect(screen.getByLabelText("Correo electrónico 1")).toHaveAttribute("type", "email");
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(container.querySelector(".creation-page > .eyebrow, .create-back-link, .motif-divider")).not.toBeInTheDocument();
     expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
       "Expediente",
       "Semillas iniciales",
-      "Avance automático",
       "Cómo se abre un expediente",
     ]);
-    expect(screen.getByRole("complementary", { name: "Cómo se abre un expediente" })).toBeInTheDocument();
+    const guide = within(screen.getByRole("complementary", { name: "Cómo se abre un expediente" }));
+    expect(guide.getAllByRole("listitem")).toHaveLength(2);
+    expect(guide.queryByText(/Creá el expediente para iniciar el avance automático/u)).not.toBeInTheDocument();
     expect(container.querySelector(".create-guide .ascii-art--tree")).toHaveAttribute("aria-hidden", "true");
   });
 
@@ -143,7 +151,7 @@ describe("App route scaffold", () => {
     expect(container.querySelector(".workspace-brand, .workspace-landscape, .workspace-mountain")).not.toBeInTheDocument();
   });
 
-  it("links to AI settings from every page except the settings page", async () => {
+  it("opens one settings page whose index focuses all four integrations without leaving the route", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
       String(input) === "/settings/ai/models"
         ? { models: [], source: "live" }
@@ -154,17 +162,81 @@ describe("App route scaffold", () => {
             settings: { model: "deepseek-ai/deepseek-v4.1-flash", reasoningEffort: "default", temperature: 0.6, topP: 0.95, maxTokens: 4096 },
             defaults: { model: "deepseek-ai/deepseek-v4.1-flash", reasoningEffort: "default", temperature: 0.6, topP: 0.95, maxTokens: 4096 },
           }
-          : [],
+          : String(input) === "/settings/ghunt"
+            ? { available: true, state: "requires_connection", account: null }
+            : String(input) === "/settings/facecheck"
+              ? { tokenConfigured: false, tokenHint: null, testingMode: true }
+              : String(input) === "/settings/decodo"
+                ? { tokenConfigured: false, tokenHint: null, apiMode: "web_data" }
+                : [],
     ), { headers: { "content-type": "application/json" } })));
     const user = userEvent.setup();
     window.history.replaceState(null, "", "/#/");
-    render(<App />);
-    expect(screen.getByRole("link", { name: "Ajustes de IA" })).toHaveAttribute("href", "#/ajustes");
+    const { unmount } = render(<App />);
+    expect(screen.getByRole("link", { name: /^Ajustes$/ })).toHaveAttribute("href", "#/ajustes");
 
-    await user.click(screen.getByRole("link", { name: "Ajustes de IA" }));
-    expect(await screen.findByRole("heading", { name: "Ajustes de IA", level: 1 })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Ajustes de IA" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("link", { name: /^Ajustes$/ }));
+    expect(await screen.findByRole("heading", { name: "Ajustes", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^Ajustes$/ })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Inicio" })).toHaveAttribute("href", "#/");
+    const settings = within(screen.getByRole("region", { name: /^Ajustes$/ }));
+    const index = within(settings.getByRole("navigation", { name: "Integraciones" }));
+    const integrations = ["Inteligencia artificial", "Google (GHunt)", "FaceCheck.id", "Decodo"];
+    expect(settings.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual(integrations);
+    expect(index.getAllByRole("button")).toHaveLength(integrations.length);
+    for (const name of integrations) {
+      const button = index.getByRole("button", { name });
+      expect(button).toHaveAttribute("type", "button");
+      await user.click(button);
+      expect(settings.getByRole("region", { name })).toHaveFocus();
+      expect(window.location.hash).toBe("#/ajustes");
+    }
+
+    unmount();
+    window.history.replaceState(null, "", "/#/ajustes?seccion=ghunt");
+    render(<App />);
+    expect(await screen.findByLabelText("Código de GHunt Companion")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Google (GHunt)" })).toHaveFocus();
+    expect(window.location.hash).toBe("#/ajustes?seccion=ghunt");
+  });
+
+  it("does not scroll back to GHunt when a late AI response arrives after the user scrolled away", async () => {
+    const defaults = { model: "deepseek-ai/deepseek-v4.1-flash", reasoningEffort: "default", temperature: 0.6, topP: 0.95, maxTokens: 4096 };
+    let resolveAi!: (response: Response) => void;
+    const aiPromise = new Promise<Response>((resolve) => { resolveAi = resolve; });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === "/settings/ai") return aiPromise;
+      const body = String(input) === "/settings/ai/models"
+        ? { source: "live", models: [] }
+        : String(input) === "/settings/ghunt"
+          ? { available: true, state: "requires_connection", account: null }
+          : String(input) === "/settings/facecheck"
+            ? { tokenConfigured: false, tokenHint: null, testingMode: true }
+            : String(input) === "/settings/decodo"
+              ? { tokenConfigured: false, tokenHint: null, apiMode: "web_data" }
+              : [];
+      return Promise.resolve(new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }));
+    }));
+    const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    try {
+      window.history.replaceState(null, "", "/#/ajustes?seccion=ghunt");
+      render(<App />);
+      const google = screen.getByRole("region", { name: "Google (GHunt)" });
+      expect(google).toHaveFocus();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+      window.dispatchEvent(new Event("wheel"));
+      resolveAi(new Response(JSON.stringify({ apiKeyConfigured: false, apiKeyHint: null, settings: defaults, defaults }), {
+        headers: { "content-type": "application/json" },
+      }));
+      expect(await screen.findByLabelText("API key de NVIDIA Build")).toBeInTheDocument();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(google).toHaveFocus();
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: originalScrollIntoView });
+    }
   });
 
   it("navigates from the brand preview to the create scaffold", async () => {

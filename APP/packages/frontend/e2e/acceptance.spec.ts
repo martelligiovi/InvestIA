@@ -167,6 +167,16 @@ async function openNodeList(page: Page): Promise<void> {
   }
 }
 
+async function expectCreateSections(page: Page): Promise<void> {
+  const fields = page.getByRole("group", { name: "Datos iniciales" });
+  await expect(fields.getByRole("heading", { level: 2 })).toHaveText(["Expediente", "Semillas iniciales"]);
+  await expect(page.getByRole("heading", { name: "Avance automático" })).toHaveCount(0);
+  const guide = page.getByRole("complementary", { name: "Cómo se abre un expediente" });
+  await expect(guide.getByRole("listitem")).toHaveCount(2);
+  await expect(guide.getByText(/Creá el expediente para iniciar el avance automático/u)).toHaveCount(0);
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+}
+
 for (const outcome of ["information", "failure", "blocked", "empty"] as const) {
   test(`mocked automatic creation and connected result: ${outcome}`, async ({ page }) => {
     const at = "2025-03-16T12:00:00.000Z";
@@ -208,8 +218,7 @@ for (const outcome of ["information", "failure", "blocked", "empty"] as const) {
     await page.getByLabel("Nombre de la investigación").fill(current.name!);
     await page.getByLabel("Intención de la investigación").fill(current.intention!);
     await page.getByLabel("Correo electrónico 1").fill("mock@example.test");
-    await expect(page.getByRole("heading", { name: "Avance automático" })).toBeVisible();
-    await expect(page.getByRole("checkbox")).toHaveCount(0);
+    await expectCreateSections(page);
     await page.getByRole("button", { name: "Crear investigación" }).click();
     await expect(page.getByRole("heading", { name: current.name! })).toBeVisible();
     expect(writes).toEqual(["/investigations", "/investigations/mock-result/authorization", "/investigations/mock-result/emails"]);
@@ -365,14 +374,12 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await expect(page.locator(".home-emblem")).toHaveCount(0);
   await expect(page.locator(".site-footer")).toBeVisible();
   await expect(page.locator(".create-guide pre.ascii-art--tree")).toHaveAttribute("aria-hidden", "true");
-  await expect(page.locator(".create-section")).toHaveCount(3);
+  await expectCreateSections(page);
   await expect(page.getByRole("link", { name: "Volver", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Semillas iniciales" })).toBeVisible();
   await expect(page.getByRole("combobox")).toHaveCount(0);
   await expect(page.locator(".site-header")).toBeVisible();
   await page.getByLabel("Nombre de la investigación").fill(investigationName);
   await page.getByLabel("Intención de la investigación").fill("Comprobar exposición pública sin atribuir identidad.");
-  await expect(page.getByRole("heading", { name: "Avance automático" })).toBeVisible();
   await page.getByLabel("Correo electrónico 1").fill(firstEmail);
   await page.getByRole("button", { name: /Agregar correo/ }).click();
   await page.getByLabel("Correo electrónico 2").fill(secondEmail);
@@ -885,8 +892,7 @@ test("automatic default drains on the backend without node approval or browser e
   await page.getByRole("link", { name: /Nueva investigación/ }).last().click();
   await page.getByLabel("Nombre de la investigación").fill(`Automático ${suffix}`);
   await page.getByLabel("Intención de la investigación").fill(intention);
-  await expect(page.getByRole("heading", { name: "Avance automático" })).toBeVisible();
-  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await expectCreateSections(page);
   await page.getByLabel("Correo electrónico 1").fill(`automatic-${suffix}@example.test`);
   await page.getByRole("button", { name: /Agregar correo/ }).click();
   await page.getByLabel("Correo electrónico 2").fill(`automatic-second-${suffix}@example.test`);

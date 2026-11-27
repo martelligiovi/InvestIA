@@ -7,6 +7,7 @@ import "./styles/home.css";
 import "./styles/create.css";
 import "./styles/workspace.css";
 import "./styles/ai-settings.css";
+import "./styles/settings.css";
 import "./styles/interface.css";
 import "./styles/facecheck-review.css";
 
