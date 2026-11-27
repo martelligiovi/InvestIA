@@ -110,7 +110,7 @@ test("Scraping API v2 scrapes HTML using normalized Basic auth and retains only 
   assert.equal(extra.title, reason);
   assert.equal(extra.description, "Developer and designer — based in Oslo.");
   assert.equal(extra.content_format, "html");
-  assert.equal(extra.content, "Public Profile\nHello & welcome !\nProjects Duplicate Script link Credentials Local");
+  assert.equal(extra.content, "# Public Profile\nHello & welcome !\nProjects Duplicate Script link Credentials Local");
   assert.equal(extra.content_length, String(extra.content).length);
   assert.equal(extra.content_truncated, false);
   assert.equal(extra.links, "https://example.org/projects");
@@ -515,7 +515,7 @@ test("keeps local header and footer content while excluding global and explicit 
       <footer>Published recently</footer></${tag}><footer><a href="/languages">Languages</a></footer>`;
     const { adapter, calls } = fixture([() => scraped(html)]);
     const [result] = await adapter.execute(seed);
-    assert.equal(result?.finding.extra.content, "Jamie Example\nSelected work\nPublished recently", region);
+    assert.equal(result?.finding.extra.content, "# Jamie Example\nSelected work\nPublished recently", region);
     assert.equal(result?.finding.extra.links, "https://example.org/work");
     assert.equal(calls.length, 1);
   }
@@ -543,7 +543,7 @@ test("adds only bounded, deduplicated factual JSON-LD and validated non-asset li
   const { adapter, calls } = fixture([() => scraped(html)]);
   const [result] = await adapter.execute(seed);
   const extra = result!.finding.extra;
-  assert.equal(extra.content, ["Jamie Example", "Selected work", "Jamie E.", "Builds &lt;svg onload=alert(1)> research tools.",
+  assert.equal(extra.content, ["# Jamie Example", "Selected work", "Jamie E.", "Builds &lt;svg onload=alert(1)> research tools.",
     "Research engineer", "Software testing", "Example Lab", "Example College", "Córdoba"].join("\n"));
   assert.equal(extra.links, "https://example.org/work\nhttps://example.net/bio\nhttps://example.net/vol%2E3");
   assert.equal(extra.content_truncated, false);
@@ -560,7 +560,7 @@ test("ignores hidden, chrome, oversized raw, and invalid JSON-LD blocks", async 
     <script type="application/ld+json">{"headline":"Visible claim"}</script></main></body></html>`;
   const { adapter, calls } = fixture([() => scraped(html)]);
   const [result] = await adapter.execute(seed);
-  assert.equal(result?.finding.extra.content, "Public profile\nVisible claim");
+  assert.equal(result?.finding.extra.content, "# Public profile\nVisible claim");
   assert.equal(result?.finding.extra.links, undefined);
   assert.equal(calls.length, 1);
 });
@@ -580,7 +580,7 @@ test("retains descriptive alt text in visible primary regions without image URLs
   const { adapter, calls } = fixture([() => scraped(html)]);
   const [result] = await adapter.execute(seed);
   assert.equal(result?.finding.extra.content,
-    "A workshop\nAn open course on testing & software\nStudents &lt;img onerror=alert(1)> reviewing an example");
+    "# A workshop\nAn open course on testing & software\nStudents &lt;img onerror=alert(1)> reviewing an example");
   assert.equal(result?.finding.extra.links, undefined);
   assert.equal(calls.length, 1);
 });
@@ -593,7 +593,7 @@ test("retries a headless login or empty page once and keeps only the public fall
     const { adapter, calls } = fixture([first, () => scraped("<main><h1>Public page</h1><p>Public biography for visitors.</p></main>", { task_id: "fallback" })]);
     const [result, ...rest] = await adapter.execute(seed);
     assert.deepEqual(rest, []);
-    assert.equal(result?.finding.extra.content, "Public page\nPublic biography for visitors.");
+    assert.equal(result?.finding.extra.content, "# Public page\nPublic biography for visitors.");
     assert.equal(result?.finding.extra.task_id, "fallback");
     assert.equal(result?.finding.url, seed.value);
     assert.equal(calls.length, 2);
@@ -608,7 +608,7 @@ test("unrelated structured site metadata does not turn a sign-in shell into a fi
   })}</script></head><body><main><h1>Sign in</h1><p>Welcome</p></main></body></html>`;
   const { adapter, calls } = fixture([() => scraped(shell), () => scraped("<main><h1>Public fallback profile</h1></main>")]);
   const [result] = await adapter.execute(seed);
-  assert.equal(result?.finding.extra.content, "Public fallback profile");
+  assert.equal(result?.finding.extra.content, "# Public fallback profile");
   assert.equal(calls.length, 2);
   assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
 
@@ -627,7 +627,7 @@ test("unrelated structured site metadata does not turn a sign-in shell into a fi
   })}</script></head><main><h1>Jamie Example</h1></main></html>`;
   const publicFixture = fixture([() => scraped(profile)]);
   const [publicResult] = await publicFixture.adapter.execute(seed);
-  assert.equal(publicResult?.finding.extra.content, `Jamie Example\n${body}`);
+  assert.equal(publicResult?.finding.extra.content, `# Jamie Example\n${body}`);
   assert.equal(publicFixture.calls.length, 1);
 });
 
@@ -665,4 +665,72 @@ test("preserves XSS entity escaping across title, description, preview, and clea
   for (const field of [extra.title, extra.description, extra.preview, extra.content]) {
     assert.doesNotMatch(String(field), /<[a-z!/]/i);
   }
+});
+
+test("preserves generic HTML heading levels for section context without polluting preview", async () => {
+  const html = `<!doctype html><html><head><title>Ada Lovelace</title></head><body><main>
+    <h1>Ada Lovelace</h1>
+    <p>Analytical engine researcher in London.</p>
+    <section><h2>About</h2><p>Designs algorithms and mathematical notation.</p></section>
+    <section><h3>Activity</h3><p>Liked a post by Charles Babbage about mechanical gears.</p></section>
+  </main></body></html>`;
+  const { adapter } = fixture([() => scraped(html)]);
+  const [observation] = await adapter.execute(seed);
+  const extra = observation!.finding.extra;
+  assert.equal(extra.preview, "Ada Lovelace");
+  assert.equal(extra.content, [
+    "# Ada Lovelace",
+    "Analytical engine researcher in London.",
+    "## About",
+    "Designs algorithms and mathematical notation.",
+    "### Activity",
+    "Liked a post by Charles Babbage about mechanical gears.",
+  ].join("\n"));
+});
+
+test("accepts a concise public guest profile under 250 chars when sign-in modals exist in the DOM", async () => {
+  const html = `<!doctype html><html><head>
+    <title>Ada Lovelace | Network</title>
+    <script type="application/ld+json">${JSON.stringify({
+      "@type": "Person", name: "Ada Lovelace", jobTitle: "Systems Student",
+      worksFor: { "@type": "Organization", name: "Analytical Group" },
+      alumniOf: { "@type": "CollegeOrUniversity", name: "University of London" },
+    })}</script>
+  </head><body>
+    <main>
+      <h1>Ada Lovelace</h1>
+      <h3>London, United Kingdom</h3>
+      <p>Analytical Group · University of London</p>
+      <h2>About</h2>
+      <p>Final-year computer science student focusing on distributed systems.</p>
+      <div role="dialog" aria-modal="true">
+        <h2>Sign in to view Ada's full profile</h2>
+        <form><input type="email"><input type="password"><button type="submit">Sign in</button></form>
+      </div>
+      <section>
+        <form><h2>Welcome back</h2><input type="password"><button type="submit">Sign in</button></form>
+      </section>
+    </main>
+  </body></html>`;
+  const { adapter, calls } = fixture([() => scraped(html)]);
+  const [observation] = await adapter.execute(seed);
+  const content = String(observation!.finding.extra.content);
+  assert.equal(calls.length, 1);
+  assert.match(content, /^# Ada Lovelace/m);
+  assert.match(content, /^## About$/m);
+  assert.match(content, /Final-year computer science student/);
+  assert.doesNotMatch(content, /Sign in to view|Welcome back/);
+});
+
+test("still rejects a page-level sign-in wall with non-modal gate heading and marketing lines under 250 chars", async () => {
+  const wall = `<!doctype html><html><head><title>Portal</title></head><body><main>
+    <h1>Sign in to your account</h1>
+    <p>Discover opportunities and connect with professionals across industries worldwide.</p>
+    <p>Build your network every day with curated updates.</p>
+    <p>Already have credentials ready?</p>
+    <form><input type="email"><input type="password"><button type="submit">Sign in</button></form>
+  </main></body></html>`;
+  const { adapter, calls } = fixture([() => scraped(wall), () => scraped(wall)]);
+  await assertFailure(adapter.execute(seed), "Decodo target requires login");
+  assert.equal(calls.length, 2);
 });

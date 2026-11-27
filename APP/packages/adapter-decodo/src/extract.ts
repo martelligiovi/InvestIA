@@ -257,7 +257,14 @@ function scanMarkup(source: string, html: boolean, base: string, addStructuredLi
 
     const current = stack.at(-1);
     if (!inHead && !current?.hidden) {
-      if (/^h[1-6]$/.test(name)) heading = { name, parts: [] };
+      if (/^h[1-6]$/.test(name)) {
+        heading = { name, parts: [] };
+        if (!current?.chrome && !isSelfClosingTag(name, attrs)) {
+          const prefix = `\n${"#".repeat(Number(name[1]))} `;
+          main.push(prefix);
+          if (current?.primary) primary.push(prefix);
+        }
+      }
       if (name === "button" && (current?.form || current?.dialog)) buttonParts = [];
     }
 
@@ -300,7 +307,7 @@ function cleanHtmlLines(parts: string[]): string {
   let previous = "";
   for (const rawLine of parts.join("").split("\n")) {
     const line = scalar(rawLine, Infinity);
-    if (!line || SKIP_LINK.test(line)) continue;
+    if (!line || /^#{1,6}$/.test(line) || SKIP_LINK.test(line)) continue;
     const key = line.toLowerCase();
     if (key === previous) continue;
     const words = key.split(" ").length;
@@ -383,14 +390,19 @@ export function extractPage(raw: string, base: string, target: string) {
     const primaryCleaned = cleanHtmlLines(parsed.primaryParts);
     const mainCleaned = cleanHtmlLines(parsed.mainParts);
     const nonChrome = primaryCleaned.length >= 120 ? primaryCleaned : mainCleaned;
-    const visibleLines = new Set(nonChrome.toLowerCase().split("\n"));
+    const visibleLines = new Set<string>();
+    for (const line of nonChrome.toLowerCase().split("\n")) {
+      visibleLines.add(line);
+      visibleLines.add(line.replace(/^#{1,6}\s+/, ""));
+    }
+    const titleIsGate = GATE_HEADING.test(parsed.title);
     const structured = [...parsed.structuredText].filter(([key]) => !visibleLines.has(key)).map(([, value]) => value).join("\n");
-    const structuredCorroborated = !loginHeading && !loginAction && [...parsed.structuredSubjects].some((line) =>
+    const structuredCorroborated = (!titleIsGate || (!loginHeading && !loginAction)) && [...parsed.structuredSubjects].some((line) =>
       visibleLines.has(line) && !GATE_HEADING.test(line) && !GATE_COPY.test(line) && /\p{L}+\s+\p{L}+/u.test(line),
     );
     const cleaned = [nonChrome, structured].filter(Boolean).join("\n");
     const firstLine = cleaned.split("\n").find((line) => /[\p{L}\p{N}]/u.test(line)) ?? cleaned.split("\n", 1)[0] ?? "";
-    const preview = parsed.description || scalar(firstLine, 400);
+    const preview = parsed.description || scalar(firstLine.replace(/^#{1,6}\s+/, ""), 400);
     return {
       format: "html" as const, title: parsed.title, description: parsed.description, canonical, links,
       passwordField, passwordForm, loginAction, hasLoginForm, preview,
@@ -437,14 +449,19 @@ export function isLoginGate(page: ReturnType<typeof extractPage>, ...urls: strin
     if (/^\/authwall(?:\/|$)/i.test(pathname)) return true;
     if (/(?:^|\.)linkedin\.com\.?$/.test(hostname) && /^\/(?:login|signup|uas\/login|checkpoint\/lg\/login)(?:\/|$)/i.test(pathname)) return true;
   }
-  const lines = page.main.split("\n").map((line) => line.trim()).filter(Boolean);
+  const lines = page.main.split("\n").map((line) => line.replace(/^#{1,6}\s+/, "").trim()).filter(Boolean);
+  const hasVisibleGateHeading = lines.some((line) => GATE_HEADING.test(line));
   const substantive = lines.filter((line) => !GATE_HEADING.test(line) && !GATE_COPY.test(line));
   const substantiveLength = substantive.join(" ").length;
-  if ((page.hasLoginForm || (page.passwordForm && page.loginAction)) && substantiveLength < 250) return true;
-  if (!page.passwordField && !GATE_HEADING.test(page.title) && !lines.some((line) => GATE_HEADING.test(line))) return false;
-  // Structured claims can corroborate visible public text, but cannot turn a credential form or empty login shell into a finding.
   const metadataLines = page.structured.split("\n").filter((line) => line && !GATE_HEADING.test(line) && !GATE_COPY.test(line));
-  const corroboratedLength = !page.passwordField && page.structuredCorroborated ? metadataLines.join(" ").length : 0;
-  if (substantiveLength + corroboratedLength >= 250) return false;
+  const titleIsGate = GATE_HEADING.test(page.title);
+  const corroboratedLength = page.structuredCorroborated && (!titleIsGate || !page.passwordField) && !hasVisibleGateHeading
+    ? metadataLines.join(" ").length : 0;
+  const effectiveLength = substantiveLength + corroboratedLength;
+  const hasSubstantiveProfile = !titleIsGate && !hasVisibleGateHeading && substantive.length >= 3 && substantiveLength >= 120 &&
+    substantive.some((line) => line.split(/\s+/).length >= 5);
+  if ((page.hasLoginForm || (page.passwordForm && page.loginAction)) && effectiveLength < 250 && !hasSubstantiveProfile) return true;
+  if (!page.passwordField && !titleIsGate && !hasVisibleGateHeading) return false;
+  if (effectiveLength >= 250 || hasSubstantiveProfile) return false;
   return !substantive.some((line) => line.split(/\s+/).length >= 5) && substantive.length < 2;
 }
