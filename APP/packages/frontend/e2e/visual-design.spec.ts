@@ -36,7 +36,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(page.locator(".workspace-title-block h1")).toHaveText("Exposición digital · Caso de ejemplo");
     await checkLayout();
     await expect(page.getByRole("button", { name: "Obtener informe", exact: true })).toBeVisible();
-    await expect(page.locator(".workspace-pause-disclosure summary")).toBeVisible();
+    await expect(page.locator(".workspace-usernames-disclosure summary")).toBeVisible();
+    await expect(page.locator(".workspace-pause-disclosure")).toHaveCount(0);
     await expect(page.getByText("Controles del expediente", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Autorizar expediente" })).toHaveCount(0);
     const title = await page.locator(".workspace-title-block h1").boundingBox();

@@ -167,7 +167,10 @@ describe("espacio de investigación factual", () => {
     expect(document.querySelector(".workspace-meta-bar, .workspace-commandbar, .workspace-command-bar")).toBeNull();
     expect(screen.queryByText("Controles del expediente")).not.toBeInTheDocument();
     const header = within(document.querySelector<HTMLElement>(".workspace-header-actions")!);
-    for (const label of ["Usernames", "Pausar"]) expect(header.getByText(label, { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
+    expect(header.getByText("Usernames", { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
+    expect(document.querySelector(".workspace-pause-disclosure")).toBeNull();
+    for (const label of ["Pausar", "Reanudar"]) expect(header.queryByText(label, { selector: "summary" })).not.toBeInTheDocument();
+    expect(header.queryByText("Pausar expediente", { selector: "button" })).not.toBeInTheDocument();
     for (const name of ["Obtener informe", "Generar informe con IA"]) expect(header.getByRole("button", { name })).toBeEnabled();
     for (const name of ["Autorizar expediente", "Actualizar expediente", "Ejecutar siguiente acción en cola"]) {
       expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
@@ -280,11 +283,29 @@ describe("espacio de investigación factual", () => {
     expect(run).toBeDisabled();
     expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
 
-    await user.click(screen.getByText("Reanudar", { selector: "summary" }));
-    await user.type(screen.getByLabelText(/motivo para reanudar/i), "Revisión terminada");
-    await user.click(screen.getByRole("button", { name: /reanudar expediente/i }));
+    const resumeSummary = screen.getByText("Reanudar", { selector: "summary" });
+    const disclosure = resumeSummary.closest<HTMLDetailsElement>(".workspace-pause-disclosure")!;
+    await user.click(resumeSummary);
+    const resumeReason = within(disclosure).getByLabelText("Motivo para reanudar el expediente");
+    const resume = within(disclosure).getByRole("button", { name: "Reanudar expediente" });
+    expect(within(disclosure).getByText("Motivo para reanudar", { selector: "span" })).toBeVisible();
+    expect(within(disclosure).queryByText(/Pausar impide nuevas reclamaciones/)).not.toBeInTheDocument();
+    expect(resume).toBeDisabled();
+    await user.type(resumeReason, "   ");
+    expect(resume).toBeDisabled();
+    await user.click(resume);
+    expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(0);
+    expect(run).toBeDisabled();
+
+    await user.clear(resumeReason);
+    await user.type(resumeReason, "Revisión terminada");
+    await user.click(resume);
     await waitFor(() => expect(run).toBeEnabled());
-    expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
+    expect(document.querySelector(".workspace-pause-disclosure")).toBeNull();
+    expect(screen.queryByText("Reanudar", { selector: "summary" })).not.toBeInTheDocument();
+    const writes = calls.filter((call) => call.init?.method === "POST");
+    expect(writes.map(pathOf)).toEqual(["/investigations/case-1/resume"]);
+    expect(writes.map(bodyOf)).toEqual([{ reason: "Revisión terminada" }]);
 
     await user.click(run);
     await waitFor(() => expect(calls.filter((call) => pathOf(call).endsWith("/actions/run"))).toHaveLength(1));
@@ -766,22 +787,28 @@ describe("informe con IA", () => {
 });
 
 describe("desplegables del encabezado", () => {
-  it("se cierran al interactuar fuera de ellos o con Escape, sin cerrarse al usarlos", async () => {
-    installFetch(async () => json(snapshot()));
+  it.each([
+    ["Usernames", "Motivo del username"],
+    ["Reanudar", "Motivo para reanudar el expediente"],
+  ])("cierra %s al interactuar fuera o con Escape, sin cerrarlo al usarlo", async (label, reasonLabel) => {
+    installFetch(async () => json(snapshot({ paused: true })));
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
-    await screen.findByRole("heading", { name: "Caso de prueba" });
-    const pause = screen.getByText("Pausar", { selector: "summary" });
-    const controls = pause.closest("details")!;
-    await user.click(pause);
-    expect(controls).toHaveAttribute("open");
-    await user.click(within(controls).getByLabelText("Motivo para pausar el expediente"));
-    expect(controls).toHaveAttribute("open");
-    await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
-    expect(controls).not.toHaveAttribute("open");
+    const heading = await screen.findByRole("heading", { name: "Caso de prueba" });
+    const summary = screen.getByText(label, { selector: "summary" });
+    const disclosure = summary.closest("details")!;
+    await user.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+    const reason = within(disclosure).getByLabelText(reasonLabel);
+    await user.click(reason);
+    expect(disclosure).toHaveAttribute("open");
+    await user.click(heading);
+    expect(disclosure).not.toHaveAttribute("open");
 
-    await user.click(pause);
+    await user.click(summary);
+    await user.click(reason);
     await user.keyboard("{Escape}");
-    expect(controls).not.toHaveAttribute("open");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(summary).toHaveFocus();
   });
 });

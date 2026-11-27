@@ -43,7 +43,7 @@
 .workspace-button--report { padding-inline: 18px; }
 .workspace-button--quiet { min-height: 34px; padding: 6px 10px; font-size: 12px; }
 
-/* The username and pause/resume disclosures open as anchored popovers. */
+/* The username and resume disclosures open as anchored popovers. */
 .workspace-disclosure { position: relative; }
 .workspace-disclosure summary {
   display: inline-flex;
@@ -105,7 +105,6 @@
   font-size: 17px;
 }
 .workspace-header-reason input:focus-visible { border-color: var(--ink); outline: none; box-shadow: inset 3px 0 0 var(--red); }
-.workspace-pause-note { color: var(--muted); font-size: 14px; }
 
 /* ── Notices ─────────────────────────────────────────────── */
 .workspace-alert, .workspace-claimed-warning, .workspace-queue-notice {
