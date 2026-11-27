@@ -5,7 +5,7 @@ import { AsciiArt } from "../components/AsciiArt";
 import { ExecutionQueuePopover } from "../components/ExecutionQueuePopover";
 import { InvestigationGraph } from "../components/InvestigationGraph";
 import { UsernameSeedsPanel } from "../components/UsernameSeedsPanel";
-import { WorkspaceDetails } from "../components/WorkspaceDetails";
+import { WorkspaceDetails, type NormalizationStatus } from "../components/WorkspaceDetails";
 import { FacecheckReview } from "../components/FacecheckReview";
 import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
@@ -146,6 +146,11 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   if (investigation === null || graph === null) return <LoadingWorkspace />;
   const selectedNode: WorkspaceNode | null = findWorkspaceNode(graph, selectedId) ?? graph.nodes[0] ?? null;
   const selectedNodeId = selectedNode?.id ?? null;
+  const selectedEvidenceId = selectedNode?.evidence?.id;
+  const activeNormalization = controller.normalizationJobs.find((job) => job.evidenceId === selectedEvidenceId &&
+    (job.status === "queued" || job.status === "running"));
+  const normalizationStatus: NormalizationStatus = selectedEvidenceId !== undefined && controller.enqueueingNormalizationIds.has(selectedEvidenceId)
+    ? "enqueueing" : activeNormalization?.status === "running" ? "running" : activeNormalization?.status === "queued" ? "queued" : "idle";
   const automatic = investigation.advancementMode === "automatic";
   const queuedActions = investigation.actions.filter((action) => action.status === "queued" && (action.queuedByCatalog === true || action.approval !== undefined));
   const coveredQueue = queuedActions.filter((action) => authorizationCovers(investigation.authorization, action.spec.catalogId));
@@ -176,6 +181,13 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
         ?.scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: reducedMotion ? "auto" : "smooth" });
     }, reducedMotion ? 0 : DRAWER_SETTLE_MS);
   }
+
+  const selectQueueNode = (nodeId: string) => {
+    const node = findWorkspaceNode(graph, nodeId);
+    if (node === undefined) return;
+    selectNode(node);
+    setMobilePanel("detail");
+  };
 
   function closeDetail() {
     setDetailOpen(false);
@@ -283,12 +295,10 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             ghuntConnected={ghuntConnected}
             facecheckConfigured={facecheckConfigured}
             decodoConfigured={decodoConfigured}
-            onSelectAction={(actionId) => {
-              const node = findWorkspaceNode(graph, `action:${actionId}`);
-              if (node === undefined) return;
-              selectNode(node);
-              setMobilePanel("detail");
-            }}
+            normalizationJobs={controller.normalizationJobs}
+            normalizations={controller.normalizations}
+            onSelectAction={(actionId) => selectQueueNode(`action:${actionId}`)}
+            onSelectEvidence={(evidenceId) => selectQueueNode(`evidence:${evidenceId}`)}
           />
         </div>
       </header>
@@ -389,9 +399,10 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             ghuntConnected={ghuntConnected}
             facecheckConfigured={facecheckConfigured}
             decodoConfigured={decodoConfigured}
-            normalization={selectedNode?.evidence ? controller.normalizations[selectedNode.evidence.id] : undefined}
-            normalizing={selectedNode?.evidence !== undefined && controller.normalizingEvidenceId === selectedNode.evidence.id}
-            normalizationError={selectedNode?.evidence ? controller.normalizationErrors[selectedNode.evidence.id] ?? "" : ""}
+            normalization={selectedEvidenceId === undefined ? undefined : controller.normalizations[selectedEvidenceId]}
+            normalizationStatus={normalizationStatus}
+            normalizeDisabled={controller.stale}
+            normalizationError={selectedEvidenceId === undefined ? undefined : controller.normalizationErrors[selectedEvidenceId]}
             onValidate={validate}
             onQueueDecodo={controller.queueDecodo}
             onNormalizeEvidence={controller.normalizeEvidence}

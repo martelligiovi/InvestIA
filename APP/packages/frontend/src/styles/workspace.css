@@ -110,7 +110,6 @@
 /* ── Execution queue ───────────────────────────────────── */
 .workspace-disclosure .workspace-queue-trigger { gap: 6px; padding-inline: 10px; }
 .workspace-disclosure .workspace-queue-trigger::after { content: none; }
-.queue-trigger-progress { color: var(--muted); font-variant-numeric: tabular-nums; }
 .queue-trigger-errors {
   min-width: 18px;
   padding: 0 4px;
@@ -122,15 +121,14 @@
 }
 .queue-ring { flex: none; fill: none; stroke: var(--ink); stroke-width: 1.8; }
 .queue-ring-track { stroke: var(--line-strong); }
+.queue-ring[data-mode="pending"] .queue-ring-track { stroke: var(--muted); stroke-dasharray: 2 2; }
 .queue-ring-sweep {
   stroke-linecap: round;
   transform: rotate(-90deg);
   transform-origin: 50% 50%;
   animation: queue-spin 1.25s linear infinite;
 }
-.queue-ring-sweep--inner { stroke: var(--muted); stroke-width: 1.4; animation-duration: 1.8s; }
 .queue-ring-check { stroke-linecap: round; stroke-linejoin: round; }
-.queue-ring[data-mode="complete_with_errors"] .queue-ring-progress { stroke: var(--red); }
 .queue-ring-alert { fill: var(--danger); stroke: var(--paper); stroke-width: 1; }
 @keyframes queue-spin { to { transform: rotate(270deg); } }
 
@@ -206,21 +204,18 @@
   background: var(--paper);
   overflow-wrap: anywhere;
 }
-.queue-item:hover, .queue-item:focus-within { border-color: var(--ink-soft); background: var(--linen); }
+.queue-item[data-selectable="true"]:is(:hover, :focus-within) { border-color: var(--ink-soft); background: var(--linen); }
 .queue-item[data-kind="failed"] { border-left: 2px solid var(--danger); background: var(--red-wash); }
-.queue-item-button {
+.queue-item-button, .queue-item-static {
   display: grid;
   width: 100%;
   min-height: 44px;
   gap: 2px;
   padding: var(--space-2) var(--space-3);
-  border: 0;
-  border-radius: inherit;
-  background: transparent;
-  cursor: pointer;
   line-height: 1.35;
   text-align: left;
 }
+.queue-item-button { border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
 /* Let the button cover the entire row without putting block content inside it. */
 .queue-item-button::after { position: absolute; inset: 0; border-radius: inherit; content: ""; }
 .queue-item-button:focus-visible { outline-offset: -2px; }

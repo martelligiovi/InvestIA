@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EvidenceRecord, GitHubCatalogAction, Investigation, ValidationDecision } from "@investia/core";
+import type { EvidenceNormalizationJob, EvidenceRecord, GitHubCatalogAction, Investigation, ValidationDecision } from "@investia/core";
 import App from "../src/App";
 import { WorkspacePage } from "../src/pages/WorkspacePage";
 
@@ -172,7 +172,9 @@ describe("espacio de investigación factual", () => {
     for (const name of ["Autorizar expediente", "Actualizar expediente", "Ejecutar siguiente acción en cola"]) {
       expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
     }
-    expect(calls).toHaveLength(1);
+    await waitFor(() => {
+      expect(calls.map(pathOf)).toEqual(["/investigations/case-1", "/investigations/case-1/normalizations"]);
+    });
   });
   it("carga, permite reintentar errores y distingue un expediente inexistente", async () => {
     let attempts = 0;
@@ -235,7 +237,9 @@ describe("espacio de investigación factual", () => {
     await user.click(screen.getByRole("tab", { name: "Detalle" }));
     expect(document.querySelector(".workspace-layout")).toHaveAttribute("data-mobile-panel", "detail");
 
-    expect(calls.map(pathOf)).toEqual(["/investigations/case-1"]);
+    await waitFor(() => {
+      expect(calls.map(pathOf)).toEqual(["/investigations/case-1", "/investigations/case-1/normalizations"]);
+    });
     expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
   });
 
@@ -543,7 +547,9 @@ describe("espacio de investigación factual", () => {
     expect(authorize).toBeEnabled();
     expect(refresh).not.toBeInTheDocument();
     expect(calls.map((call) => `${call.init?.method ?? "GET"} ${pathOf(call)}`)).toEqual([
-      "GET /investigations/case-1", "POST /investigations/case-1/authorization", "GET /investigations/case-1", "GET /investigations/case-1",
+      "GET /investigations/case-1", "GET /investigations/case-1/normalizations",
+      "POST /investigations/case-1/authorization", "GET /investigations/case-1", "GET /investigations/case-1",
+      "GET /investigations/case-1/normalizations",
     ]);
   });
 
@@ -766,7 +772,7 @@ describe("informe con IA", () => {
 });
 
 describe("execution queue popover", () => {
-  it("renders settled progress, orders recorded stages, and opens the selected action detail", async () => {
+  it("shows a spinning ring without percentages, orders recorded stages, and opens action detail", async () => {
     const { calls } = installFetch(async () => json(snapshot({
       authorization: { granted: true, at: createdAt, reason: "Fixture", operator: "local-operator" },
       actions: [
@@ -784,14 +790,17 @@ describe("execution queue popover", () => {
     const ring = summary.querySelector("svg")!;
     expect(ring).toHaveAttribute("width", "22");
     expect(ring).toHaveAttribute("height", "22");
-    expect(ring).toHaveAttribute("data-mode", "progress_active");
-    expect(ring.querySelector("circle[stroke-dashoffset='60']")).toBeInTheDocument();
-    expect(summary).toHaveTextContent("40%");
+    expect(ring).toHaveAttribute("data-mode", "spinning");
+    expect(ring.querySelector(".queue-ring-sweep")).toBeInTheDocument();
+    expect(ring.querySelector(".queue-ring-progress")).not.toBeInTheDocument();
+    expect(ring.querySelector(".queue-ring-alert")).toBeInTheDocument();
+    expect(summary).not.toHaveTextContent("%");
     expect(disclosure).not.toHaveAttribute("open");
 
     await user.click(summary);
     expect(disclosure).toHaveAttribute("open");
     const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    expect(panel).not.toHaveTextContent("%");
     expect(within(panel).getByText("1 en ejecución · 2 en cola · 1 completa · 1 fallida")).toBeInTheDocument();
     expect(within(panel).getByText("Las etapas siguientes se suman al desbloquearse nuevos hallazgos.")).toBeInTheDocument();
 
@@ -831,7 +840,8 @@ describe("execution queue popover", () => {
     const graph = screen.getByRole("group", { name: "Grafo factual de semillas, acciones y observaciones" });
     expect(within(graph).getByRole("button", { name: /^Acción: queued-a\./u })).toHaveAttribute("aria-pressed", "true");
     expect(calls.length).toBeGreaterThan(0);
-    expect(calls.every((call) => pathOf(call) === "/investigations/case-1" && (call.init?.method ?? "GET") === "GET")).toBe(true);
+    expect(calls.every((call) => ["/investigations/case-1", "/investigations/case-1/normalizations"].includes(pathOf(call)) &&
+      (call.init?.method ?? "GET") === "GET")).toBe(true);
 
     // Reopening starts with completed and errors cleanly collapsed again.
     await user.click(summary);
@@ -877,19 +887,24 @@ describe("execution queue popover", () => {
     expect(summary.closest("details")).not.toHaveAttribute("open");
   });
 
-  it("keeps collapsed controls linked, gives failures distinct descriptions, and resets on outside close", async () => {
-    installFetch(async () => json(snapshot({ actions: [
-      { ...action("failed"), id: "failed-a" },
-      { ...action("succeeded"), id: "done" },
-      { ...action("proposed"), id: "waiting" },
-      { ...action("failed"), id: "failed-b" },
-    ] })));
+  it("keeps retry history collapsed with distinct descriptions for attempts of the same action", async () => {
+    const completedRetry = { ...action("claimed"), id: "completed-retry", rerun: { previousStatus: "succeeded" } } as const;
+    const failedRetry = { ...action("claimed"), id: "failed-retry", rerun: { previousStatus: "failed" } } as const;
+    const failed = { ...action("failed"), id: "failed-twice", lastRerunFailed: true,
+      lastRerunFailure: "The replacement returned no confirmed results." } as const;
+    const audit = [
+      { id: "success", actionId: completedRetry.id, actor: "system", at: createdAt, kind: "action_succeeded", reason: "Completed" },
+      { id: "failure", actionId: failedRetry.id, actor: "system", at: createdAt, kind: "action_failed", reason: "Failed" },
+    ] as const;
+    installFetch(async () => json(snapshot({ actions: [completedRetry, failedRetry, failed], audit })));
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
     const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
     await user.click(summary);
     const panel = screen.getByRole("region", { name: "Cola de ejecución" });
-    expect(within(panel).getAllByRole("listitem").map((row) => row.dataset.kind)).toEqual(["waiting"]);
+    const rows = within(panel).getAllByRole("listitem");
+    expect(rows.map((row) => row.dataset.kind)).toEqual(["running", "running"]);
+    for (const row of rows) expect(within(row).getByRole("button", { name: /^Reintento 2 de /u })).toBeVisible();
 
     const toggles = [/Completadas/u, /Errores/u].map((name) => within(panel).getByRole("button", { name }));
     for (const toggle of toggles) {
@@ -901,15 +916,50 @@ describe("execution queue popover", () => {
       expect(summary.closest("details")).toHaveAttribute("open");
       expect(target).toBeVisible();
     }
-    const failures = within(panel).getAllByRole("button", { name: /Falló/u });
-    expect(failures).toHaveLength(2);
-    expect(new Set(failures.map((button) => button.getAttribute("aria-describedby"))).size).toBe(2);
-    for (const button of failures) expect(button).toHaveAccessibleDescription(/La acción no pudo completarse/u);
+    expect(within(panel).getByRole("button", { name: /Completo/u })).toBeVisible();
+    const failures = within(panel).getAllByRole("button", { name: /Falló|Reintento fallido/u });
+    expect(failures).toHaveLength(3);
+    expect(new Set(failures.map((button) => button.getAttribute("aria-describedby"))).size).toBe(3);
+    expect(failures[0]).toHaveAccessibleDescription(/La acción no pudo completarse/u);
+    expect(failures[1]).toHaveAccessibleDescription(/La acción no pudo completarse/u);
+    expect(failures[2]).toHaveAccessibleDescription("La reejecución no devolvió resultados confirmados.");
 
     await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
     expect(summary.closest("details")).not.toHaveAttribute("open");
     await user.click(summary);
     for (const toggle of toggles) expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("opens Decodo evidence from a normalization row and keeps pruned history non-interactive", async () => {
+    const pageSeed = { kind: "url", value: "https://example.test/profile" } as const;
+    const scrape: GitHubCatalogAction = { ...action("succeeded"), id: "scrape",
+      spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: pageSeed } };
+    const page: EvidenceRecord = { ...evidence("page", scrape.id), provider: "Decodo", sourceId: "decodo:url", seed: pageSeed,
+      finding: { target: pageSeed, url: pageSeed.value, upstreamStatus: "Found", category: "Web page", reason: "Fixture", media: {}, extra: {} } };
+    const queued: EvidenceNormalizationJob = { id: "queued", investigationId: "case-1", evidenceId: page.id,
+      attemptNumber: 1, status: "queued", createdAt };
+    const pruned: EvidenceNormalizationJob = { ...queued, id: "pruned", evidenceId: "old-page", status: "failed", errorCode: "EVIDENCE_UNAVAILABLE" };
+    const { calls } = installFetch(async (call) => pathOf(call).endsWith("/normalizations")
+      ? json({ normalizations: [], jobs: [pruned, queued] })
+      : json(snapshot({ actions: [scrape], evidence: [page] })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    await user.click(summary);
+    const panel = within(screen.getByRole("region", { name: "Cola de ejecución" }));
+    const row = await panel.findByRole("button", { name: /Normalización con IA · example\.test.*\/profile/u });
+    expect(summary.querySelector("svg")).toHaveAttribute("data-mode", "pending");
+    await user.click(panel.getByRole("button", { name: /Errores/u }));
+    const prunedRow = panel.getByText("Página reemplazada").closest("li")!;
+    expect(within(prunedRow).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(prunedRow).getByText("La página guardada ya no está disponible para normalizar.")).toBeVisible();
+    await user.click(row);
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("tab", { name: "Detalle" })).toHaveAttribute("aria-selected", "true");
+    const detail = within(screen.getByRole("tabpanel", { name: "Detalle" }));
+    expect(detail.getByRole("heading", { name: "Página recopilada por Decodo" })).toBeVisible();
+    expect(detail.getByRole("button", { name: "En cola para normalizar con IA" })).toBeDisabled();
+    expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
   });
 });
 

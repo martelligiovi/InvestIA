@@ -269,6 +269,7 @@ describe("creación nombrada y recuperación", () => {
       if (path === "/investigations") return json(investigation());
       if (path.endsWith("/authorization")) return json(authorizedInvestigation());
       if (path === "/investigations/case-1" || path.endsWith("/emails")) return json(authorizedInvestigation(["uno@example.test", "dos+prueba@example.test"]));
+      if (path === "/investigations/case-1/normalizations" && (call.init?.method ?? "GET") === "GET") return json({ normalizations: [], jobs: [] });
       throw new Error(`Unexpected request ${path}`);
     });
     routeTo("#/nueva");
@@ -285,18 +286,22 @@ describe("creación nombrada y recuperación", () => {
     await user.click(screen.getByRole("button", { name: /crear investigación/i }));
 
     await screen.findByRole("heading", { name: "Cuaderno de otoño" });
-    expect(callsData.map(({ path }) => path)).toEqual([
-      "/investigations",
-      "/investigations/case-1/authorization",
-      "/investigations/case-1/emails",
-      "/investigations/case-1/emails",
-      "/investigations/case-1",
-    ]);
+    await waitFor(() => {
+      expect(callsData.map(({ path }) => path)).toEqual([
+        "/investigations",
+        "/investigations/case-1/authorization",
+        "/investigations/case-1/emails",
+        "/investigations/case-1/emails",
+        "/investigations/case-1",
+        "/investigations/case-1/normalizations",
+      ]);
+    });
     expect(callsData.map(({ body }) => body)).toEqual([
       { name: boundedUnicodeName, intention: "Verificar registro", advancementMode: "automatic" },
       { granted: true, reason: expect.stringContaining("semillas actuales y futuras") },
       { email: "uno@example.test", reason: expect.any(String) },
       { email: "dos+prueba@example.test", reason: expect.any(String) },
+      undefined,
       undefined,
     ]);
     expect(callsData.every(({ path }) => !/proposals|actions\/run/u.test(path))).toBe(true);

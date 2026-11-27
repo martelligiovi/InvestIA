@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { latestValidationStatus, type EvidenceAiNormalization, type Investigation } from "@investia/core";
+import { isValidNormalizationJobErrorCode, latestValidationStatus, type EvidenceAiNormalization,
+  type EvidenceNormalizationJob, type Investigation, type NormalizationJobErrorCode } from "@investia/core";
 import { ApiError, InvestigationApiClient } from "../api/client";
 import { actionDisplayState } from "./workspace-status";
 
@@ -24,7 +25,8 @@ export interface WorkspaceController {
   readonly reportError: string;
   readonly reportLoading: boolean;
   readonly normalizations: Readonly<Record<string, EvidenceAiNormalization>>;
-  readonly normalizingEvidenceId: string | null;
+  readonly normalizationJobs: readonly EvidenceNormalizationJob[];
+  readonly enqueueingNormalizationIds: ReadonlySet<string>;
   readonly normalizationErrors: Readonly<Record<string, string>>;
   readonly refresh: () => Promise<boolean>;
   readonly retryLoad: () => Promise<void>;
@@ -35,7 +37,7 @@ export interface WorkspaceController {
   readonly loadAiReport: () => Promise<void>;
 }
 
-const AI_REPORT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+const AI_REPORT_ERROR_MESSAGES = {
   AI_NOT_CONFIGURED: "Falta la API key de NVIDIA Build. Cargala en Ajustes de IA.",
   AI_PROVIDER_UNAUTHORIZED: "NVIDIA Build rechazó la API key. Revisala en Ajustes de IA.",
   AI_PROVIDER_RATE_LIMITED: "NVIDIA Build alcanzó el límite de uso gratuito. Probá de nuevo más tarde.",
@@ -45,12 +47,24 @@ const AI_REPORT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   AI_PROVIDER_TRUNCATED: "El modelo agotó el máximo de tokens antes de escribir el informe. Subí el máximo de tokens o bajá el esfuerzo de razonamiento en Ajustes de IA.",
 };
 
-const AI_NORMALIZATION_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+const AI_NORMALIZATION_ERROR_MESSAGES: Readonly<Record<NormalizationJobErrorCode, string>> = {
   ...AI_REPORT_ERROR_MESSAGES,
   AI_PROVIDER_UNAVAILABLE: "NVIDIA Build no respondió o no devolvió una normalización. Probá de nuevo.",
   AI_PROVIDER_TRUNCATED: "El modelo agotó el máximo de tokens antes de completar la normalización. Subí el máximo de tokens o bajá el esfuerzo de razonamiento en Ajustes de IA.",
   AI_PROVIDER_INVALID_RESPONSE: "NVIDIA Build devolvió una respuesta que no es JSON válido. Probá otro modelo o intentá de nuevo.",
+  EVIDENCE_UNAVAILABLE: "La página guardada ya no está disponible para normalizar.",
+  JOB_INTERRUPTED: "La normalización se interrumpió al reiniciarse el servicio. Podés volver a intentarlo.",
+  INTERNAL_ERROR: "Ocurrió un error interno al normalizar la página. Probá de nuevo.",
 };
+
+export function explainNormalizationError(code: string | undefined): string {
+  return isValidNormalizationJobErrorCode(code) ? AI_NORMALIZATION_ERROR_MESSAGES[code]
+    : "No se pudo normalizar la página con IA. Probá de nuevo.";
+}
+
+function isActiveNormalizationJob(job: EvidenceNormalizationJob): boolean {
+  return job.status === "queued" || job.status === "running";
+}
 
 function messageFor(error: unknown): string {
   if (error instanceof Error && error.message.trim() !== "") return error.message;
@@ -63,13 +77,22 @@ function isNotFound(error: unknown): boolean {
 
 function reportErrorFor(kind: ReportKind, error: unknown): string {
   if (kind === "factual") return `No se pudo obtener el informe: ${messageFor(error)}`;
-  const known = error instanceof ApiError ? AI_REPORT_ERROR_MESSAGES[error.code] : undefined;
+  const messages: Readonly<Record<string, string>> = AI_REPORT_ERROR_MESSAGES;
+  const known = error instanceof ApiError ? messages[error.code] : undefined;
   return known ?? `No se pudo generar el informe con IA: ${messageFor(error)}`;
 }
 
 function normalizationErrorFor(error: unknown): string {
-  const known = error instanceof ApiError ? AI_NORMALIZATION_ERROR_MESSAGES[error.code] : undefined;
-  return known ?? `No se pudo normalizar la página con IA: ${messageFor(error)}`;
+  if (error instanceof ApiError) {
+    if (isValidNormalizationJobErrorCode(error.code)) return explainNormalizationError(error.code);
+    switch (error.code) {
+      case "NOT_FOUND":
+      case "CONFLICT": return explainNormalizationError("EVIDENCE_UNAVAILABLE");
+      case "FORBIDDEN": return "La normalización solo se puede encolar desde la página local de InvestIA.";
+      case "NORMALIZATION_QUEUE_UNAVAILABLE": return "La cola de normalización no está disponible. Probá de nuevo más tarde.";
+    }
+  }
+  return "No se pudo encolar la normalización con IA. Probá de nuevo.";
 }
 
 function useTokenConfigured(enabled: boolean, read: () => Promise<{ readonly tokenConfigured: boolean }>): boolean | null {
@@ -108,8 +131,13 @@ export function useWorkspaceController(id: string): WorkspaceController {
   const [reportError, setReportError] = useState("");
   const [reportLoading, setReportLoading] = useState(false);
   const [normalizations, setNormalizations] = useState<Readonly<Record<string, EvidenceAiNormalization>>>({});
-  const [normalizingEvidenceId, setNormalizingEvidenceId] = useState<string | null>(null);
-  const [normalizationErrors, setNormalizationErrors] = useState<Readonly<Record<string, string>>>({});
+  const [normalizationJobs, setNormalizationJobs] = useState<readonly EvidenceNormalizationJob[]>([]);
+  const [enqueueingNormalizationIds, setEnqueueingNormalizationIds] = useState<ReadonlySet<string>>(new Set());
+  const [enqueueErrors, setEnqueueErrors] = useState<Readonly<Record<string, string>>>({});
+  const normalizationJobsRef = useRef<readonly EvidenceNormalizationJob[]>([]);
+  const enqueueingNormalizationIdsRef = useRef(enqueueingNormalizationIds);
+  const normalizationSeqRef = useRef(0);
+  const normalizationPollRef = useRef<symbol | null>(null);
   const lock = useRef(false);
   const currentId = useRef(id);
   const generation = useRef(0);
@@ -125,6 +153,16 @@ export function useWorkspaceController(id: string): WorkspaceController {
   const isCurrent = useCallback((targetId: string, targetGeneration: number): boolean => (
     mounted.current && currentId.current === targetId && generation.current === targetGeneration
   ), []);
+
+  const publishNormalizationJobs = useCallback((jobs: readonly EvidenceNormalizationJob[]) => {
+    normalizationJobsRef.current = jobs;
+    setNormalizationJobs(jobs);
+  }, []);
+
+  const publishEnqueueingIds = useCallback((ids: ReadonlySet<string>) => {
+    enqueueingNormalizationIdsRef.current = ids;
+    setEnqueueingNormalizationIds(ids);
+  }, []);
 
   const readLatest = useCallback(async (targetGeneration: number): Promise<Investigation> => {
     const result = await api.getInvestigation(id);
@@ -161,9 +199,12 @@ export function useWorkspaceController(id: string): WorkspaceController {
     setReportError("");
     setReportLoading(false);
     setReportLoadingKind(null);
+    normalizationSeqRef.current += 1;
+    normalizationPollRef.current = null;
     setNormalizations({});
-    setNormalizingEvidenceId(null);
-    setNormalizationErrors({});
+    publishNormalizationJobs([]);
+    publishEnqueueingIds(new Set());
+    setEnqueueErrors({});
     void readLatest(activeGeneration).catch((error: unknown) => {
       if (!isCurrent(id, activeGeneration)) return;
       if (isNotFound(error)) {
@@ -179,7 +220,7 @@ export function useWorkspaceController(id: string): WorkspaceController {
     return () => {
       if (generation.current === activeGeneration) generation.current += 1;
     };
-  }, [id, isCurrent, readLatest]);
+  }, [id, isCurrent, publishEnqueueingIds, publishNormalizationJobs, readLatest]);
 
   const takeLock = useCallback((targetGeneration: number): boolean => {
     if (!isCurrent(id, targetGeneration) || lock.current) return false;
@@ -311,31 +352,44 @@ export function useWorkspaceController(id: string): WorkspaceController {
 
   const normalizeEvidence = useCallback(async (evidenceId: string): Promise<boolean> => {
     const activeGeneration = generation.current;
-    if (investigationId !== id || stale || !takeLock(activeGeneration)) return false;
-    setNormalizationErrors((previous) => {
-      if (!(evidenceId in previous)) return previous;
+    if (investigationId !== id || stale || !isCurrent(id, activeGeneration) ||
+      enqueueingNormalizationIdsRef.current.has(evidenceId) ||
+      normalizationJobsRef.current.some((job) => job.evidenceId === evidenceId && isActiveNormalizationJob(job))) return false;
+
+    publishEnqueueingIds(new Set([...enqueueingNormalizationIdsRef.current, evidenceId]));
+    setEnqueueErrors((previous) => {
+      if (!Object.hasOwn(previous, evidenceId)) return previous;
       const { [evidenceId]: _cleared, ...rest } = previous;
       return rest;
     });
-    setNormalizingEvidenceId(evidenceId);
     try {
-      const result = await api.normalizeEvidence(id, evidenceId);
+      const { job } = await api.queueEvidenceNormalization(id, evidenceId);
       if (!isCurrent(id, activeGeneration)) return false;
-      setNormalizations((previous) => ({ ...previous, [result.evidenceId]: result }));
+      // Reads started before the enqueue was acknowledged may not contain the new job.
+      normalizationSeqRef.current += 1;
+      const jobs = normalizationJobsRef.current;
+      const known = jobs.find((entry) => entry.id === job.id);
+      if (known === undefined) {
+        // Concurrent POSTs can resolve out of order. Match the server's FIFO order.
+        publishNormalizationJobs([...jobs, job].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)));
+      } else if (known.status === "queued" || (known.status === "running" && job.status !== "queued")) {
+        // A poll can observe a newer state while the POST response is still in flight.
+        publishNormalizationJobs(jobs.map((entry) => entry.id === job.id ? job : entry));
+      }
       return true;
     } catch (error) {
       if (isCurrent(id, activeGeneration)) {
-        const message = normalizationErrorFor(error);
-        setNormalizationErrors((previous) => ({ ...previous, [evidenceId]: message }));
+        setEnqueueErrors((previous) => ({ ...previous, [evidenceId]: normalizationErrorFor(error) }));
       }
       return false;
     } finally {
       if (isCurrent(id, activeGeneration)) {
-        setNormalizingEvidenceId(null);
+        const next = new Set(enqueueingNormalizationIdsRef.current);
+        next.delete(evidenceId);
+        publishEnqueueingIds(next);
       }
-      releaseLock(activeGeneration);
     }
-  }, [api, id, investigationId, isCurrent, releaseLock, stale, takeLock]);
+  }, [api, id, investigationId, isCurrent, publishEnqueueingIds, publishNormalizationJobs, stale]);
 
   const fetchReport = useCallback(async (kind: ReportKind) => {
     const activeGeneration = generation.current;
@@ -380,27 +434,55 @@ export function useWorkspaceController(id: string): WorkspaceController {
       .join("\0");
   }, [visibleInvestigation]);
 
+  const loadNormalizationState = useCallback(async (targetGeneration: number, isActive: () => boolean) => {
+    const sequence = ++normalizationSeqRef.current;
+    try {
+      const { normalizations: items, jobs } = await api.getNormalizationState(id);
+      if (!isActive() || !isCurrent(id, targetGeneration) || sequence !== normalizationSeqRef.current) return;
+      setNormalizations(Object.fromEntries(items.map((item) => [item.evidenceId, item])));
+      publishNormalizationJobs(jobs);
+    } catch {
+      // A transient read failure does not block the factual workspace or clear the last known state.
+    }
+  }, [api, id, isCurrent, publishNormalizationJobs]);
+
+  const visibleRevision = visibleInvestigation?.revision;
   useEffect(() => {
-    if (decodoEvidenceKey === "") return;
+    if (visibleRevision === undefined || phase !== "ready") return;
     let active = true;
-    const activeGeneration = generation.current;
-    void api.getNormalizations(id).then(
-      (items) => {
-        if (!active || !isCurrent(id, activeGeneration)) return;
-        setNormalizations((previous) => {
-          const next: Record<string, EvidenceAiNormalization> = { ...previous };
-          for (const item of items) {
-            next[item.evidenceId] = item;
-          }
-          return next;
-        });
-      },
-      () => {
-        // Leave normalizations empty if unstubbed or transiently unreachable so factual view stays usable.
-      },
-    );
+    void loadNormalizationState(generation.current, () => active);
     return () => { active = false; };
-  }, [api, decodoEvidenceKey, id, isCurrent]);
+  }, [decodoEvidenceKey, loadNormalizationState, phase, visibleRevision]);
+
+  const hasActiveNormalization = normalizationJobs.some(isActiveNormalizationJob);
+  useEffect(() => {
+    if (visibleRevision === undefined || !hasActiveNormalization || stale || phase !== "ready") return;
+    const activeGeneration = generation.current;
+    let active = true;
+    const timer = window.setInterval(() => {
+      if (normalizationPollRef.current !== null || !isCurrent(id, activeGeneration)) return;
+      const poll = Symbol();
+      normalizationPollRef.current = poll;
+      void loadNormalizationState(activeGeneration, () => active).finally(() => {
+        if (normalizationPollRef.current === poll) normalizationPollRef.current = null;
+      });
+    }, 1_500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [hasActiveNormalization, id, isCurrent, loadNormalizationState, phase, stale, visibleRevision]);
+
+  const normalizationErrors = useMemo(() => {
+    const latestJobs = new Map<string, EvidenceNormalizationJob>();
+    for (const job of normalizationJobs) {
+      const latest = latestJobs.get(job.evidenceId);
+      if (latest === undefined || job.attemptNumber >= latest.attemptNumber) latestJobs.set(job.evidenceId, job);
+    }
+    const jobErrors = Object.fromEntries([...latestJobs.values()].flatMap((job) => job.status === "failed"
+      ? [[job.evidenceId, explainNormalizationError(job.errorCode)] as const] : []));
+    return { ...jobErrors, ...enqueueErrors };
+  }, [enqueueErrors, normalizationJobs]);
 
   const hasQueuedFacecheck = visibleInvestigation?.actions.some((action) => action.status === "queued" && action.spec.catalogId === "facecheck.photo.v1") === true;
   const hasQueuedDecodo = visibleInvestigation?.actions.some((action) => action.status === "queued" && action.spec.catalogId === "decodo.url.v1") === true;
@@ -447,7 +529,8 @@ export function useWorkspaceController(id: string): WorkspaceController {
     reportError,
     reportLoading,
     normalizations: investigationId === id ? normalizations : {},
-    normalizingEvidenceId: investigationId === id ? normalizingEvidenceId : null,
+    normalizationJobs: investigationId === id ? normalizationJobs : [],
+    enqueueingNormalizationIds: investigationId === id ? enqueueingNormalizationIds : new Set<string>(),
     normalizationErrors: investigationId === id ? normalizationErrors : {},
     refresh,
     retryLoad,

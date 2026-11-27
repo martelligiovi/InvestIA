@@ -1,4 +1,6 @@
-import { findingSeedNodeId, gravatarFindingTargetsEmail, type GitHubCatalogAction, type Investigation } from "@investia/core";
+import { findingSeedNodeId, gravatarFindingTargetsEmail, type EvidenceAiNormalization, type EvidenceNormalizationJob,
+  type EvidenceRecord, type GitHubCatalogAction, type Investigation } from "@investia/core";
+import { explainNormalizationError } from "./useWorkspaceController";
 import { actionTitle } from "./workspace-model";
 import { actionDisplayState, workspaceStatusLabel } from "./workspace-status";
 
@@ -9,17 +11,24 @@ export type QueueAction = GitHubCatalogAction & {
 };
 
 type QueueProvenanceAction = QueueAction & { readonly sourceActionId?: string };
+type QueueAuditEvent = Investigation["audit"][number] & { readonly failure?: string };
 type QueueItemKind = "running" | "queued" | "waiting" | "completed" | "failed";
-type RingMode = "empty" | "spinning" | "progress_active" | "progress" | "complete_with_errors" | "complete";
+type RingMode = "empty" | "spinning" | "pending" | "complete_with_errors" | "complete";
 
 export interface ExecutionQueueOptions {
   readonly ghuntConnected: boolean | null;
   readonly facecheckConfigured: boolean | null;
   readonly decodoConfigured: boolean | null;
+  readonly normalizationJobs?: readonly EvidenceNormalizationJob[];
+  readonly normalizations?: Readonly<Record<string, EvidenceAiNormalization>>;
 }
 
 interface QueueItem {
-  readonly actionId: string;
+  readonly id: string;
+  readonly targetKind: "action" | "evidence";
+  readonly targetId: string;
+  readonly selectable: boolean;
+  readonly attemptNumber: number;
   readonly title: string;
   readonly target: string;
   readonly kind: QueueItemKind;
@@ -31,10 +40,15 @@ interface ExecutionQueue {
   readonly items: readonly QueueItem[];
   readonly counts: Readonly<Record<QueueItemKind, number>>;
   readonly total: number;
-  readonly settled: number;
-  readonly percent: number | null;
   readonly ringMode: RingMode;
 }
+
+type QueueGroups = Record<QueueItemKind, QueueItem[]>;
+type QueueItemDescription = Pick<QueueItem, "title" | "target">;
+
+const TERMINAL_AUDIT_KINDS = new Set<string>(["action_succeeded", "action_rerun_succeeded", "action_failed"]);
+const RERUN_UNCONFIRMED = "The replacement returned no confirmed results.";
+const RERUN_CONFLICT = "Prior results changed during execution; the replacement was not applied.";
 
 const FAILURE_EXPLANATIONS = new Map<string, string>([
   ["A valid public HTTP URL seed is required", "Decodo necesita una URL pública y válida para consultar la página."],
@@ -56,8 +70,8 @@ const FAILURE_EXPLANATIONS = new Map<string, string>([
   ["Unexpected Decodo response (missing results)", "La respuesta de Decodo no incluía resultados."],
   ["Unexpected Decodo response (missing status)", "Decodo no informó el estado de la consulta."],
   ["Unexpected Decodo response (missing text content)", "La respuesta de Decodo no incluía el texto de la página."],
-  ["The replacement returned no confirmed results.", "La reejecución no devolvió resultados confirmados."],
-  ["Prior results changed during execution; the replacement was not applied.", "Los resultados anteriores cambiaron durante la reejecución y no se reemplazaron."],
+  [RERUN_UNCONFIRMED, "La reejecución no devolvió resultados confirmados."],
+  [RERUN_CONFLICT, "Los resultados anteriores cambiaron durante la reejecución y no se reemplazaron."],
 ]);
 
 export function explainActionFailure(rawFailure: string | undefined, catalogId?: string): string {
@@ -133,7 +147,7 @@ function waitingReason(investigation: Investigation, action: QueueAction, option
   return null;
 }
 
-function describeAction(action: QueueAction): Pick<QueueItem, "title" | "target"> {
+function describeAction(action: QueueAction): QueueItemDescription {
   const { catalogId, seed } = action.spec;
   switch (catalogId) {
     case "user-scanner.email.v1": return { title: "Escaneo de correo · user-scanner", target: seed.value };
@@ -153,40 +167,152 @@ function describeAction(action: QueueAction): Pick<QueueItem, "title" | "target"
   }
 }
 
-export function buildExecutionQueue(investigation: Investigation, options: ExecutionQueueOptions): ExecutionQueue {
+function formatAttemptTitle(baseTitle: string, attemptNumber: number): string {
+  return attemptNumber <= 1 ? baseTitle : `Reintento ${attemptNumber} de ${baseTitle}`;
+}
+
+function completedLabel(attemptNumber: number): string {
+  return attemptNumber === 1 ? "Completo" : `Completo · intento ${attemptNumber}`;
+}
+
+function failedLabel(attemptNumber: number): string {
+  return attemptNumber === 1 ? "Falló" : "Reintento fallido";
+}
+
+function queuedLabel(position: number): string {
+  return position === 1 ? "Siguiente" : `En cola · #${position}`;
+}
+
+function terminalEventsByAction(audit: readonly QueueAuditEvent[]): ReadonlyMap<string, readonly QueueAuditEvent[]> {
+  const eventsByAction = new Map<string, QueueAuditEvent[]>();
+  for (const event of audit) {
+    if (event.actionId === undefined || !TERMINAL_AUDIT_KINDS.has(event.kind)) continue;
+    const events = eventsByAction.get(event.actionId);
+    if (events === undefined) eventsByAction.set(event.actionId, [event]);
+    else events.push(event);
+  }
+  return eventsByAction;
+}
+
+function appendActionAttempts(groups: QueueGroups, investigation: Investigation, options: ExecutionQueueOptions): void {
   const actions: readonly QueueProvenanceAction[] = investigation.actions;
   const blocked = pendingRerunDescendants(actions, investigation.evidence);
-  const groups: Record<QueueItemKind, QueueItem[]> = { running: [], queued: [], waiting: [], completed: [], failed: [] };
+  const eventsByAction = terminalEventsByAction(investigation.audit);
   for (const action of actions) {
-    const item = { actionId: action.id, ...describeAction(action) };
+    const base = describeAction(action);
+    const itemFor = (attemptNumber: number) => ({
+      id: `action:${action.id}:attempt:${attemptNumber}`, targetKind: "action" as const, targetId: action.id,
+      selectable: true, attemptNumber, title: formatAttemptTitle(base.title, attemptNumber), target: base.target,
+    });
+    const addTerminal = (attemptNumber: number, status: "succeeded" | "failed", failure?: string) => {
+      const item = itemFor(attemptNumber);
+      if (status === "succeeded") groups.completed.push({ ...item, kind: "completed", label: completedLabel(attemptNumber) });
+      else groups.failed.push({ ...item, kind: "failed", label: failedLabel(attemptNumber),
+        failureExplanation: explainActionFailure(failure, action.spec.catalogId) });
+    };
+    const events = eventsByAction.get(action.id) ?? [];
+    let nextAttempt = events.length + 1;
+    if (events.length > 0) {
+      let lastFailedIndex = events.length - 1;
+      for (; lastFailedIndex >= 0; lastFailedIndex -= 1) {
+        if (events[lastFailedIndex]?.kind === "action_failed") break;
+      }
+      events.forEach((event, index) => {
+        const attempt = index + 1;
+        if (event.kind !== "action_failed") {
+          addTerminal(attempt, "succeeded");
+          return;
+        }
+        const failure = event.failure
+          ?? (attempt === 1 && (action.status === "failed" || action.rerun?.previousStatus === "failed") ? action.failure : undefined)
+          ?? (index === lastFailedIndex && action.lastRerunFailed ? action.lastRerunFailure : undefined)
+          ?? (event.reason === RERUN_CONFLICT || event.reason === RERUN_UNCONFIRMED ? event.reason : undefined);
+        addTerminal(attempt, "failed", failure);
+      });
+    } else if (action.status === "succeeded" || action.status === "failed") {
+      addTerminal(1, action.status, action.failure);
+      if (action.lastRerunFailed) addTerminal(2, "failed", action.lastRerunFailure);
+    } else if (action.rerun !== undefined) {
+      addTerminal(1, action.rerun.previousStatus, action.failure);
+      nextAttempt = 2;
+    }
+
+    const item = itemFor(nextAttempt);
     if (action.status === "claimed") {
-      groups.running.push({ ...item, kind: "running", label: action.rerun === undefined ? "En ejecución" : "Reejecutando" });
+      groups.running.push({ ...item, kind: "running", label: nextAttempt === 1 ? "En ejecución" : "Reejecutando" });
     } else if (action.status === "queued" || action.status === "proposed") {
       const reason = waitingReason(investigation, action, options, blocked.has(action.id));
       if (reason !== null) groups.waiting.push({ ...item, kind: "waiting", label: reason });
-      else {
-        const position = groups.queued.length + 1;
-        groups.queued.push({ ...item, kind: "queued", label: position === 1 ? "Siguiente" : `En cola · #${position}` });
-      }
-    } else if (action.status === "failed" || action.lastRerunFailed === true) {
-      const failure = action.lastRerunFailed === true ? action.lastRerunFailure ?? action.failure : action.failure;
-      groups.failed.push({ ...item, kind: "failed",
-        label: action.status === "failed" ? "Falló" : "Reejecución fallida · se conservó el resultado anterior",
-        failureExplanation: explainActionFailure(failure, action.spec.catalogId) });
-    } else {
-      groups.completed.push({ ...item, kind: "completed", label: "Completo" });
+      else groups.queued.push({ ...item, kind: "queued", label: queuedLabel(groups.queued.length + 1) });
     }
   }
+}
 
+function describeNormalization(evidence: (EvidenceRecord & { readonly metadata?: { readonly pageUrl?: string } }) | undefined): QueueItemDescription {
+  const title = "Normalización con IA";
+  if (evidence === undefined) return { title, target: "Página reemplazada" };
+  for (const value of [evidence.finding?.target.value, evidence.metadata?.pageUrl]) {
+    if (value === undefined) continue;
+    try {
+      const url = new URL(value);
+      if (url.protocol === "https:" || url.protocol === "http:") return { title: `${title} · ${url.host}`, target: url.pathname };
+    } catch { /* Try the other URL before displaying a generic label. */ }
+  }
+  return { title, target: "Página de Decodo" };
+}
+
+function appendNormalizationAttempts(groups: QueueGroups, investigation: Investigation, options: ExecutionQueueOptions): void {
+  const evidenceById = new Map(investigation.evidence.map((evidence) => [evidence.id, evidence]));
+  const jobs = options.normalizationJobs ?? [];
+  const recordedFirstAttempts = new Set(jobs.filter((job) => job.attemptNumber === 1).map((job) => job.evidenceId));
+  const legacyCompletedIds = new Set<string>(Object.values(options.normalizations ?? {}).map(({ evidenceId }) => evidenceId));
+  for (const job of jobs) {
+    if (job.attemptNumber > 1 && !recordedFirstAttempts.has(job.evidenceId)) legacyCompletedIds.add(job.evidenceId);
+  }
+  const itemFor = (id: string, targetId: string, attemptNumber: number) => {
+    const evidence = evidenceById.get(targetId);
+    const { title, target } = describeNormalization(evidence);
+    return { id, targetId, targetKind: "evidence" as const, selectable: evidence !== undefined, attemptNumber,
+      title: formatAttemptTitle(title, attemptNumber), target };
+  };
+  for (const evidenceId of legacyCompletedIds) {
+    if (recordedFirstAttempts.has(evidenceId)) continue;
+    const item = itemFor(`norm-legacy:${evidenceId}:attempt:1`, evidenceId, 1);
+    groups.completed.push({ ...item, kind: "completed", label: completedLabel(1) });
+  }
+
+  let queuePosition = 0;
+  for (const job of jobs) {
+    const { evidenceId, attemptNumber } = job;
+    const item = itemFor(`norm:${job.id}`, evidenceId, attemptNumber);
+    switch (job.status) {
+      case "running":
+        groups.running.push({ ...item, kind: "running", label: attemptNumber === 1 ? "En ejecución" : "Reintentando" });
+        break;
+      case "queued":
+        groups.queued.push({ ...item, kind: "queued", label: queuedLabel(++queuePosition) });
+        break;
+      case "succeeded":
+        groups.completed.push({ ...item, kind: "completed", label: completedLabel(attemptNumber) });
+        break;
+      case "failed":
+        groups.failed.push({ ...item, kind: "failed", label: failedLabel(attemptNumber), failureExplanation: explainNormalizationError(job.errorCode) });
+        break;
+    }
+  }
+}
+
+export function buildExecutionQueue(investigation: Investigation, options: ExecutionQueueOptions): ExecutionQueue {
+  const groups: QueueGroups = { running: [], queued: [], waiting: [], completed: [], failed: [] };
+  appendActionAttempts(groups, investigation, options);
+  appendNormalizationAttempts(groups, investigation, options);
   const items = [...groups.running, ...groups.queued, ...groups.waiting, ...groups.completed, ...groups.failed];
   const counts = { running: groups.running.length, queued: groups.queued.length, waiting: groups.waiting.length,
     completed: groups.completed.length, failed: groups.failed.length };
   const total = items.length;
-  const settled = counts.completed + counts.failed;
-  const percent = total === 0 ? null : settled === total ? 100 : Math.min(99, Math.round(settled / total * 100));
   const ringMode: RingMode = total === 0 ? "empty"
-    : settled === total ? (counts.failed > 0 ? "complete_with_errors" : "complete")
-    : counts.running === 0 ? "progress"
-    : settled === 0 ? "spinning" : "progress_active";
-  return { items, counts, total, settled, percent, ringMode };
+    : counts.running > 0 ? "spinning"
+    : counts.queued > 0 || counts.waiting > 0 ? "pending"
+    : counts.failed > 0 ? "complete_with_errors" : "complete";
+  return { items, counts, total, ringMode };
 }

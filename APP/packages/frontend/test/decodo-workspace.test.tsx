@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { findingSeedNodeId, type EvidenceAiNormalization, type EvidenceRecord, type GitHubCatalogAction, type Investigation, type ValidationDecision } from "@investia/core";
+import { findingSeedNodeId, type EvidenceAiNormalization, type EvidenceNormalizationJob, type EvidenceRecord, type GitHubCatalogAction, type Investigation, type ValidationDecision } from "@investia/core";
 import { WorkspaceDetails } from "../src/components/WorkspaceDetails";
 import { buildWorkspaceGraph } from "../src/pages/workspace-model";
 import { WorkspacePage } from "../src/pages/WorkspacePage";
@@ -361,14 +361,15 @@ it.each([
   expect(screen.queryByLabelText("Motivo de autorización")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /Ejecutar siguiente/ })).not.toBeInTheDocument();
   await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-  expect(calls).toEqual(["GET /investigations/case", "GET /settings/decodo"]);
+  expect(calls).toEqual(["GET /investigations/case", "GET /investigations/case/normalizations", "GET /settings/decodo"]);
   expect(current.revision).toBe(1);
   await act(async () => { fireEvent.click(authorize); });
   expect(authorize).toBeDisabled();
   await act(async () => { releaseGrant(); });
   expect(authorize).not.toBeInTheDocument();
   await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-  expect(calls.slice(2)).toEqual(["POST /investigations/case/authorization", "GET /investigations/case", "GET /investigations/case"]);
+  expect(calls.slice(3)).toEqual(["POST /investigations/case/authorization", "GET /investigations/case",
+    "GET /investigations/case/normalizations", "GET /investigations/case"]);
 });
 
 it("polls Decodo under a pre-Decodo scoped grant once the token is confirmed, without renewal or browser dispatch", async () => {
@@ -446,26 +447,40 @@ const normalizedPageFixture: EvidenceAiNormalization = {
   },
 };
 
-it("normalizes a Decodo page on demand via POST without altering raw page evidence", async () => {
+const queuedPageJob: EvidenceNormalizationJob = {
+  id: "job-1", investigationId: "case", evidenceId: page.id, attemptNumber: 1, status: "queued", createdAt: at,
+};
+
+it("queues a Decodo page and polls until its normalization completes without altering raw evidence", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("CSS", { escape: (value: string) => value.replaceAll(":", "\\:") });
   const calls: string[] = [];
   let releaseNormalize!: (response: Response) => void;
   const pendingNormalize = new Promise<Response>((resolve) => { releaseNormalize = resolve; });
+  let releasePoll!: (response: Response) => void;
+  const pendingPoll = new Promise<Response>((resolve) => { releasePoll = resolve; });
+  let reads = 0;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     const request = `${init?.method ?? "GET"} ${path}`;
     calls.push(request);
     if (init?.method === undefined && path === "/investigations/case") return json(withPage());
     if (init?.method === undefined && path === "/settings/decodo") return decodoStatus(true);
-    if (init?.method === undefined && path === "/investigations/case/normalizations") return json({ normalizations: [] });
-    if (init?.method === "POST" && path === "/investigations/case/evidence/page/normalize") {
+    if (init?.method === undefined && path === "/investigations/case/normalizations") {
+      reads += 1;
+      if (reads === 1) return json({ normalizations: [], jobs: [] });
+      if (reads === 2) return pendingPoll;
+      return json({ normalizations: [normalizedPageFixture], jobs: [{ ...queuedPageJob, status: "succeeded" }] });
+    }
+    if (init?.method === "POST" && path === "/investigations/case/evidence/page/normalize/queue") {
       expect(init.body).toBeUndefined();
       return pendingNormalize;
     }
     throw new Error(`Unexpected request: ${request}`);
   }));
 
-  render(<WorkspacePage id="case" />);
-  const graph = await screen.findByRole("group", { name: /grafo factual/i });
+  await act(async () => { render(<WorkspacePage id="case" />); });
+  const graph = screen.getByRole("group", { name: /grafo factual/i });
   fireEvent.click(within(graph).getByRole("button", { name: /Evidencia: page\. Decodo/ }));
 
   const detail = screen.getByRole("complementary");
@@ -479,11 +494,20 @@ it("normalizes a Decodo page on demand via POST without altering raw page eviden
   expect(aiSection.queryByLabelText("JSON normalizado por IA")).not.toBeInTheDocument();
 
   await act(async () => { fireEvent.click(normalizeBtn); });
-  expect(aiSection.getByRole("button", { name: "Normalizando con IA…" })).toBeDisabled();
-  expect(calls).toContain("POST /investigations/case/evidence/page/normalize");
+  expect(aiSection.getByRole("button", { name: "Encolando normalización…" })).toBeDisabled();
+  expect(calls.filter((call) => call.startsWith("POST "))).toEqual(["POST /investigations/case/evidence/page/normalize/queue"]);
 
-  await act(async () => { releaseNormalize(json(normalizedPageFixture)); });
+  await act(async () => { releaseNormalize(json({ job: queuedPageJob, created: true }, 202)); });
+  expect(aiSection.getByRole("button", { name: "En cola para normalizar con IA" })).toBeDisabled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(4_500); });
+  expect(reads).toBe(2);
+  expect(screen.getByRole("button", { name: "Obtener informe" })).toBeEnabled();
+  await act(async () => { releasePoll(json({ normalizations: [], jobs: [{ ...queuedPageJob, status: "running" }] })); });
+  expect(aiSection.getByRole("button", { name: "Normalizando con IA…" })).toBeDisabled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
   expect(aiSection.getByRole("button", { name: "Volver a normalizar con IA" })).toBeEnabled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+  expect(reads).toBe(3);
   expect(aiSection.getByText("nvidia/nemotron-3.5-super-vl-120b-a12b")).toBeInTheDocument();
   expect(aiSection.getByText("Ana Ejemplo")).toBeInTheDocument();
   expect(aiSection.getByText('Public profile summary <script>alert("xss")</script>')).toBeInTheDocument();
@@ -546,7 +570,7 @@ it.each([
     if (init?.method === undefined && path === "/investigations/case") return json(withPage());
     if (init?.method === undefined && path === "/settings/decodo") return decodoStatus(true);
     if (init?.method === undefined && path === "/investigations/case/normalizations") return json({ normalizations: [] });
-    if (init?.method === "POST" && path === "/investigations/case/evidence/page/normalize") {
+    if (init?.method === "POST" && path === "/investigations/case/evidence/page/normalize/queue") {
       return json({ error: code, message: "provider detail" }, status);
     }
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
@@ -570,7 +594,7 @@ it.each([
   expect(screen.getByRole("region", { name: "Página recopilada por Decodo" })).toBeInTheDocument();
 });
 
-it("scopes normalization errors to the failed Decodo evidence node when switching nodes", async () => {
+function withTwoPages(): Investigation {
   const secondSeed = { kind: "url", value: "https://example.org/other" } as const;
   const secondAction: GitHubCatalogAction = {
     id: "scrape-2", spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: secondSeed },
@@ -584,20 +608,28 @@ it("scopes normalization errors to the failed Decodo evidence node when switchin
     seed: secondSeed,
     finding: { ...page.finding!, target: secondSeed, url: secondSeed.value, extra: { ...page.finding!.extra, title: "Second profile" } },
   };
-  const twoPages: Investigation = {
-    ...withPage(),
-    actions: [...withPage().actions, secondAction],
+  const investigation = withPage();
+  return {
+    ...investigation,
+    actions: [...investigation.actions, secondAction],
     validations: [decision("accepted", "match"), decision("accepted", "other")],
-    evidence: [...withPage().evidence, secondPage],
+    evidence: [...investigation.evidence, secondPage],
   };
+}
 
+it("scopes the latest job failure to its node, preferring enqueue errors until a retry", async () => {
+  const failed = { ...queuedPageJob, status: "failed", errorCode: "JOB_INTERRUPTED" };
+  const retried = { ...queuedPageJob, id: "retry", attemptNumber: 2 };
+  let posts = 0;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
-    if (init?.method === undefined && path === "/investigations/case") return json(twoPages);
+    if (init?.method === undefined && path === "/investigations/case") return json(withTwoPages());
     if (init?.method === undefined && path === "/settings/decodo") return decodoStatus(true);
-    if (init?.method === undefined && path === "/investigations/case/normalizations") return json({ normalizations: [] });
-    if (init?.method === "POST" && path === "/investigations/case/evidence/page/normalize") {
-      return json({ error: "AI_PROVIDER_INVALID_RESPONSE", message: "bad json" }, 502);
+    if (init?.method === undefined && path === "/investigations/case/normalizations") return json({ normalizations: [], jobs: [failed] });
+    if (init?.method === "POST" && path === "/investigations/case/evidence/page/normalize/queue") {
+      posts += 1;
+      return posts === 1 ? json({ error: "AI_NOT_CONFIGURED", message: "Missing key" }, 409)
+        : json({ job: retried, created: true }, 202);
     }
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   }));
@@ -607,10 +639,75 @@ it("scopes normalization errors to the failed Decodo evidence node when switchin
   fireEvent.click(within(graph).getByRole("button", { name: /Evidencia: page\. Decodo/ }));
 
   const firstAiSection = within(screen.getByRole("region", { name: "Resumen estructurado (asistido por IA)" }));
+  expect(await firstAiSection.findByRole("alert")).toHaveTextContent("La normalización se interrumpió al reiniciarse el servicio. Podés volver a intentarlo.");
   await act(async () => { fireEvent.click(firstAiSection.getByRole("button", { name: "Normalizar con IA" })); });
-  expect(await firstAiSection.findByRole("alert")).toHaveTextContent(/no es JSON válido/i);
+  expect(firstAiSection.getByRole("alert")).toHaveTextContent("Falta la API key de NVIDIA Build. Cargala en Ajustes de IA.");
 
   fireEvent.click(within(graph).getByRole("button", { name: /Evidencia: page-2\. Decodo/ }));
   const secondAiSection = within(screen.getByRole("region", { name: "Resumen estructurado (asistido por IA)" }));
   expect(secondAiSection.queryByRole("alert")).not.toBeInTheDocument();
+  fireEvent.click(within(graph).getByRole("button", { name: /Evidencia: page\. Decodo/ }));
+  const retrySection = within(screen.getByRole("region", { name: "Resumen estructurado (asistido por IA)" }));
+  await act(async () => { fireEvent.click(retrySection.getByRole("button", { name: "Normalizar con IA" })); });
+  expect(retrySection.getByRole("button", { name: "En cola para normalizar con IA" })).toBeDisabled();
+  expect(retrySection.queryByRole("alert")).not.toBeInTheDocument();
+  expect(posts).toBe(2);
+});
+
+it("enqueues two Decodo pages while the first request is in flight, without allowing duplicate enqueues", async () => {
+  vi.useFakeTimers();
+  const posts: string[] = [];
+  let finishFirst!: (response: Response) => void;
+  const firstEnqueue = new Promise<Response>((resolve) => { finishFirst = resolve; });
+  let finishRead!: (response: Response) => void;
+  const initialRead = new Promise<Response>((resolve) => { finishRead = resolve; });
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (init?.method === undefined && path === "/investigations/case") return json(withTwoPages());
+    if (init?.method === undefined && path === "/settings/decodo") return decodoStatus(true);
+    if (init?.method === undefined && path === "/investigations/case/normalizations") return initialRead;
+    const match = /^\/investigations\/case\/evidence\/([^/]+)\/normalize\/queue$/u.exec(path);
+    if (init?.method === "POST" && match?.[1] !== undefined) {
+      const evidenceId = match[1];
+      posts.push(evidenceId);
+      return evidenceId === page.id ? firstEnqueue
+        : json({ job: { ...queuedPageJob, id: "job-2", evidenceId }, created: true }, 202);
+    }
+    throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+  }));
+  await act(async () => { render(<WorkspacePage id="case" />); });
+  const graph = within(screen.getByRole("group", { name: /grafo factual/i }));
+  const first = graph.getByRole("button", { name: /Evidencia: page\. Decodo/ });
+  const second = graph.getByRole("button", { name: /Evidencia: page-2\. Decodo/ });
+  const normalize = () => screen.getByRole("button", { name: "Normalizar con IA" });
+  const queued = () => screen.getByRole("button", { name: "En cola para normalizar con IA" });
+
+  fireEvent.click(first);
+  fireEvent.click(normalize());
+  const enqueuing = screen.getByRole("button", { name: "Encolando normalización…" });
+  expect(enqueuing).toBeDisabled();
+  fireEvent.click(enqueuing);
+  expect(screen.getByRole("button", { name: "Obtener informe" })).toBeEnabled();
+  fireEvent.click(second);
+  expect(normalize()).toBeEnabled();
+  await act(async () => { fireEvent.click(normalize()); });
+  expect(queued()).toBeDisabled();
+  fireEvent.click(queued());
+  expect(posts).toEqual(["page", "page-2"]);
+
+  await act(async () => { finishFirst(json({ job: queuedPageJob, created: true }, 202)); });
+  await act(async () => { finishRead(json({ normalizations: [], jobs: [] })); });
+  fireEvent.click(first);
+  expect(queued()).toBeDisabled();
+  fireEvent.click(second);
+  expect(queued()).toBeDisabled();
+  expect(posts).toEqual(["page", "page-2"]);
+
+  fireEvent.click(screen.getByText("Cola", { exact: true }).closest("summary")!);
+  const rows = within(screen.getByRole("region", { name: "Cola de ejecución" })).getAllByRole("listitem");
+  expect(rows).toHaveLength(2);
+  expect(within(rows[0]!).getByText("Siguiente")).toBeVisible();
+  expect(within(rows[0]!).getByText("/candidate")).toBeVisible();
+  expect(within(rows[1]!).getByText("En cola · #2")).toBeVisible();
+  expect(within(rows[1]!).getByText("/other")).toBeVisible();
 });

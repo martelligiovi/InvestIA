@@ -419,8 +419,9 @@ export function createBackendApp(
     const { id } = input(InvestigationParams, request.params);
     const investigation = await serviceCall(() => service.loadInvestigation(id));
     if (investigation === undefined) throw new HttpError(404, "NOT_FOUND", "Investigation not found");
-    const stored = ai?.normalizations === undefined ? [] : await ai.normalizations.listByInvestigation(id);
+    // Read jobs before normalizations so any completed job observes the summary written prior to completion.
     const jobs = ai?.normalizationJobs === undefined ? [] : await ai.normalizationJobs.listByInvestigation(id);
+    const stored = ai?.normalizations === undefined ? [] : await ai.normalizations.listByInvestigation(id);
     return { normalizations: filterValidNormalizations(investigation, stored), jobs };
   });
 

@@ -182,18 +182,35 @@ describe("InvestigationApiClient", () => {
         limitations: [],
       },
     };
-    const { api, calls } = clientWith({ normalizations: [normalization] });
+    const job = { id: "job-1", investigationId: "case 1", evidenceId: normalization.evidenceId,
+      attemptNumber: 2, status: "queued", createdAt: normalization.generatedAt };
+    const { api, calls } = clientWith({ normalizations: [normalization], jobs: [job] });
+    const { api: legacy } = clientWith({ normalizations: [normalization] });
 
-    await expect(api.getNormalizations("case 1")).resolves.toEqual([normalization]);
+    await expect(api.getNormalizationState("case 1")).resolves.toEqual({ normalizations: [normalization], jobs: [job] });
+    await expect(legacy.getNormalizationState("case 1")).resolves.toEqual({ normalizations: [normalization], jobs: [] });
+    await expect(legacy.getNormalizations("case 1")).resolves.toEqual([normalization]);
     expect(calls[0]?.input).toBe("/investigations/case%201/normalizations");
     expect(calls[0]?.init?.method).toBeUndefined();
 
+    const invalidResponse = { name: "ApiError", status: 502, code: "INVALID_RESPONSE", message: "Invalid normalizations payload" };
     const { api: malformed } = clientWith({ normalizations: "invalid" });
-    await expect(malformed.getNormalizations("case-1")).rejects.toMatchObject({
-      name: "ApiError",
-      status: 502,
-      code: "INVALID_RESPONSE",
-    });
+    const { api: invalidJobs } = clientWith({ normalizations: [normalization], jobs: null });
+    await expect(malformed.getNormalizations("case-1")).rejects.toMatchObject(invalidResponse);
+    await expect(malformed.getNormalizationState("case-1")).rejects.toMatchObject(invalidResponse);
+    await expect(invalidJobs.getNormalizationState("case-1")).rejects.toMatchObject(invalidResponse);
+    await expect(invalidJobs.getNormalizations("case-1")).resolves.toEqual([normalization]);
+  });
+
+  it.each([true, false])("posts a bodyless queue request and returns the job with created=%s", async (created) => {
+    const job = { id: "job-1", investigationId: "case/1", evidenceId: "ev/2",
+      status: "queued", attemptNumber: 1, createdAt: "2026-01-01T00:00:00.000Z" };
+    const { api, calls } = clientWith({ job, created }, 202);
+
+    await expect(api.queueEvidenceNormalization("case/1", "ev/2")).resolves.toEqual({ job, created });
+    expect(calls.map(({ input, init }) => [String(input), init?.method, init?.body])).toEqual([
+      ["/investigations/case%2F1/evidence/ev%2F2/normalize/queue", "POST", undefined],
+    ]);
   });
 
   it("requests on-demand evidence normalization with a bodiless POST and surfaces provider errors", async () => {
