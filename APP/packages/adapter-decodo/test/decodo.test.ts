@@ -734,3 +734,37 @@ test("still rejects a page-level sign-in wall with non-modal gate heading and ma
   await assertFailure(adapter.execute(seed), "Decodo target requires login");
   assert.equal(calls.length, 2);
 });
+
+test("heading markers do not change which visible subject corroborates JSON-LD", async () => {
+  const heading = "A detailed guide to restoring historic instruments, maintaining public archives, and documenting workshop practice";
+  assert.ok(heading.length < 120 && heading.length + 7 >= 120);
+  const html = `<html><head><script type="application/ld+json">
+    {"@type":"Person","name":"Ada Lovelace"}
+    </script></head><body><p>Ada Lovelace</p><main><h6>${heading}</h6></main></body></html>`;
+  const { adapter } = fixture([() => scraped(html)]);
+  const [result] = await adapter.execute(seed);
+  assert.equal(result?.finding.extra.preview, "Ada Lovelace");
+  assert.equal(result?.finding.extra.content, `Ada Lovelace\n###### ${heading}`);
+});
+
+test("a page-level form heading is still a login signal when marketing surrounds it", async () => {
+  const html = `<main>
+    <p>Discover opportunities and connect with professionals across industries worldwide.</p>
+    <p>Build your network every day with curated updates.</p>
+    <p>Membership benefits and resources</p>
+    <form><h1>Sign in to your account</h1><input type="password"><button>Sign in</button></form>
+    </main>`;
+  const { adapter, calls } = fixture([() => scraped(html), () => scraped(html)]);
+  await assertFailure(adapter.execute(seed), "Decodo target requires login");
+  assert.equal(calls.length, 2);
+});
+
+test("a two-line public profile remains readable beside a contextual sign-in dialog", async () => {
+  const html = `<main><h1>Ada Lovelace</h1><p>Studies public archives.</p>
+    <dialog><h2>Sign in to follow Ada</h2><form><input type="password">
+    <button>Sign in</button></form></dialog></main>`;
+  const { adapter, calls } = fixture([() => scraped(html)]);
+  const [result] = await adapter.execute(seed);
+  assert.equal(result?.finding.extra.content, "# Ada Lovelace\nStudies public archives.");
+  assert.equal(calls.length, 1);
+});

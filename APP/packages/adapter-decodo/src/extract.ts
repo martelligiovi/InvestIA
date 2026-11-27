@@ -146,9 +146,11 @@ function scanMarkup(source: string, html: boolean, base: string, addStructuredLi
   let inHead = false;
   let passwordField = false;
   let passwordForm = false;
+  let pagePasswordForm = false;
   let loginHeading = false;
+  let pageLoginHeading = false;
   let loginAction = false;
-  let heading: { name: string; parts: string[] } | undefined;
+  let heading: { name: string; parts: string[]; inDialog: boolean } | undefined;
   let buttonParts: string[] | undefined;
   let jsonLdBlocks = 0;
   let cursor = 0;
@@ -215,7 +217,10 @@ function scanMarkup(source: string, html: boolean, base: string, addStructuredLi
 
     if (closing) {
       if (!inHead && /^h[1-6]$/.test(name) && heading?.name === name) {
-        loginHeading ||= GATE_HEADING.test(scalar(heading.parts.join(""), 240));
+        if (GATE_HEADING.test(scalar(heading.parts.join(""), 240))) {
+          loginHeading = true;
+          if (!heading.inDialog) pageLoginHeading = true;
+        }
         heading = undefined;
       }
       if (!inHead && name === "button" && buttonParts !== undefined) {
@@ -258,7 +263,7 @@ function scanMarkup(source: string, html: boolean, base: string, addStructuredLi
     const current = stack.at(-1);
     if (!inHead && !current?.hidden) {
       if (/^h[1-6]$/.test(name)) {
-        heading = { name, parts: [] };
+        heading = { name, parts: [], inDialog: Boolean(current?.dialog) };
         if (!current?.chrome && !isSelfClosingTag(name, attrs)) {
           const prefix = `\n${"#".repeat(Number(name[1]))} `;
           main.push(prefix);
@@ -286,6 +291,7 @@ function scanMarkup(source: string, html: boolean, base: string, addStructuredLi
       if (type === "password") {
         passwordField = true;
         passwordForm ||= Boolean(current?.form || current?.dialog);
+        pagePasswordForm ||= Boolean(current?.form && !current?.dialog);
       } else if (type === "submit" && (current?.form || current?.dialog)) {
         loginAction ||= GATE_HEADING.test(textFromHtml(fields.get("value") ?? "").trim());
       }
@@ -295,7 +301,7 @@ function scanMarkup(source: string, html: boolean, base: string, addStructuredLi
   return {
     rawMarkdown: html ? "" : escapeTagStarts(text.join("").replace(/[ \t]+(?=\n|$)/g, "").trim()),
     mainParts: main, primaryParts: primary, primaryLinks, bodyLinks, structuredText, structuredSubjects,
-    passwordField, passwordForm, loginHeading, loginAction, canonical,
+    passwordField, passwordForm, pagePasswordForm, loginHeading, pageLoginHeading, loginAction, canonical,
     title: clip(metadata.get("og:title") ?? metadata.get("title") ?? title, 240),
     description: metadata.get("description") ?? metadata.get("og:description") ?? metadata.get("twitter:description") ?? "",
   };
@@ -380,7 +386,7 @@ export function extractPage(raw: string, base: string, target: string) {
   const structuredLinks = linkCollector(target, base);
   // Keep raw script bytes and syntax for JSON-LD validation; visible text is normalized as it is extracted.
   const parsed = scanMarkup(html ? raw : source, html, base, structuredLinks.add);
-  const { canonical, passwordField, passwordForm, loginHeading, loginAction } = parsed;
+  const { canonical, passwordField, passwordForm, pagePasswordForm, loginHeading, pageLoginHeading, loginAction } = parsed;
   const hasLoginForm = passwordForm && (loginHeading || GATE_HEADING.test(parsed.title));
 
   if (html) {
@@ -389,7 +395,7 @@ export function extractPage(raw: string, base: string, target: string) {
     for (const href of structuredLinks.links) add(href);
     const primaryCleaned = cleanHtmlLines(parsed.primaryParts);
     const mainCleaned = cleanHtmlLines(parsed.mainParts);
-    const nonChrome = primaryCleaned.length >= 120 ? primaryCleaned : mainCleaned;
+    const nonChrome = primaryCleaned.replace(/^#{1,6}\s+/gm, "").length >= 120 ? primaryCleaned : mainCleaned;
     const visibleLines = new Set<string>();
     for (const line of nonChrome.toLowerCase().split("\n")) {
       visibleLines.add(line);
@@ -405,7 +411,7 @@ export function extractPage(raw: string, base: string, target: string) {
     const preview = parsed.description || scalar(firstLine.replace(/^#{1,6}\s+/, ""), 400);
     return {
       format: "html" as const, title: parsed.title, description: parsed.description, canonical, links,
-      passwordField, passwordForm, loginAction, hasLoginForm, preview,
+      passwordField, passwordForm, pagePasswordForm, pageLoginHeading, loginAction, hasLoginForm, preview,
       content: clip(cleaned, 6000), contentLength: cleaned.length, main: nonChrome, structured, structuredCorroborated,
     };
   }
@@ -435,7 +441,7 @@ export function extractPage(raw: string, base: string, target: string) {
   const content = /[^\s#*`_~>-]/.test(main) ? cleaned : "";
   return {
     format: "markdown" as const, title: scalar(markdownText(heading ?? ""), 240), description: preview, preview,
-    canonical, links, passwordField, passwordForm, loginAction, hasLoginForm,
+    canonical, links, passwordField, passwordForm, pagePasswordForm, pageLoginHeading, loginAction, hasLoginForm,
     content: clip(content, 6000), contentLength: content.length, main, structured: "", structuredCorroborated: false,
   };
 }
@@ -451,17 +457,19 @@ export function isLoginGate(page: ReturnType<typeof extractPage>, ...urls: strin
   }
   const lines = page.main.split("\n").map((line) => line.replace(/^#{1,6}\s+/, "").trim()).filter(Boolean);
   const hasVisibleGateHeading = lines.some((line) => GATE_HEADING.test(line));
+  const hasPageGateHeading = hasVisibleGateHeading || page.pageLoginHeading;
   const substantive = lines.filter((line) => !GATE_HEADING.test(line) && !GATE_COPY.test(line));
   const substantiveLength = substantive.join(" ").length;
   const metadataLines = page.structured.split("\n").filter((line) => line && !GATE_HEADING.test(line) && !GATE_COPY.test(line));
   const titleIsGate = GATE_HEADING.test(page.title);
-  const corroboratedLength = page.structuredCorroborated && (!titleIsGate || !page.passwordField) && !hasVisibleGateHeading
+  const corroboratedLength = page.structuredCorroborated && (!titleIsGate || !page.passwordField) && !hasPageGateHeading
     ? metadataLines.join(" ").length : 0;
   const effectiveLength = substantiveLength + corroboratedLength;
-  const hasSubstantiveProfile = !titleIsGate && !hasVisibleGateHeading && substantive.length >= 3 && substantiveLength >= 120 &&
+  const hasModalOnlyProfile = !titleIsGate && !hasPageGateHeading && !page.pagePasswordForm && substantive.length >= 2;
+  const hasSubstantiveProfile = !titleIsGate && !hasPageGateHeading && substantive.length >= 3 && substantiveLength >= 120 &&
     substantive.some((line) => line.split(/\s+/).length >= 5);
-  if ((page.hasLoginForm || (page.passwordForm && page.loginAction)) && effectiveLength < 250 && !hasSubstantiveProfile) return true;
+  if ((page.hasLoginForm || (page.passwordForm && page.loginAction)) && effectiveLength < 250 && !hasSubstantiveProfile && !hasModalOnlyProfile) return true;
   if (!page.passwordField && !titleIsGate && !hasVisibleGateHeading) return false;
-  if (effectiveLength >= 250 || hasSubstantiveProfile) return false;
+  if (effectiveLength >= 250 || hasSubstantiveProfile || hasModalOnlyProfile) return false;
   return !substantive.some((line) => line.split(/\s+/).length >= 5) && substantive.length < 2;
 }
