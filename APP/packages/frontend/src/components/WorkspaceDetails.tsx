@@ -354,7 +354,10 @@ function ActionRerunControl({ action, investigation, disabled, onRerun }: {
     : branchBlock;
   return <section className="detail-control" aria-labelledby="rerun-heading">
     <h3 id="rerun-heading">Reejecución</h3>
-    {action.lastRerunFailed && <p className="detail-warning" role="status">La reejecución falló. Se conservaron los resultados anteriores.</p>}
+    {action.lastRerunFailed && <p className="detail-warning break-value" role="status">
+      La reejecución falló. Se conservaron los resultados anteriores.
+      {action.lastRerunFailure ? ` Motivo: ${action.lastRerunFailure}` : ""}
+    </p>}
     {blocked !== null && <p>{blocked}</p>}
     {confirmation === null ? <div className="detail-rerun-actions">
       <button type="button" className="workspace-button" disabled={disabled || blocked !== null}

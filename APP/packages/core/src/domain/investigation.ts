@@ -167,6 +167,7 @@ export interface GitHubCatalogAction {
   /** Prior results stay active while a replacement claim is queued or running. */
   readonly rerun?: { readonly previousStatus: "succeeded" | "failed"; readonly fingerprint: string };
   readonly lastRerunFailed?: true;
+  readonly lastRerunFailure?: string;
   readonly proposedAt: string;
   readonly proposalReason: string;
   /** System catalog eligibility, not a human approval. Absent on historical actions. */

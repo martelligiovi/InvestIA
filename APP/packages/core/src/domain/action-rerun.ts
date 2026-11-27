@@ -27,7 +27,7 @@ export function prepareActionRerun(investigation: Investigation, action: GitHubC
   if (blocked.has(action.id) || investigation.actions.some((child) =>
     child.id !== action.id && branch.actionIds.has(child.id) && (child.status === "claimed" || child.rerun !== undefined),
   )) throw new ActionRerunConflictError();
-  const { claim: _priorClaim, lastRerunFailed: _priorFailure, ...prior } = action;
+  const { claim: _priorClaim, lastRerunFailed: _priorFailure, lastRerunFailure: _priorFailureDetail, ...prior } = action;
   return { ...prior, status: "queued", rerun: {
     previousStatus: action.status,
     fingerprint: branchFingerprint(investigation, action.id, branch),

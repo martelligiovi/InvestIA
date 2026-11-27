@@ -168,9 +168,26 @@ async function serviceCall<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+const PUBLIC_RERUN_FAILURES = new Set([
+  "Prior results changed during execution; the replacement was not applied.",
+  "The replacement returned no confirmed results.",
+]);
+
+function publicFailureDetail(catalogId: GitHubCatalogAction["spec"]["catalogId"], message: string, allowRerunReason = false): string {
+  if (catalogId === "decodo.url.v1" && isPublicDecodoFailure(message)) return message;
+  if (allowRerunReason && PUBLIC_RERUN_FAILURES.has(message)) return message;
+  return "Execution failed.";
+}
+
 function publicAction(action: GitHubCatalogAction): GitHubCatalogAction {
-  if (action.failure === undefined || (action.spec.catalogId === "decodo.url.v1" && isPublicDecodoFailure(action.failure))) return action;
-  return { ...action, failure: "Execution failed." };
+  const failure = action.failure === undefined ? undefined : publicFailureDetail(action.spec.catalogId, action.failure);
+  const lastRerunFailure = action.lastRerunFailure === undefined ? undefined : publicFailureDetail(action.spec.catalogId, action.lastRerunFailure, true);
+  if (failure === action.failure && lastRerunFailure === action.lastRerunFailure) return action;
+  return {
+    ...action,
+    ...(failure === undefined ? {} : { failure }),
+    ...(lastRerunFailure === undefined ? {} : { lastRerunFailure }),
+  };
 }
 
 function publicInvestigation(investigation: Investigation): Investigation {

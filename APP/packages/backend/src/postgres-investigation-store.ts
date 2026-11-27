@@ -221,6 +221,7 @@ function isStoredAction(value: unknown): boolean {
   if (value.sourceSeedId !== undefined && !isNonEmptyString(value.sourceSeedId)) return false;
   if (value.sourceActionId !== undefined && (!isNonEmptyString(value.sourceActionId) || value.sourceActionId === value.id || value.sourceSeedId !== undefined)) return false;
   if (value.lastRerunFailed !== undefined && (value.lastRerunFailed !== true || !["failed", "succeeded"].includes(String(value.status)))) return false;
+  if (value.lastRerunFailure !== undefined && (value.lastRerunFailed !== true || !isNonEmptyString(value.lastRerunFailure) || value.lastRerunFailure.length > 1_000)) return false;
   if (value.rerun !== undefined && (!isRecord(value.rerun) || !["queued", "claimed"].includes(String(value.status)) ||
     !["failed", "succeeded"].includes(String(value.rerun.previousStatus)) || typeof value.rerun.fingerprint !== "string" ||
     !/^[a-f0-9]{64}$/.test(value.rerun.fingerprint))) return false;
@@ -439,7 +440,10 @@ export class PostgresInvestigationStore implements InvestigationStore {
       const { rerun, ...active } = action;
       if (rerun !== undefined && (input.result.kind === "failure" || !canReplaceActionResults(current, action))) {
         const { claim: _replacementClaim, ...prior } = active;
-        const restored = { ...prior, status: rerun.previousStatus, lastRerunFailed: true as const };
+        const rerunFailure = input.result.kind === "failure"
+          ? (input.result.error.trim().slice(0, 1_000) || "Execution failed.")
+          : "Prior results changed during execution; the replacement was not applied.";
+        const restored = { ...prior, status: rerun.previousStatus, lastRerunFailed: true as const, lastRerunFailure: rerunFailure };
         const next = revise(current, input.completedAt, {
           actions: current.actions.map((candidate) => candidate.id === action.id ? restored : candidate),
           audit: [...current.audit, { ...input.auditEvent, kind: "action_failed", actionId: action.id,

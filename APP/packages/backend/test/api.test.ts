@@ -182,6 +182,34 @@ test("HTTP rerun queues only the confirmed action from a current local snapshot"
   assert.equal(harness.executions, 0, "posting the request does not bypass manual mode or execute a provider directly");
 });
 
+test("HTTP GET sanitizes lastRerunFailure while allowing public Decodo failure reasons", async (t) => {
+  const harness = makeHarness();
+  const { app } = harness;
+  t.after(() => app.close());
+  const at = "2025-02-01T00:00:00.000Z";
+  const decodoAction: GitHubCatalogAction = {
+    id: "decodo-1", status: "failed", proposedAt: at, completedAt: at, proposalReason: "Fixture",
+    queuedByCatalog: true, failure: "Decodo target requires login", lastRerunFailed: true,
+    lastRerunFailure: "Decodo scrape blocked by anti-bot protection (999)",
+    spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: "https://example.org/profile" } },
+  };
+  const leakedAction: GitHubCatalogAction = {
+    id: "scanner-1", status: "succeeded", proposedAt: at, completedAt: at, proposalReason: "Fixture",
+    queuedByCatalog: true, lastRerunFailed: true, lastRerunFailure: "secret-token internal traceback",
+    spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: { kind: "email", value: "a@example.org" } },
+  };
+  const id = "rerun-failure-mask";
+  await harness.store.create({
+    ...createInitialInvestigation(id, at), revision: 2, advancementMode: "manual",
+    actions: [decodoAction, leakedAction],
+  });
+  const response = await app.inject({ method: "GET", url: `/investigations/${id}` });
+  assert.equal(response.statusCode, 200);
+  const body = response.json<Investigation>();
+  assert.equal(body.actions.find((a) => a.id === "decodo-1")?.lastRerunFailure, "Decodo scrape blocked by anti-bot protection (999)");
+  assert.equal(body.actions.find((a) => a.id === "scanner-1")?.lastRerunFailure, "Execution failed.");
+});
+
 test("HTTP username seeds queue Maigret and reject invalid or duplicate input without changes", async (t) => {
   const harness = makeHarness();
   t.after(() => harness.app.close());

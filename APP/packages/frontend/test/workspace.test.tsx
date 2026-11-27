@@ -291,12 +291,13 @@ describe("espacio de investigación factual", () => {
     expect(within(nodeList).getByRole("button", { name: /Acción: child-1/i })).toBeInTheDocument();
     current = outcome === "success"
       ? { ...before, revision: 4, actions: [root], evidence: [evidence("replacement")] }
-      : { ...before, revision: 4, actions: [{ ...root, lastRerunFailed: true }, child] };
+      : { ...before, revision: 4, actions: [{ ...root, lastRerunFailed: true, lastRerunFailure: "Decodo scrape blocked by anti-bot protection (999)" }, child] };
     if (outcome === "success") {
       expect(await within(nodeList).findByRole("button", { name: /Evidencia: replacement/i }, { timeout: 7_000 })).toBeInTheDocument();
       expect(within(nodeList).queryByRole("button", { name: /Acción: child-1/i })).not.toBeInTheDocument();
     } else {
       expect(await screen.findByText(/La reejecución falló\. Se conservaron/i, {}, { timeout: 7_000 })).toBeInTheDocument();
+      expect(screen.getByText(/Decodo scrape blocked by anti-bot protection \(999\)/)).toBeInTheDocument();
       expect(within(nodeList).getByRole("button", { name: /Acción: child-1/i })).toBeInTheDocument();
     }
   }, 12_000);

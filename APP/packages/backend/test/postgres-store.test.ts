@@ -205,6 +205,10 @@ test("a provider failure or a changed previous branch never discards prior resul
     assert.deepEqual(result.actions.filter(({ id }) => id !== run.id), before.actions.filter(({ id }) => id !== run.id));
     assert.equal(result.actions.find(({ id }) => id === run.id)?.status, "succeeded");
     assert.equal(result.actions.find(({ id }) => id === run.id)?.lastRerunFailed, true);
+    assert.equal(
+      result.actions.find(({ id }) => id === run.id)?.lastRerunFailure,
+      conflict ? "Prior results changed during execution; the replacement was not applied." : "fixture failure",
+    );
     assert.equal(result.audit.at(-1)?.kind, "action_failed");
     assert.equal(result.revision, before.revision + 1);
   }
