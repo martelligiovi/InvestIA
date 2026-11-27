@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isScannerFinding } from "../../core/src/index.ts";
-import { createDecodoAdapter, DECODO_API_MODES, isDecodoApiMode, type DecodoAdapterOptions } from "../src/index.ts";
+import {
+  createDecodoAdapter,
+  DECODO_API_MODES,
+  isDecodoApiMode,
+  isPublicDecodoFailure,
+  type DecodoAdapterOptions,
+  type DecodoDiagnosticEvent,
+} from "../src/index.ts";
 
 const seed = { kind: "url", value: "https://example.org/profile" } as const;
 const TOKEN = "test-token-not-for-errors";
@@ -16,6 +23,7 @@ function scraped(content: string, fields = {}) {
 
 function fixture(replies: Array<() => Response>, overrides: Partial<DecodoAdapterOptions> = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
+  const diagnostics: DecodoDiagnosticEvent[] = [];
   const fetcher: typeof fetch = async (input, init = {}) => {
     const next = replies[calls.length];
     calls.push({ url: String(input), init });
@@ -25,9 +33,10 @@ function fixture(replies: Array<() => Response>, overrides: Partial<DecodoAdapte
   const adapter = createDecodoAdapter({
     fetch: fetcher,
     settings: async () => ({ token: TOKEN, apiMode: "web_data" }),
+    onDiagnostic: (event) => { diagnostics.push(event); },
     ...overrides,
   });
-  return { adapter, calls };
+  return { adapter, calls, diagnostics };
 }
 
 function assertRequest(call: ReturnType<typeof fixture>["calls"][number], endpoint: string, authorization: string, headless = true) {
@@ -212,7 +221,7 @@ for (const [status, message] of [
   [401, "Decodo API credentials were rejected"], [403, "Decodo API credentials were rejected"],
   [429, "Decodo API rate limit or quota exceeded"], [400, "Decodo API rejected the scrape request"],
   [422, "Decodo API rejected the scrape request"], [500, "Decodo service failure (HTTP 500)"],
-  [524, "Decodo request timed out"], [612, "Decodo service failure (HTTP 612)"], [613, "Decodo service failure (HTTP 613)"],
+  [524, "Decodo request timed out"],
 ] as const) {
   test(`maps HTTP ${status} without exposing secrets or retrying`, async () => {
     const { adapter, calls } = fixture([() => syntheticHttpStatus(status)]);
@@ -221,22 +230,94 @@ for (const [status, message] of [
   });
 }
 
-for (const [name, reply, message] of [
-  ["malformed JSON", () => new Response(`${PRIVATE_BODY}: ${TOKEN}`), "Unexpected Decodo response"],
-  ["missing results", () => Response.json({ private: TOKEN }), "Unexpected Decodo response"],
-  ["missing status", () => Response.json({ results: [{ content: TOKEN }] }), "Unexpected Decodo response"],
-  ["target 404", () => scraped(TOKEN, { status_code: 404 }), "Decodo target returned HTTP 404"],
-  ["network failure", () => { throw new Error(TOKEN); }, "Decodo request failed"],
-  ["aborted fetch", () => { throw new DOMException(TOKEN, "AbortError"); }, "Decodo request timed out"],
-  ["timed-out fetch", () => { throw new DOMException(TOKEN, "TimeoutError"); }, "Decodo request timed out"],
-  ["aborted body", () => new Response(new ReadableStream({ start(controller) { controller.error(new DOMException(TOKEN, "AbortError")); } })), "Decodo request timed out"],
-] as const) {
-  test(`fails on ${name} without exposing secrets or retrying`, async () => {
-    const { adapter, calls } = fixture([reply]);
-    await assertFailure(adapter.execute(seed), message);
-    assert.equal(calls.length, 1);
+for (const status of [612, 613] as const) {
+  for (const [shape, failedReply] of [
+    ["HTTP status", () => syntheticHttpStatus(status)],
+    ["root JSON status_code", () => Response.json({ status_code: status, message: `${PRIVATE_BODY}: ${TOKEN}`, task_id: "t-1" })],
+    ["results[0].status_code", () => Response.json({ results: [{ status_code: status, message: `${PRIVATE_BODY}: ${TOKEN}` }] })],
+  ] as const) {
+    test(`retries once without headless on ${status} ${shape} and returns fallback finding`, async () => {
+      const { adapter, calls, diagnostics } = fixture([failedReply, () => scraped(MARKDOWN)]);
+      const observations = await adapter.execute(seed);
+      assert.equal(observations.length, 1);
+      assert.equal(observations[0]?.finding.extra.status_code, 200);
+      assert.equal(calls.length, 2);
+      assertRequest(calls[0]!, WEB_DATA, `Bearer ${TOKEN}`, true);
+      assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+      assert.deepEqual(diagnostics, []);
+    });
+  }
+
+  test(`a second ${status} is terminal without exposing secrets and never sends a third request`, async () => {
+    const { adapter, calls, diagnostics } = fixture([
+      () => Response.json({ status_code: status, message: `${PRIVATE_BODY}: ${TOKEN}` }),
+      () => syntheticHttpStatus(status),
+    ]);
+    await assertFailure(adapter.execute(seed), `Decodo service failure (HTTP ${status})`);
+    assert.equal(calls.length, 2);
+    assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+    assert.deepEqual(diagnostics, []);
   });
 }
+
+test("maps root-level 999, 524, 429, and other 6xx codes without collapsing into unexpected response", async () => {
+  const retry999 = fixture([() => Response.json({ status_code: 999, message: PRIVATE_BODY }), () => scraped(MARKDOWN)]);
+  const [ok] = await retry999.adapter.execute(seed);
+  assert.equal(ok?.finding.extra.status_code, 200);
+  assert.equal(retry999.calls.length, 2);
+
+  for (const [reply, message] of [
+    [() => Response.json({ status_code: 524, message: TOKEN }), "Decodo request timed out"],
+    [() => Response.json({ status_code: 429, message: TOKEN }), "Decodo API rate limit or quota exceeded"],
+    [() => Response.json({ status_code: "614", message: TOKEN }), "Decodo service failure (HTTP 614)"],
+    [() => Response.json({ results: [{ status_code: 614, content: TOKEN }] }), "Decodo service failure (HTTP 614)"],
+  ] as const) {
+    const { adapter, calls, diagnostics } = fixture([reply]);
+    await assertFailure(adapter.execute(seed), message);
+    assert.equal(isPublicDecodoFailure(message), true);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(diagnostics, []);
+  }
+});
+
+for (const [name, reply, message, expectedReason] of [
+  ["malformed JSON", () => new Response(`${PRIVATE_BODY}: ${TOKEN}`, { headers: { "content-type": `text/html; secret=${TOKEN}` } }), "Unexpected Decodo response (invalid JSON)", "invalid_json"],
+  ["non-object JSON", () => Response.json([TOKEN]), "Unexpected Decodo response (invalid JSON)", "non_object_json"],
+  ["missing results", () => Response.json({ [TOKEN]: PRIVATE_BODY, status: "failed" }), "Unexpected Decodo response (missing results)", "missing_results"],
+  ["missing status", () => Response.json({ results: [{ content: TOKEN }] }), "Unexpected Decodo response (missing status)", "missing_status"],
+  ["non-text content", () => Response.json({ results: [{ status_code: 200, content: { nested: TOKEN } }] }), "Unexpected Decodo response (missing text content)", "missing_text_content"],
+  ["target 404", () => scraped(TOKEN, { status_code: 404 }), "Decodo target returned HTTP 404", undefined],
+  ["network failure", () => { throw new Error(TOKEN); }, "Decodo request failed", undefined],
+  ["aborted fetch", () => { throw new DOMException(TOKEN, "AbortError"); }, "Decodo request timed out", undefined],
+  ["timed-out fetch", () => { throw new DOMException(TOKEN, "TimeoutError"); }, "Decodo request timed out", undefined],
+  ["aborted body", () => new Response(new ReadableStream({ start(controller) { controller.error(new DOMException(TOKEN, "AbortError")); } })), "Decodo request timed out", undefined],
+] as const) {
+  test(`fails on ${name} without exposing secrets or retrying`, async () => {
+    const { adapter, calls, diagnostics } = fixture([reply]);
+    await assertFailure(adapter.execute(seed), message);
+    assert.equal(isPublicDecodoFailure(message), true);
+    assert.equal(calls.length, 1);
+    if (expectedReason === undefined) {
+      assert.deepEqual(diagnostics, []);
+    } else {
+      assert.equal(diagnostics.length, 1);
+      assert.equal(diagnostics[0]?.reason, expectedReason);
+      assert.doesNotMatch(JSON.stringify(diagnostics), new RegExp(`${TOKEN}|${PRIVATE_BODY}`));
+    }
+  });
+}
+
+test("isPublicDecodoFailure preserves legacy and differentiated unexpected response reasons", () => {
+  for (const message of [
+    "Unexpected Decodo response",
+    "Unexpected Decodo response (invalid JSON)",
+    "Unexpected Decodo response (missing results)",
+    "Unexpected Decodo response (missing status)",
+    "Unexpected Decodo response (missing text content)",
+  ]) {
+    assert.equal(isPublicDecodoFailure(message), true, message);
+  }
+});
 
 test("rejects authwalls and login/sign-up pages, but not a LinkedIn profile with a sign-in link", async () => {
   const profile = { kind: "url", value: "https://www.linkedin.com/in/public-profile/" } as const;
@@ -766,5 +847,91 @@ test("a two-line public profile remains readable beside a contextual sign-in dia
   const { adapter, calls } = fixture([() => scraped(html)]);
   const [result] = await adapter.execute(seed);
   assert.equal(result?.finding.extra.content, "# Ada Lovelace\nStudies public archives.");
+  assert.equal(calls.length, 1);
+});
+
+test("does not echo an arbitrary MIME token to callbacks or stderr", async (t) => {
+  const token = "fixture-secret/diagnostic";
+  const settings = async () => ({ token, apiMode: "web_data" as const });
+  const reply = () => new Response("not JSON", { headers: { "content-type": token } });
+  const callback = fixture([reply], { settings });
+  await assertFailure(callback.adapter.execute(seed), "Unexpected Decodo response (invalid JSON)");
+  assert.equal(callback.diagnostics.length, 1);
+  assert.equal(callback.diagnostics[0]?.responseContentType, "other");
+  assert.equal(JSON.stringify(callback.diagnostics).includes(token), false);
+
+  const log = t.mock.method(console, "error", () => {});
+  const fallback = fixture([reply], { settings, onDiagnostic: undefined });
+  await assertFailure(fallback.adapter.execute(seed), "Unexpected Decodo response (invalid JSON)");
+  assert.equal(log.mock.callCount(), 1);
+  assert.equal(JSON.stringify(log.mock.calls[0]?.arguments).includes(token), false);
+});
+
+test("isolates rejected async diagnostic callbacks", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const run = spawnSync(process.execPath, [
+    "--unhandled-rejections=strict", "--experimental-strip-types", "--input-type=module", "--eval",
+    `import assert from "node:assert/strict";
+     import { createDecodoAdapter } from ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};
+     const adapter = createDecodoAdapter({
+       settings: async () => ({ token: ${JSON.stringify(TOKEN)}, apiMode: "web_data" }),
+       fetch: async () => new Response("not JSON"),
+       onDiagnostic: async () => { throw new Error(${JSON.stringify(TOKEN)}); },
+     });
+     await assert.rejects(adapter.execute(${JSON.stringify(seed)}), {
+       message: "Unexpected Decodo response (invalid JSON)",
+     });`,
+  ], { encoding: "utf8" });
+  assert.equal(run.stderr.includes(TOKEN), false);
+  assert.equal(run.status, 0);
+});
+
+test("rejects invalid result containers even with a root success status", async () => {
+  for (const results of [undefined, [], [null], ["invalid"], [[]]]) {
+    const { adapter, calls } = fixture([() => Response.json({ status: " 200 ", results })]);
+    await assertFailure(adapter.execute(seed), "Unexpected Decodo response (missing results)");
+    assert.equal(calls.length, 1);
+  }
+});
+
+test("root failure takes precedence over nested result entries and retries on 613", async () => {
+  const retry613 = fixture([
+    () => Response.json({ status_code: "613", results: [{}] }),
+    () => scraped(MARKDOWN),
+  ]);
+  assert.equal((await retry613.adapter.execute(seed)).length, 1);
+  assert.equal(retry613.calls.length, 2);
+  assertRequest(retry613.calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+
+  const rootErrorOverNested = fixture([
+    () => Response.json({ status_code: 614, results: [{ status_code: 200, content: MARKDOWN }] }),
+  ]);
+  await assertFailure(rootErrorOverNested.adapter.execute(seed), "Decodo service failure (HTTP 614)");
+  assert.equal(rootErrorOverNested.calls.length, 1);
+});
+
+test("uses the fallback failure for mixed 612 or 613 outcomes", async () => {
+  const loginWall = () => scraped("<main><h1>Sign in</h1><form><input type=\"password\"></form></main>");
+  const empty = () => scraped("<html><body><nav>Home</nav></body></html>");
+  for (const status of [612, 613]) {
+    const failed = () => syntheticHttpStatus(status);
+    const blocked = () => syntheticHttpStatus(999);
+    for (const [first, second, message] of [
+      [loginWall, failed, `Decodo service failure (HTTP ${status})`],
+      [failed, blocked, "Decodo scrape blocked by anti-bot protection (999)"],
+      [failed, loginWall, "Decodo target requires login"],
+      [failed, empty, "Decodo returned empty page content"],
+    ] as const) {
+      const { adapter, calls } = fixture([first, second]);
+      await assertFailure(adapter.execute(seed), message);
+      assert.equal(calls.length, 2);
+      assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+    }
+  }
+});
+
+test("classifies the failure from a Fetch network-error response as public", async () => {
+  const { adapter, calls } = fixture([() => Response.error()]);
+  await assert.rejects(adapter.execute(seed), (error: Error) => isPublicDecodoFailure(error.message));
   assert.equal(calls.length, 1);
 });
