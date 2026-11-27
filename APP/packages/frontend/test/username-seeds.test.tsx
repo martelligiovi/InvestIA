@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EvidenceRecord, Investigation } from "@investia/core";
@@ -91,7 +91,9 @@ describe("UsernameSeedsPanel", () => {
 describe("workspace username controls", () => {
   it("does not render a Usernames disclosure or panel even when proposals exist", async () => {
     const { WorkspacePage } = await import("../src/pages/WorkspacePage");
-    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(investigation()), {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(
+      String(input).endsWith("/normalizations") ? { normalizations: [], jobs: [] } : investigation(),
+    ), {
       headers: { "content-type": "application/json" },
     }));
     vi.stubGlobal("fetch", fetcher);
@@ -100,6 +102,11 @@ describe("workspace username controls", () => {
     const header = container.querySelector<HTMLElement>(".workspace-header")!;
     expect(within(header).queryByText(/^Usernames(?: \(\d+\))?$/u, { selector: "summary" })).not.toBeInTheDocument();
     expect(container.querySelector(".workspace-usernames-disclosure, .username-seeds-panel")).not.toBeInTheDocument();
-    expect(fetcher.mock.calls.map(([input, init]) => `${init?.method ?? "GET"} ${String(input)}`)).toEqual(["GET /investigations/case-1"]);
+    await waitFor(() => {
+      expect(fetcher.mock.calls.map(([input, init]) => `${init?.method ?? "GET"} ${String(input)}`)).toEqual([
+        "GET /investigations/case-1",
+        "GET /investigations/case-1/normalizations",
+      ]);
+    });
   });
 });

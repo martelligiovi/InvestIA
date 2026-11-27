@@ -2,11 +2,14 @@ import { isScannerFinding, type Observation, type RegistrationObservation, type 
 import { isGooglePhotoUrl, isSafePublicHttpUrl, urlSeed, USERNAME_SEED_PATTERN, type EmailSeed, type PhotoSeed, type UrlSeed, type UsernameSeed } from "../domain/seed.ts";
 import { findingSeedNodeId, usernameSeedNodeId } from "../domain/seed-graph.ts";
 import { usernameProposals } from "../domain/username-proposals.ts";
+import { ActionRerunConflictError, prepareActionRerun } from "../domain/action-rerun.ts";
 import type { SeedBox } from "../domain/seed-box.ts";
 import {
+  authorizationCovers,
   CATALOG_INPUT_KINDS,
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
+  isActionEligibleByParentValidation,
   investigationOperationalStatus,
   isGhuntEligibleEmail,
   isScopedCatalogId,
@@ -131,7 +134,7 @@ function auditEvent(
   actor: AuditEvent["actor"],
   kind: AuditKind,
   reason: string,
-  extra: Partial<Pick<AuditEvent, "actionId" | "evidenceId" | "granted" | "decision" | "unsupportedObservationCount">> = {},
+  extra: Partial<Pick<AuditEvent, "actionId" | "evidenceId" | "granted" | "decision" | "failure" | "unsupportedObservationCount">> = {},
 ): AuditEvent {
   return { id: newId(createId, "audit"), at, actor, kind, reason, ...extra };
 }
@@ -350,7 +353,7 @@ export class InvestigationService {
       const existing = current.actions.find((candidate) => candidate.spec.seed.value === seed.value);
       // Compatibility: an explicit historical proposal request may replace an unclaimed
       // catalog queue entry with the old proposed/approval workflow. Never alter claimed work.
-      if (existing !== undefined && !(existing.status === "queued" && existing.queuedByCatalog === true && existing.approval === undefined)) {
+      if (existing !== undefined && !(existing.status === "queued" && existing.queuedByCatalog === true && existing.approval === undefined && existing.rerun === undefined)) {
         throw new Error("A GitHub catalog action already exists for this email seed");
       }
       const proposed = existing === undefined ? action : { ...action, id: existing.id };
@@ -376,7 +379,7 @@ export class InvestigationService {
         throw new Error("Scanner actions require an email seed already recorded in this investigation");
       }
       const existing = current.actions.find((candidate) => candidate.spec.catalogId === CATALOG_ID && candidate.spec.seed.value === seed.value);
-      if (existing && !(existing.status === "queued" && existing.queuedByCatalog && !existing.approval)) {
+      if (existing && !(existing.status === "queued" && existing.queuedByCatalog && !existing.approval && !existing.rerun)) {
         throw new Error("A scanner catalog action already exists for this email seed");
       }
       const proposed = existing ? { ...action, id: existing.id } : action;
@@ -521,6 +524,26 @@ export class InvestigationService {
     };
   }
 
+  async requestActionRerun(id: string, actionId: InvestigationActionId, expectedRevision: number): Promise<Investigation> {
+    const at = timestamp(this.dependencies.clock);
+    return this.dependencies.store.transact(id, (current) => {
+      const action = getAction(current, actionId);
+      const enabled = [...this.seedCatalog, ...this.photoCatalog, ...this.urlCatalog, "maigret.username.v1"];
+      if (current.revision !== expectedRevision || current.paused || !enabled.includes(action.spec.catalogId) ||
+        !authorizationCovers(current.authorization, action.spec.catalogId) || !isActionEligibleByParentValidation(current, action)) {
+        throw new ActionRerunConflictError();
+      }
+      const queued = prepareActionRerun(current, action);
+      const event = auditEvent(this.dependencies.createId, at, "operator", "action_rerun_requested",
+        "Requested a replacement execution; prior results remain until a successful replacement.", { actionId });
+      const next = withRevision(current, at, {
+        actions: current.actions.map((candidate) => candidate.id === actionId ? queued : candidate),
+        audit: [...current.audit, event],
+      });
+      return { next, result: next };
+    });
+  }
+
   async executeNextAction(id: string, automaticOnly = false): Promise<GitHubCatalogAction | undefined> {
     const claimedAt = timestamp(this.dependencies.clock);
     const deferred = this.dependencies.deferredCatalogIds === undefined ? [] : await this.dependencies.deferredCatalogIds();
@@ -559,6 +582,7 @@ export class InvestigationService {
     const sourceId = this.dependencies.executor.sourceIdFor?.(claim.action) ?? this.dependencies.executor.id;
     const evidence: EvidenceRecord[] = [];
     let unsupportedObservationCount = 0;
+    let confirmedObservation = false;
     for (const observation of observations as readonly unknown[]) {
       const scanner = isScannerObservation(observation);
       const registration = isRegistrationObservation(observation) && observation.provider === "github";
@@ -572,12 +596,16 @@ export class InvestigationService {
         continue;
       }
       const accepted = observation as RegistrationObservation | ScannerObservation;
-      // Valid negative/uncertain results are not findings and do not consume evidence IDs.
-      if (accepted.status !== "registered") continue;
+      // A confirmed negative result can replace prior results; an error or skipped check cannot.
+      if (accepted.status !== "registered") {
+        confirmedObservation ||= accepted.status === "not_registered";
+        continue;
+      }
       if (scanner && !["Registered", "Found"].includes((accepted as ScannerObservation).finding.upstreamStatus)) {
         unsupportedObservationCount++;
         continue;
       }
+      confirmedObservation = true;
       evidence.push({
         id: newId(this.dependencies.createId, "evidence"),
         actionId: claim.action.id,
@@ -588,6 +616,13 @@ export class InvestigationService {
         recordedAt: completedAt,
         ...(scanner ? { finding: structuredClone((accepted as ScannerObservation).finding) } : {}),
       });
+    }
+    if (claim.action.rerun !== undefined && observations.length > 0 && !confirmedObservation) {
+      const failed = await this.dependencies.store.completeAction(this.completion(
+        claim, id, completedAt, { kind: "failure", error: "The replacement returned no confirmed results." },
+        "Replacement execution returned only inconclusive or failed checks.",
+      ));
+      return getAction(failed, claim.action.id);
     }
     const scanned = claim.action.spec.seed as EmailSeed;
     const chainsGravatar = claim.action.spec.catalogId === CATALOG_ID && this.seedCatalog.includes("gravatar.email.v1");
@@ -618,7 +653,7 @@ export class InvestigationService {
       const action: GitHubCatalogAction = {
         id: newId(this.dependencies.createId, "action"),
         spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed: scanned },
-        status: "proposed", proposedAt: completedAt,
+        sourceActionId: claim.action.id, status: "proposed", proposedAt: completedAt,
         proposalReason: "User Scanner did not find Gravatar; the operator may approve a public profile lookup.",
       };
       followUps.push({ action, auditEvent: auditEvent(this.dependencies.createId, completedAt, "system", "action_proposed", action.proposalReason, { actionId: action.id }) });
@@ -658,9 +693,9 @@ export class InvestigationService {
     result: CompleteActionInput["result"],
     reason: string,
   ): CompleteActionInput {
-    const successDetails = result.kind === "success"
+    const details = result.kind === "success"
       ? { unsupportedObservationCount: result.unsupportedObservationCount }
-      : {};
+      : typeof result.error === "string" && result.error.length > 0 ? { failure: result.error } : {};
     return {
       investigationId,
       actionId: claim.action.id,
@@ -673,7 +708,7 @@ export class InvestigationService {
         "system",
         result.kind === "success" ? "action_succeeded" : "action_failed",
         reason,
-        { actionId: claim.action.id, ...successDetails },
+        { actionId: claim.action.id, ...details },
       ),
     };
   }

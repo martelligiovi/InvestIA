@@ -317,6 +317,16 @@ test("a failed scanner does not propose a Gravatar lookup", async () => {
   assert.equal((await service.loadInvestigation(created.id))!.actions.some((action) => action.spec.catalogId === "gravatar.email.v1"), false);
 });
 
+test("an executor error with an empty message leaves audit failure detail absent", async () => {
+  const { service } = makeHarness({ id: "fixture", async execute() { throw new Error(""); } });
+  const { investigationId, actionId } = await approvedAction(service);
+  assert.equal((await service.executeNextAction(investigationId))?.status, "failed");
+  const event = (await service.loadInvestigation(investigationId))?.audit.at(-1);
+  assert.equal(event?.kind, "action_failed");
+  assert.equal(event?.actionId, actionId);
+  assert.ok(!Object.hasOwn(event!, "failure"));
+});
+
 test("a seed catalog must list known scoped tools exactly once", () => {
   const base = {
     store: new MemoryInvestigationStore(), executor: { id: "unused", async execute() { return []; } },
@@ -709,7 +719,10 @@ test("records GitHub evidence provenance and ignores unsupported identities/prov
   assert.ok(investigation?.evidence.every((evidence) => evidence.provider === "github"));
   assert.ok(investigation?.evidence.every((evidence) => evidence.sourceId === "mixed-box"));
   assert.equal(action?.unsupportedObservationCount, 2);
-  assert.equal(investigation?.audit.some((event) => event.kind === "action_succeeded"), true);
+  const event = investigation?.audit.at(-1);
+  assert.equal(event?.kind, "action_succeeded");
+  assert.equal(event?.unsupportedObservationCount, 2);
+  assert.ok(!Object.hasOwn(event!, "failure"));
   const report = compileInvestigationReport(investigation!);
   assert.ok(report.includes("registered"));
   assert.ok(!report.includes("| unknown |") && !report.includes("| error |"));
@@ -750,12 +763,13 @@ test("validation decisions preserve accepted, rejected, and inconclusive outcome
 });
 
 test("terminal executor failures are retained and report escaping is deterministic and factual", async () => {
+  const failure = "<script>alert(1)</script> | failed\n- injected claim";
   let calls = 0;
   const executor: InvestigationExecutor = {
     id: "failure-box",
     async execute() {
       calls++;
-      throw new Error("<script>alert(1)</script> | failed\n- injected claim");
+      throw new Error(failure);
     },
   };
   const { service } = makeHarness(executor);
@@ -769,7 +783,12 @@ test("terminal executor failures are retained and report escaping is determinist
   assert.equal(await service.executeNextAction(investigation.id), undefined);
   assert.equal(calls, 1);
   const snapshot = await service.loadInvestigation(investigation.id);
-  assert.equal(snapshot?.actions[0]?.failure, "<script>alert(1)</script> | failed\n- injected claim");
+  assert.equal(snapshot?.actions[0]?.failure, failure);
+  const event = snapshot?.audit.at(-1);
+  assert.deepEqual(event, {
+    id: event?.id, at: snapshot?.updatedAt, actor: "system", kind: "action_failed", actionId: action.id,
+    reason: "Execution failed; the terminal failure was retained and automatic retries are disabled.", failure,
+  });
   assert.equal(snapshot?.actions[0]?.spec.seed.value, email, "action seed remains unchanged");
   const report = compileInvestigationReport(snapshot!);
   assert.ok(report.includes("Identity attribution is unsupported and is not asserted."));

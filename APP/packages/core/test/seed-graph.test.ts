@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as core from "../src/index.ts";
 import {
   createInitialInvestigation,
+  findingSeedNodeId,
   investigationSeedGraph,
   seedHasActions,
   type EvidenceRecord,
@@ -52,6 +54,47 @@ function evidence(id: string, actionId: string, seedEmail: string, withFinding?:
 function investigation(overrides: Partial<Investigation>): Investigation {
   return { ...createInitialInvestigation("case", at), ...overrides };
 }
+
+test("replacing a completed action's results prunes all and only its explicitly linked descendants", () => {
+  const address = "owner@example.org";
+  const source = evidence("parent-evidence", "parent", address);
+  const first = evidence("root/result", "rerun", address);
+  const second = evidence("child/result", "child", address);
+  const leaf = evidence("leaf/result", "grandchild", address);
+  const separate = evidence("sibling/result", "sibling", address);
+  const manual = { kind: "username", value: "manual-handle", origin: { kind: "operator" }, status: "accepted", at, reason: "Added manually" } as const;
+  const proposal = { ...manual, value: "derived-handle", origin: { kind: "evidence", evidenceId: second.id } } as const;
+  const decisions = [first, leaf, separate].map((item) => ({
+    id: `validation:${item.id}`, evidenceId: item.id, status: "accepted" as const, reason: "Reviewed", at, operator: "local-operator" as const,
+  }));
+  const audit = [{ id: "kept-audit", at, actor: "operator", kind: "evidence_validated", reason: "Reviewed", evidenceId: leaf.id }] as const;
+  const current = investigation({
+    revision: 4,
+    emailSeeds: [{ kind: "email", value: address }], usernameSeeds: [manual, proposal], validations: decisions, audit,
+    actions: [
+      emailAction("child", address, findingSeedNodeId(first.id)), // independent of array insertion order
+      emailAction("parent", address), emailAction("rerun", address, findingSeedNodeId(source.id)),
+      emailAction("grandchild", address, findingSeedNodeId(second.id)), emailAction("sibling", address, findingSeedNodeId(source.id)),
+      emailAction("unlinked-legacy", address),
+    ],
+    evidence: [source, first, second, leaf, separate],
+  });
+  const saved = structuredClone(current);
+  const branch = core.actionBranch(current, "rerun");
+  assert.deepEqual([...branch.actionIds], ["rerun", "child", "grandchild"]);
+  assert.deepEqual([...branch.evidenceIds], [first.id, second.id, leaf.id]);
+  const after = core.withoutActionResults(current, "rerun");
+  assert.deepEqual(after, {
+    ...saved,
+    actions: saved.actions.filter((action) => action.id !== "child" && action.id !== "grandchild"),
+    evidence: [source, separate],
+    usernameSeeds: [manual],
+    validations: [decisions[2]],
+  });
+  assert.deepEqual(current, saved, "the traversal does not change the prior snapshot");
+  assert.equal(investigationSeedGraph(after).actionInputs.get("rerun"), findingSeedNodeId(source.id));
+  assert.equal(investigationSeedGraph(after).actionInputs.get("sibling"), findingSeedNodeId(source.id));
+});
 
 test("operator email seeds get stable ids in input order with operator origin", () => {
   const graph = investigationSeedGraph(investigation({

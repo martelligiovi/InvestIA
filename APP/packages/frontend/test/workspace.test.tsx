@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EvidenceRecord, GitHubCatalogAction, Investigation, ValidationDecision } from "@investia/core";
+import type { EvidenceNormalizationJob, EvidenceRecord, GitHubCatalogAction, Investigation, ValidationDecision } from "@investia/core";
 import App from "../src/App";
+import { ExecutionQueuePopover } from "../src/components/ExecutionQueuePopover";
 import { WorkspacePage } from "../src/pages/WorkspacePage";
 
 type CapturedCall = { input: RequestInfo | URL; init?: RequestInit };
@@ -168,12 +169,16 @@ describe("espacio de investigación factual", () => {
     expect(screen.queryByText("Controles del expediente")).not.toBeInTheDocument();
     const header = within(document.querySelector<HTMLElement>(".workspace-header-actions")!);
     expect(header.queryByText(/^Usernames\b/u, { selector: "summary" })).not.toBeInTheDocument();
-    expect(header.getByText("Pausar", { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
+    expect(document.querySelector(".workspace-pause-disclosure")).toBeNull();
+    for (const label of ["Pausar", "Reanudar"]) expect(header.queryByText(label, { selector: "summary" })).not.toBeInTheDocument();
+    expect(header.queryByText("Pausar expediente", { selector: "button" })).not.toBeInTheDocument();
     for (const name of ["Obtener informe", "Generar informe con IA"]) expect(header.getByRole("button", { name })).toBeEnabled();
     for (const name of ["Autorizar expediente", "Actualizar expediente", "Ejecutar siguiente acción en cola"]) {
       expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
     }
-    expect(calls).toHaveLength(1);
+    await waitFor(() => {
+      expect(calls.map(pathOf)).toEqual(["/investigations/case-1", "/investigations/case-1/normalizations"]);
+    });
   });
   it("carga, permite reintentar errores y distingue un expediente inexistente", async () => {
     let attempts = 0;
@@ -245,11 +250,109 @@ describe("espacio de investigación factual", () => {
     await user.click(screen.getByRole("tab", { name: "Detalle" }));
     expect(document.querySelector(".workspace-layout")).toHaveAttribute("data-mobile-panel", "detail");
 
-    expect(calls.map(pathOf)).toEqual(["/investigations/case-1"]);
+    await waitFor(() => {
+      expect(calls.map(pathOf)).toEqual(["/investigations/case-1", "/investigations/case-1/normalizations"]);
+    });
     expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
   });
 
-  it("muestra un fallo terminal sin ofrecer reejecución", async () => {
+  it.each(["success", "failure", "stale"] as const)("confirma la reejecución sin perder la rama antes de tiempo (%s)", async (outcome) => {
+    const root: GitHubCatalogAction = { ...action("succeeded"), approval: undefined, queuedByCatalog: true,
+      spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed } };
+    const child: GitHubCatalogAction = { ...root, id: "child-1", sourceActionId: root.id, status: "succeeded" };
+    const before = snapshot({ advancementMode: "manual", actions: [root, child], evidence: [evidence()],
+      authorization: { ...approval, granted: true, catalogScopes: ["user-scanner.email.v1"] } });
+    const rerun = { previousStatus: "succeeded" as const, fingerprint: "fixture-digest" };
+    let current = before;
+    const { calls } = installFetch(async (call) => {
+      if (pathOf(call) === "/investigations/case-1") return json(current);
+      if (pathOf(call) === "/investigations/case-1/actions/action-1/rerun") {
+        if (outcome === "stale") {
+          current = { ...before, revision: 2 };
+          return json({ error: "CONFLICT", message: "The action cannot be rerun in the current state" }, 409);
+        }
+        current = { ...before, revision: 2, actions: [{ ...root, status: "queued", rerun }, child] };
+        return json(current, 202);
+      }
+      if (pathOf(call) === "/investigations/case-1/actions/run") {
+        const claimed = { ...root, status: "claimed" as const, rerun, claim: { id: "new-claim", claimedAt: createdAt } };
+        current = { ...before, revision: 3, actions: [claimed, child] };
+        return json({ action: claimed });
+      }
+      throw new Error(`Ruta inesperada: ${pathOf(call)}`);
+    });
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const nodeList = await screen.findByText(/Lista accesible de nodos/i).then((entry) => entry.closest("details")!);
+    await user.click(nodeList.querySelector("summary")!);
+    await user.click(within(nodeList).getByRole("button", { name: /Acción: action-1/i }));
+    await user.click(screen.getByRole("button", { name: "Reejecutar" }));
+    expect(screen.getByText(/solo si la nueva ejecución termina bien/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Cancelar" }));
+    expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Reejecutar" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar reejecución" }));
+    const posts = calls.filter((call) => call.init?.method === "POST");
+    expect(posts.map(pathOf)).toEqual(["/investigations/case-1/actions/action-1/rerun"]);
+    expect(bodyOf(posts[0]!)).toEqual({ expectedRevision: 1 });
+    expect(within(nodeList).getByRole("button", { name: /Acción: child-1/i })).toBeInTheDocument();
+    expect(within(nodeList).getByRole("button", { name: /Evidencia: evidence-1/i })).toBeInTheDocument();
+    if (outcome === "stale") {
+      expect(await screen.findByText(/El expediente cambió o la acción ya no admite/i)).toBeInTheDocument();
+      return;
+    }
+    expect(await screen.findByText(/Reejecución en cola/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reejecutar" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Ejecutar siguiente acción en cola" }));
+    expect(await screen.findByText(/Reejecución en curso/i)).toBeInTheDocument();
+    expect(within(nodeList).getByRole("button", { name: /Acción: child-1/i })).toBeInTheDocument();
+    current = outcome === "success"
+      ? { ...before, revision: 4, actions: [root], evidence: [evidence("replacement")] }
+      : { ...before, revision: 4, actions: [{ ...root, lastRerunFailed: true, lastRerunFailure: "Decodo scrape blocked by anti-bot protection (999)" }, child] };
+    if (outcome === "success") {
+      expect(await within(nodeList).findByRole("button", { name: /Evidencia: replacement/i }, { timeout: 7_000 })).toBeInTheDocument();
+      expect(within(nodeList).queryByRole("button", { name: /Acción: child-1/i })).not.toBeInTheDocument();
+    } else {
+      expect(await screen.findByText(/La reejecución falló\. Se conservaron/i, {}, { timeout: 7_000 })).toBeInTheDocument();
+      expect(screen.getByText(/Decodo scrape blocked by anti-bot protection \(999\)/)).toBeInTheDocument();
+      expect(within(nodeList).getByRole("button", { name: /Acción: child-1/i })).toBeInTheDocument();
+    }
+  }, 12_000);
+
+  it("permite ampliar una autorización histórica para reejecutar una acción terminal", async () => {
+    const root: GitHubCatalogAction = {
+      ...action("succeeded"),
+      spec: { catalogId: "gravatar.email.v1", provider: "gravatar", seed },
+    };
+    let current = snapshot({
+      advancementMode: "manual",
+      actions: [root],
+      authorization: { ...approval, granted: true, catalogScope: "user-scanner.email.v1" },
+    });
+    const { calls } = installFetch(async (call) => {
+      if (pathOf(call) === "/investigations/case-1") return json(current);
+      if (pathOf(call) === "/investigations/case-1/authorization") {
+        current = {
+          ...current, revision: current.revision + 1,
+          authorization: { ...approval, granted: true, catalogScopes: ["gravatar.email.v1"] },
+        };
+        return json(current);
+      }
+      throw new Error(`Ruta inesperada: ${pathOf(call)}`);
+    });
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const list = await screen.findByText(/Lista accesible de nodos/i).then((entry) => entry.closest("details")!);
+    await user.click(list.querySelector("summary")!);
+    await user.click(within(list).getByRole("button", { name: /Acción: action-1/i }));
+    expect(screen.getByRole("button", { name: "Reejecutar" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Autorizar expediente" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reejecutar" })).toBeEnabled());
+    expect(calls.filter(({ init }) => init?.method === "POST").map(pathOf))
+      .toEqual(["/investigations/case-1/authorization"]);
+  });
+
+  it("muestra un fallo terminal de catálogo histórico sin ofrecer reejecución", async () => {
     const { calls } = installFetch(async (call) => {
       if (pathOf(call) === "/investigations/case-1") return json(snapshot({ actions: [action("failed")] }));
       throw new Error(`Ruta inesperada: ${pathOf(call)}`);
@@ -290,11 +393,29 @@ describe("espacio de investigación factual", () => {
     expect(run).toBeDisabled();
     expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
 
-    await user.click(screen.getByText("Reanudar", { selector: "summary" }));
-    await user.type(screen.getByLabelText(/motivo para reanudar/i), "Revisión terminada");
-    await user.click(screen.getByRole("button", { name: /reanudar expediente/i }));
+    const resumeSummary = screen.getByText("Reanudar", { selector: "summary" });
+    const disclosure = resumeSummary.closest<HTMLDetailsElement>(".workspace-pause-disclosure")!;
+    await user.click(resumeSummary);
+    const resumeReason = within(disclosure).getByLabelText("Motivo para reanudar el expediente");
+    const resume = within(disclosure).getByRole("button", { name: "Reanudar expediente" });
+    expect(within(disclosure).getByText("Motivo para reanudar", { selector: "span" })).toBeVisible();
+    expect(within(disclosure).queryByText(/Pausar impide nuevas reclamaciones/)).not.toBeInTheDocument();
+    expect(resume).toBeDisabled();
+    await user.type(resumeReason, "   ");
+    expect(resume).toBeDisabled();
+    await user.click(resume);
+    expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(0);
+    expect(run).toBeDisabled();
+
+    await user.clear(resumeReason);
+    await user.type(resumeReason, "Revisión terminada");
+    await user.click(resume);
     await waitFor(() => expect(run).toBeEnabled());
-    expect(calls.some((call) => pathOf(call).endsWith("/actions/run"))).toBe(false);
+    expect(document.querySelector(".workspace-pause-disclosure")).toBeNull();
+    expect(screen.queryByText("Reanudar", { selector: "summary" })).not.toBeInTheDocument();
+    const writes = calls.filter((call) => call.init?.method === "POST");
+    expect(writes.map(pathOf)).toEqual(["/investigations/case-1/resume"]);
+    expect(writes.map(bodyOf)).toEqual([{ reason: "Revisión terminada" }]);
 
     await user.click(run);
     await waitFor(() => expect(calls.filter((call) => pathOf(call).endsWith("/actions/run"))).toHaveLength(1));
@@ -553,7 +674,9 @@ describe("espacio de investigación factual", () => {
     expect(authorize).toBeEnabled();
     expect(refresh).not.toBeInTheDocument();
     expect(calls.map((call) => `${call.init?.method ?? "GET"} ${pathOf(call)}`)).toEqual([
-      "GET /investigations/case-1", "POST /investigations/case-1/authorization", "GET /investigations/case-1", "GET /investigations/case-1",
+      "GET /investigations/case-1", "GET /investigations/case-1/normalizations",
+      "POST /investigations/case-1/authorization", "GET /investigations/case-1", "GET /investigations/case-1",
+      "GET /investigations/case-1/normalizations",
     ]);
   });
 
@@ -684,7 +807,7 @@ describe("detalle del nodo como panel desplegable", () => {
 
 describe("informe con IA", () => {
   it("genera el informe con IA por POST y lo presenta rotulado como IA", async () => {
-    const markdown = "# Informe hipotético\n\n## Datos utilizados";
+    const markdown = "# Informe de perfil\n\n## Perfil general";
     const { calls } = installFetch(async (call) => {
       if (pathOf(call) === "/investigations/case-1") return json(snapshot());
       if (pathOf(call) === "/investigations/case-1/report/ai") return reportResponse(markdown);
@@ -700,7 +823,9 @@ describe("informe con IA", () => {
     const preview = await screen.findByLabelText("Vista previa del informe con IA");
     expect(preview.tagName).toBe("PRE");
     expect(preview.textContent).toBe(markdown);
-    expect(screen.getByRole("heading", { name: "Informe con IA (hipotético)" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Informe con IA" })).toBeInTheDocument();
+    expect(screen.getByText("SÍNTESIS ASISTIDA POR IA")).toBeInTheDocument();
+    expect(screen.queryByText(/hipotétic/i)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /descargar markdown/i })).toHaveAttribute("download", "informe-ia-case-1.md");
     const aiCalls = calls.filter((call) => pathOf(call) === "/investigations/case-1/report/ai");
     expect(aiCalls).toHaveLength(1);
@@ -791,23 +916,263 @@ describe("informe con IA", () => {
   });
 });
 
-describe("desplegables del encabezado", () => {
-  it("se cierran al interactuar fuera de ellos o con Escape, sin cerrarse al usarlos", async () => {
+describe("execution queue popover", () => {
+  it("shows a spinning ring without percentages, orders recorded stages, and opens action detail", async () => {
+    const { calls } = installFetch(async () => json(snapshot({
+      authorization: { granted: true, at: createdAt, reason: "Fixture", operator: "local-operator" },
+      actions: [
+        { ...action("failed"), id: "failed", failure: "Decodo target requires login", spec: {
+          catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: "https://example.test/profile" },
+        } },
+        { ...action("queued"), id: "queued-z" }, { ...action("succeeded"), id: "done" },
+        { ...action("queued"), id: "queued-a" }, { ...action("claimed"), id: "running" },
+      ],
+    })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    const disclosure = summary.closest("details")!;
+    const ring = summary.querySelector("svg")!;
+    expect(ring).toHaveAttribute("width", "22");
+    expect(ring).toHaveAttribute("height", "22");
+    expect(ring).toHaveAttribute("data-mode", "spinning");
+    expect(ring.querySelector(".queue-ring-sweep")).toBeInTheDocument();
+    expect(ring.querySelector(".queue-ring-progress")).not.toBeInTheDocument();
+    expect(ring.querySelector(".queue-ring-alert")).toBeInTheDocument();
+    expect(summary).not.toHaveTextContent("%");
+    expect(disclosure).not.toHaveAttribute("open");
+
+    await user.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    expect(panel).not.toHaveTextContent("%");
+    expect(within(panel).getByText("1 en ejecución · 2 en cola · 1 completa · 1 fallida")).toBeInTheDocument();
+    expect(within(panel).getByText("Las etapas siguientes se suman al desbloquearse nuevos hallazgos.")).toBeInTheDocument();
+
+    // Active (running + queued) stay expanded; completed and errors start collapsed with errors last.
+    const initialRows = within(panel).getAllByRole("listitem");
+    expect(initialRows.map((row) => row.getAttribute("data-kind"))).toEqual(["running", "queued", "queued"]);
+    expect(within(initialRows[0]!).getByRole("progressbar")).not.toHaveAttribute("aria-valuenow");
+    expect(within(initialRows[1]!).getByText("Siguiente")).toBeInTheDocument();
+    const second = within(initialRows[2]!).getByRole("button", { name: /En cola · #2/u });
+
+    const completedToggle = within(panel).getByRole("button", { name: /Completadas/u });
+    const errorsToggle = within(panel).getByRole("button", { name: /Errores/u });
+    expect(completedToggle).toHaveAttribute("aria-expanded", "false");
+    expect(errorsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(Boolean(completedToggle.compareDocumentPosition(errorsToggle) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(within(panel).getByText("Completo")).not.toBeVisible();
+    expect(within(panel).getByText("La página requiere iniciar sesión para ver su contenido.")).not.toBeVisible();
+
+    await user.click(completedToggle);
+    expect(completedToggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(panel).getByText("Completo")).toBeInTheDocument();
+
+    await user.click(errorsToggle);
+    expect(errorsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(panel).getByRole("button", { name: /Falló/u }))
+      .toHaveAccessibleDescription("La página requiere iniciar sesión para ver su contenido.");
+    const expandedRows = within(panel).getAllByRole("listitem");
+    expect(expandedRows.map((row) => row.getAttribute("data-kind"))).toEqual(["running", "queued", "queued", "completed", "failed"]);
+
+    await user.click(second);
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(summary).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Detalle" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "Detalle" }).closest(".workspace-layout")).toHaveAttribute("data-detail-open", "true");
+    expect(within(screen.getByRole("tabpanel", { name: "Detalle" })).getByRole("heading", { name: "Comprobación de registro en GitHub" }))
+      .toBeInTheDocument();
+    const graph = screen.getByRole("group", { name: "Grafo factual de semillas, acciones y observaciones" });
+    expect(within(graph).getByRole("button", { name: /^Acción: queued-a\./u })).toHaveAttribute("aria-pressed", "true");
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => ["/investigations/case-1", "/investigations/case-1/normalizations"].includes(pathOf(call)) &&
+      (call.init?.method ?? "GET") === "GET")).toBe(true);
+
+    // Reopening starts with completed and errors cleanly collapsed again.
+    await user.click(summary);
+    expect(within(panel).getByRole("button", { name: /Completadas/u })).toHaveAttribute("aria-expanded", "false");
+    expect(within(panel).getByRole("button", { name: /Errores/u })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("dismisses an empty queue with Escape or an outside click", async () => {
     installFetch(async () => json(snapshot()));
     const user = userEvent.setup();
     render(<WorkspacePage id="case-1" />);
-    await screen.findByRole("heading", { name: "Caso de prueba" });
-    const pause = screen.getByText("Pausar", { selector: "summary" });
-    const controls = pause.closest("details")!;
-    await user.click(pause);
-    expect(controls).toHaveAttribute("open");
-    await user.click(within(controls).getByLabelText("Motivo para pausar el expediente"));
-    expect(controls).toHaveAttribute("open");
-    await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
-    expect(controls).not.toHaveAttribute("open");
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    const disclosure = summary.closest("details")!;
+    expect(summary.querySelector("svg")).toHaveAttribute("data-mode", "empty");
 
-    await user.click(pause);
+    await user.click(summary);
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    await user.click(within(panel).getByText("Todavía no hay acciones en cola."));
+    expect(disclosure).toHaveAttribute("open");
     await user.keyboard("{Escape}");
-    expect(controls).not.toHaveAttribute("open");
+    expect(disclosure).not.toHaveAttribute("open");
+
+    await user.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+    await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
+    expect(disclosure).not.toHaveAttribute("open");
+  });
+
+  it("dismisses the queue with Escape after keyboard focus moves to the detail", async () => {
+    installFetch(async () => json(snapshot({ actions: [action("succeeded")] })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    await user.click(summary);
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    await user.click(within(panel).getByRole("button", { name: /Completadas/u }));
+    await user.click(within(panel).getByRole("button", { name: /Completo/u }));
+    await user.click(summary);
+    const detail = screen.getByRole("tabpanel", { name: "Detalle" });
+    detail.focus();
+    expect(detail).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("keeps retry history collapsed with distinct descriptions for attempts of the same action", async () => {
+    const completedRetry = { ...action("claimed"), id: "completed-retry", rerun: { previousStatus: "succeeded", fingerprint: "0".repeat(64) } } as const;
+    const failedRetry = { ...action("claimed"), id: "failed-retry", rerun: { previousStatus: "failed", fingerprint: "0".repeat(64) } } as const;
+    const failed = { ...action("failed"), id: "failed-twice", lastRerunFailed: true,
+      lastRerunFailure: "The replacement returned no confirmed results." } as const;
+    const audit = [
+      { id: "success", actionId: completedRetry.id, actor: "system", at: createdAt, kind: "action_succeeded", reason: "Completed" },
+      { id: "failure", actionId: failedRetry.id, actor: "system", at: createdAt, kind: "action_failed", reason: "Failed" },
+    ] as const;
+    installFetch(async () => json(snapshot({ actions: [completedRetry, failedRetry, failed], audit })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    await user.click(summary);
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    const rows = within(panel).getAllByRole("listitem");
+    expect(rows.map((row) => row.dataset.kind)).toEqual(["running", "running"]);
+    for (const row of rows) expect(within(row).getByRole("button", { name: /^Reintento 2 de /u })).toBeVisible();
+
+    const toggles = [/Completadas/u, /Errores/u].map((name) => within(panel).getByRole("button", { name }));
+    for (const toggle of toggles) {
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      const target = document.getElementById(toggle.getAttribute("aria-controls")!);
+      expect(target).toBeInTheDocument();
+      expect(target).not.toBeVisible();
+      await user.click(toggle);
+      expect(summary.closest("details")).toHaveAttribute("open");
+      expect(target).toBeVisible();
+    }
+    expect(within(panel).getByRole("button", { name: /Completo/u })).toBeVisible();
+    const failures = within(panel).getAllByRole("button", { name: /Falló|Reintento fallido/u });
+    expect(failures).toHaveLength(3);
+    expect(new Set(failures.map((button) => button.getAttribute("aria-describedby"))).size).toBe(3);
+    expect(failures[0]).toHaveAccessibleDescription(/La acción no pudo completarse/u);
+    expect(failures[1]).toHaveAccessibleDescription(/La acción no pudo completarse/u);
+    expect(failures[2]).toHaveAccessibleDescription("La reejecución no devolvió resultados confirmados.");
+
+    await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    await user.click(summary);
+    for (const toggle of toggles) expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("shows replaced action attempts as read-only history, newest first with local times", async () => {
+    const now = new Date(2026, 10, 27, 18);
+    const today = new Date(2026, 10, 27, 14, 50).toISOString();
+    const yesterday = new Date(2026, 10, 26, 12, 14).toISOString();
+    const current = snapshot({
+      actions: [
+        { ...action("succeeded"), completedAt: yesterday },
+        { ...action("claimed"), id: "running" },
+        { ...action("failed"), id: "failed", completedAt: yesterday },
+      ],
+      audit: [
+        { id: "queued", actionId: "old", at: yesterday, actor: "system", kind: "action_queued", reason: "Catalog queued a Maigret search" },
+        { id: "success", actionId: "old", at: today, actor: "system", kind: "action_succeeded", reason: "Completed" },
+        { id: "failure", actionId: "old", at: today, actor: "system", kind: "action_failed", reason: "The replacement returned no confirmed results." },
+      ],
+    });
+    const onSelectAction = vi.fn();
+    const user = userEvent.setup();
+    render(<ExecutionQueuePopover investigation={current} ghuntConnected={true} facecheckConfigured={true} decodoConfigured={true}
+      now={now} onSelectAction={onSelectAction} />);
+    const summary = screen.getByText("Cola", { exact: true }).closest("summary")!;
+    await user.click(summary);
+    const panel = within(screen.getByRole("region", { name: "Cola de ejecución" }));
+    await user.click(panel.getByRole("button", { name: /Completadas 2/u }));
+    await user.click(panel.getByRole("button", { name: /Errores 2/u }));
+    const rows = panel.getAllByRole("listitem");
+    expect(rows.map((row) => row.dataset.kind)).toEqual(["running", "completed", "completed", "failed", "failed"]);
+    expect(rows.map((row) => {
+      const time = row.querySelector("time");
+      return time && [time.textContent, time.getAttribute("datetime")];
+    })).toEqual([null, ["14:50", today], ["26/11 12:14", yesterday], ["14:50", today], ["26/11 12:14", yesterday]]);
+    expect(within(rows[2]!).getByRole("button")).toBeVisible();
+    expect(within(rows[4]!).getByRole("button")).toBeVisible();
+    expect(within(rows[3]!).getByText("La reejecución no devolvió resultados confirmados.")).toBeVisible();
+    for (const [row, title] of [[rows[1]!, "Búsqueda de usuario · Maigret"], [rows[3]!, "Reintento 2 de Búsqueda de usuario · Maigret"]] as const) {
+      expect(within(row).getByText(title)).toBeVisible();
+      expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+      await user.click(within(row).getByText("Acción reemplazada"));
+    }
+    expect(onSelectAction).not.toHaveBeenCalled();
+    expect(summary.closest("details")).toHaveAttribute("open");
+  });
+
+  it("opens Decodo evidence from a normalization row and keeps pruned history non-interactive", async () => {
+    const pageSeed = { kind: "url", value: "https://example.test/profile" } as const;
+    const scrape: GitHubCatalogAction = { ...action("succeeded"), id: "scrape",
+      spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: pageSeed } };
+    const page: EvidenceRecord = { ...evidence("page", scrape.id), provider: "Decodo", sourceId: "decodo:url", seed: pageSeed,
+      finding: { target: pageSeed, url: pageSeed.value, upstreamStatus: "Found", category: "Web page", reason: "Fixture", media: {}, extra: {} } };
+    const queued: EvidenceNormalizationJob = { id: "queued", investigationId: "case-1", evidenceId: page.id,
+      attemptNumber: 1, status: "queued", createdAt };
+    const pruned: EvidenceNormalizationJob = { ...queued, id: "pruned", evidenceId: "old-page", status: "failed", errorCode: "EVIDENCE_UNAVAILABLE" };
+    const { calls } = installFetch(async (call) => pathOf(call).endsWith("/normalizations")
+      ? json({ normalizations: [], jobs: [pruned, queued] })
+      : json(snapshot({ actions: [scrape], evidence: [page] })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    await user.click(summary);
+    const panel = within(screen.getByRole("region", { name: "Cola de ejecución" }));
+    const row = await panel.findByRole("button", { name: /Normalización con IA · example\.test.*\/profile/u });
+    expect(summary.querySelector("svg")).toHaveAttribute("data-mode", "pending");
+    await user.click(panel.getByRole("button", { name: /Errores/u }));
+    const prunedRow = panel.getByText("Página reemplazada").closest("li")!;
+    expect(within(prunedRow).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(prunedRow).getByText("La página guardada ya no está disponible para normalizar.")).toBeVisible();
+    await user.click(row);
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("tab", { name: "Detalle" })).toHaveAttribute("aria-selected", "true");
+    const detail = within(screen.getByRole("tabpanel", { name: "Detalle" }));
+    expect(detail.getByRole("heading", { name: "Página recopilada por Decodo" })).toBeVisible();
+    expect(detail.getByRole("button", { name: "En cola para normalizar con IA" })).toBeDisabled();
+    expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
+  });
+});
+
+describe("desplegables del encabezado", () => {
+  it.each([
+    ["Reanudar", "Motivo para reanudar el expediente"],
+  ])("cierra %s al interactuar fuera o con Escape, sin cerrarlo al usarlo", async (label, reasonLabel) => {
+    installFetch(async () => json(snapshot({ paused: true })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const heading = await screen.findByRole("heading", { name: "Caso de prueba" });
+    const summary = screen.getByText(label, { selector: "summary" });
+    const disclosure = summary.closest("details")!;
+    await user.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+    const reason = within(disclosure).getByLabelText(reasonLabel);
+    await user.click(reason);
+    expect(disclosure).toHaveAttribute("open");
+    await user.click(heading);
+    expect(disclosure).not.toHaveAttribute("open");
+
+    await user.click(summary);
+    await user.click(reason);
+    await user.keyboard("{Escape}");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(summary).toHaveFocus();
   });
 });

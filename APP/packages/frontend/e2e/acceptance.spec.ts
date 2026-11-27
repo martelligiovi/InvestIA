@@ -167,6 +167,16 @@ async function openNodeList(page: Page): Promise<void> {
   }
 }
 
+async function expectCreateSections(page: Page): Promise<void> {
+  const fields = page.getByRole("group", { name: "Datos iniciales" });
+  await expect(fields.getByRole("heading", { level: 2 })).toHaveText(["Expediente", "Semillas iniciales"]);
+  await expect(page.getByRole("heading", { name: "Avance automático" })).toHaveCount(0);
+  const guide = page.getByRole("complementary", { name: "Cómo se abre un expediente" });
+  await expect(guide.getByRole("listitem")).toHaveCount(2);
+  await expect(guide.getByText(/Creá el expediente para iniciar el avance automático/u)).toHaveCount(0);
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+}
+
 for (const outcome of ["information", "failure", "blocked", "empty"] as const) {
   test(`mocked automatic creation and connected result: ${outcome}`, async ({ page }) => {
     const at = "2025-03-16T12:00:00.000Z";
@@ -208,8 +218,7 @@ for (const outcome of ["information", "failure", "blocked", "empty"] as const) {
     await page.getByLabel("Nombre de la investigación").fill(current.name!);
     await page.getByLabel("Intención de la investigación").fill(current.intention!);
     await page.getByLabel("Correo electrónico 1").fill("mock@example.test");
-    await expect(page.getByRole("heading", { name: "Avance automático" })).toBeVisible();
-    await expect(page.getByRole("checkbox")).toHaveCount(0);
+    await expectCreateSections(page);
     await page.getByRole("button", { name: "Crear investigación" }).click();
     await expect(page.getByRole("heading", { name: current.name! })).toBeVisible();
     expect(writes).toEqual(["/investigations", "/investigations/mock-result/authorization", "/investigations/mock-result/emails"]);
@@ -388,14 +397,12 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await expect(page.locator(".home-emblem")).toHaveCount(0);
   await expect(page.locator(".site-footer")).toBeVisible();
   await expect(page.locator(".create-guide pre.ascii-art--tree")).toHaveAttribute("aria-hidden", "true");
-  await expect(page.locator(".create-section")).toHaveCount(3);
+  await expectCreateSections(page);
   await expect(page.getByRole("link", { name: "Volver", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Semillas iniciales" })).toBeVisible();
   await expect(page.getByRole("combobox")).toHaveCount(0);
   await expect(page.locator(".site-header")).toBeVisible();
   await page.getByLabel("Nombre de la investigación").fill(investigationName);
   await page.getByLabel("Intención de la investigación").fill("Comprobar exposición pública sin atribuir identidad.");
-  await expect(page.getByRole("heading", { name: "Avance automático" })).toBeVisible();
   await page.getByLabel("Correo electrónico 1").fill(firstEmail);
   await page.getByRole("button", { name: /Agregar correo/ }).click();
   await page.getByLabel("Correo electrónico 2").fill(secondEmail);
@@ -502,10 +509,16 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect((await readState(request, id!)).executionCount, "automatic worker leaves authorized manual cases untouched").toBe(0);
   await expect(dispatch).toBeEnabled();
 
-  await openDisclosure(page, ".workspace-pause-disclosure");
-  await page.getByLabel("Motivo para pausar el expediente").fill("Pausar antes del despacho explícito.");
-  await page.getByRole("button", { name: "Pausar expediente" }).click();
+  const resumeDisclosure = page.locator(".workspace-pause-disclosure");
+  await expect(resumeDisclosure).toHaveCount(0);
+  const paused = await request.post(`${BASE_URL}/investigations/${encodeURIComponent(id)}/pause`, {
+    data: { reason: "Pausar antes del despacho explícito." },
+  });
+  expect(paused.status()).toBe(200);
   await expect.poll(async () => (await readState(request, id!)).investigation.paused).toBe(true);
+  // Queued manual actions do not trigger snapshot polling.
+  await page.reload();
+  await expect(resumeDisclosure.locator("summary")).toHaveText("Reanudar");
   await expect(dispatch).toBeDisabled();
   const blockedDispatch = await request.post(`${BASE_URL}/investigations/${encodeURIComponent(id!)}/actions/run`);
   expect(blockedDispatch.status()).toBe(200);
@@ -516,9 +529,10 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect(count(state, "POST /investigations/:id/actions/run")).toBe(1);
 
   await openDisclosure(page, ".workspace-pause-disclosure");
-  await page.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin despachar automáticamente.");
-  await page.getByRole("button", { name: "Reanudar expediente" }).click();
+  await resumeDisclosure.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin despachar automáticamente.");
+  await resumeDisclosure.getByRole("button", { name: "Reanudar expediente" }).click();
   await expect.poll(async () => (await readState(request, id!)).investigation.paused).toBe(false);
+  await expect(resumeDisclosure).toHaveCount(0);
   await expect(dispatch).toBeEnabled();
   state = await readState(request, id!);
   expect(state.executionCount).toBe(0);
@@ -877,8 +891,7 @@ test("automatic default drains on the backend without node approval or browser e
   await page.getByRole("link", { name: /Nueva investigación/ }).last().click();
   await page.getByLabel("Nombre de la investigación").fill(`Automático ${suffix}`);
   await page.getByLabel("Intención de la investigación").fill(intention);
-  await expect(page.getByRole("heading", { name: "Avance automático" })).toBeVisible();
-  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await expectCreateSections(page);
   await page.getByLabel("Correo electrónico 1").fill(`automatic-${suffix}@example.test`);
   await page.getByRole("button", { name: /Agregar correo/ }).click();
   await page.getByLabel("Correo electrónico 2").fill(`automatic-second-${suffix}@example.test`);
@@ -931,6 +944,7 @@ test("an existing automatic queue respects pause and revocation until authorized
   await page.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin cambiar la autorización.");
   await page.getByRole("button", { name: "Reanudar expediente" }).click();
   await expect.poll(async () => (await readState(request, id)).investigation.paused).toBe(false);
+  await expect(page.locator(".workspace-pause-disclosure")).toHaveCount(0);
   const resumed = await readState(request, id);
   await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(resumed.enumerationCount + 1);
   expect((await readState(request, id)).executionCount, "revocation still blocks the resumed queue").toBe(paused.executionCount);

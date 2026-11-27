@@ -83,15 +83,23 @@ export {
   type InvestigationIdKind,
   type InvestigationServiceDependencies,
 } from "./application/investigation-service.ts";
+export { actionBranch, withoutActionResults, type ActionBranch } from "./domain/action-branch.ts";
+export { ActionRerunConflictError, canReplaceActionResults, pendingRerunDescendants } from "./domain/action-rerun.ts";
 export { usernameProposals, type UsernameProposal } from "./domain/username-proposals.ts";
 export { compileInvestigationReport } from "./application/compile-report.ts";
 export {
   buildEvidenceNormalizationMessages,
   decodoSourceContentHash,
   EVIDENCE_NORMALIZATION_SYSTEM_PROMPT,
+  isValidNormalizationJobErrorCode,
   isValidNormalizedPageData,
+  NORMALIZATION_JOB_ERROR_CODES,
+  NORMALIZATION_JOB_STATUSES,
   parseEvidenceNormalization,
   type EvidenceAiNormalization,
+  type EvidenceNormalizationJob,
+  type EvidenceNormalizationJobStatus,
+  type NormalizationJobErrorCode,
   type NormalizedPageData,
 } from "./domain/evidence-normalization.ts";
 export {

@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
+  ActionRerunConflictError,
   AI_MAX_TOKENS_RANGE,
   AI_REASONING_EFFORTS,
   buildAiReportMessages,
@@ -26,6 +27,8 @@ import {
   InvestigationNotFoundError,
 } from "./postgres-investigation-store.ts";
 import type { AiSettingsRecord, AiSettingsStore } from "./ai-settings-store.ts";
+import type { EvidenceNormalizationJobStore } from "./evidence-normalization-job-store.ts";
+import { isDecodoNormalizationEvidence, NVIDIA_PROVIDER_ERROR_CODES } from "./evidence-normalization-runner.ts";
 import type { EvidenceNormalizationStore } from "./evidence-normalization-store.ts";
 import type { InvestigationActionRunner } from "./investigation-run-graph.ts";
 import { NvidiaProviderError, type NvidiaBuildGateway } from "./nvidia-build.ts";
@@ -67,6 +70,7 @@ const AuthorizationBody = ReasonBody.extend({ granted: z.boolean() }).strict();
 const ValidationBody = ReasonBody.extend({ status: z.enum(["accepted", "rejected", "inconclusive"]) }).strict();
 const QueueDecodoBody = ReasonBody.partial().optional();
 const EmptyBody = z.object({}).strict().optional();
+const ActionRerunBody = z.object({ expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) }).strict();
 const InvestigationParams = z.object({ id: z.string().min(1).max(200) }).strict();
 const ActionParams = InvestigationParams.extend({ actionId: z.string().min(1).max(200) }).strict();
 const EvidenceParams = InvestigationParams.extend({ evidenceId: z.string().min(1).max(200) }).strict();
@@ -92,13 +96,13 @@ const DecodoSettingsBody = z.object({
 }).strict().refine(({ token, apiMode }) => token === undefined ? apiMode !== undefined : isValidDecodoToken(token, apiMode));
 
 const PROVIDER_ERRORS = {
-  unauthorized: new HttpError(502, "AI_PROVIDER_UNAUTHORIZED", "NVIDIA Build rejected the API key"),
-  rate_limited: new HttpError(502, "AI_PROVIDER_RATE_LIMITED", "NVIDIA Build rate limit reached; try again later"),
-  rejected: new HttpError(502, "AI_PROVIDER_REJECTED", "NVIDIA Build rejected the model or parameters"),
-  unavailable: new HttpError(502, "AI_PROVIDER_UNAVAILABLE", "NVIDIA Build is unavailable or returned no report"),
-  invalid_response: new HttpError(502, "AI_PROVIDER_UNAVAILABLE", "NVIDIA Build is unavailable or returned no report"),
-  timeout: new HttpError(502, "AI_PROVIDER_TIMEOUT", "The NVIDIA Build model did not answer in time; its free endpoint may be saturated"),
-  truncated: new HttpError(502, "AI_PROVIDER_TRUNCATED", "The model used its whole token budget before writing the report"),
+  unauthorized: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.unauthorized, "NVIDIA Build rejected the API key"),
+  rate_limited: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.rate_limited, "NVIDIA Build rate limit reached; try again later"),
+  rejected: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.rejected, "NVIDIA Build rejected the model or parameters"),
+  unavailable: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.unavailable, "NVIDIA Build is unavailable or returned no report"),
+  invalid_response: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.invalid_response, "NVIDIA Build is unavailable or returned no report"),
+  timeout: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.timeout, "The NVIDIA Build model did not answer in time; its free endpoint may be saturated"),
+  truncated: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.truncated, "The model used its whole token budget before writing the report"),
 } as const;
 
 /** Shows enough to recognize the stored key without disclosing it. */
@@ -131,6 +135,7 @@ function publicError(error: unknown): unknown {
   if (error instanceof NvidiaProviderError) return PROVIDER_ERRORS[error.kind];
   if (error instanceof InvestigationNotFoundError) return new HttpError(404, "NOT_FOUND", "Investigation not found");
   if (error instanceof InvestigationClaimConflictError) return new HttpError(409, "CONFLICT", "Action state changed; reload before retrying");
+  if (error instanceof ActionRerunConflictError) return new HttpError(409, "CONFLICT", "The action cannot be rerun in the current state");
   if (isErrorCode(error, "23505")) return new HttpError(409, "CONFLICT", "The requested record already exists");
   if (error instanceof Error) {
     if (error.message === "A valid email seed is required" || error.message === "A valid username seed is required") {
@@ -165,6 +170,19 @@ async function serviceCall<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+const PUBLIC_RERUN_FAILURES = new Set([
+  "Prior results changed during execution; the replacement was not applied.",
+  "The replacement returned no confirmed results.",
+]);
+
+function publicFailureDetail(message: string, catalogId: GitHubCatalogAction["spec"]["catalogId"] | undefined, allowRerunReason = false): string {
+  if (typeof message === "string") {
+    if (catalogId === "decodo.url.v1" && isPublicDecodoFailure(message)) return message;
+    if (allowRerunReason && PUBLIC_RERUN_FAILURES.has(message)) return message;
+  }
+  return "Execution failed.";
+}
+
 async function readOperationalReadiness(readLocal: () => Promise<boolean | null>): Promise<boolean | null> {
   try {
     return await readLocal();
@@ -175,12 +193,27 @@ async function readOperationalReadiness(readLocal: () => Promise<boolean | null>
 }
 
 function publicAction(action: GitHubCatalogAction): GitHubCatalogAction {
-  if (action.failure === undefined || (action.spec.catalogId === "decodo.url.v1" && isPublicDecodoFailure(action.failure))) return action;
-  return { ...action, failure: "Execution failed." };
+  const failure = action.failure === undefined ? undefined : publicFailureDetail(action.failure, action.spec.catalogId);
+  const lastRerunFailure = action.lastRerunFailure === undefined ? undefined : publicFailureDetail(action.lastRerunFailure, action.spec.catalogId, true);
+  if (failure === action.failure && lastRerunFailure === action.lastRerunFailure) return action;
+  return {
+    ...action,
+    ...(failure === undefined ? {} : { failure }),
+    ...(lastRerunFailure === undefined ? {} : { lastRerunFailure }),
+  };
 }
 
 function publicInvestigation(investigation: Investigation): Investigation {
-  return { ...investigation, actions: investigation.actions.map(publicAction) };
+  const actionById = new Map(investigation.actions.map((action) => [action.id, action]));
+  return {
+    ...investigation,
+    actions: investigation.actions.map(publicAction),
+    audit: investigation.audit.map((event) => {
+      if (event.failure === undefined) return event;
+      const catalogId = event.actionId === undefined ? undefined : actionById.get(event.actionId)?.spec.catalogId;
+      return { ...event, failure: publicFailureDetail(event.failure, catalogId, true) };
+    }),
+  };
 }
 
 function filterValidNormalizations(
@@ -211,6 +244,8 @@ export interface AiReportAdapters {
   readonly gateway: NvidiaBuildGateway;
   readonly clock: () => string;
   readonly normalizations?: EvidenceNormalizationStore;
+  readonly normalizationJobs?: EvidenceNormalizationJobStore;
+  readonly wakeNormalizations?: () => void;
 }
 
 export interface BackendAppAdapters {
@@ -362,6 +397,16 @@ export function createBackendApp(
     },
   );
 
+  app.post<{ Params: { id: string; actionId: string } }>("/investigations/:id/actions/:actionId/rerun", async (request, reply) => {
+    if (!isLocalSameOriginRequest(request.headers)) throw new HttpError(403, "FORBIDDEN", "Reruns require a local same-origin request");
+    const { id, actionId } = input(ActionParams, request.params);
+    const { expectedRevision } = input(ActionRerunBody, request.body);
+    const investigation = await serviceCall(() => service.requestActionRerun(id, actionId, expectedRevision));
+    await projectPersistedState(id);
+    if (investigation.advancementMode === "automatic") adapters.wakeAutomaticRunner?.();
+    return reply.code(202).send(publicInvestigation(investigation));
+  });
+
   app.post<{ Params: { id: string } }>("/investigations/:id/actions/run", async (request) => {
     const { id } = input(InvestigationParams, request.params);
     input(EmptyBody, request.body);
@@ -436,8 +481,10 @@ export function createBackendApp(
     const { id } = input(InvestigationParams, request.params);
     const investigation = await serviceCall(() => service.loadInvestigation(id));
     if (investigation === undefined) throw new HttpError(404, "NOT_FOUND", "Investigation not found");
+    // Read jobs before normalizations so any completed job observes the summary written prior to completion.
+    const jobs = ai?.normalizationJobs === undefined ? [] : await ai.normalizationJobs.listByInvestigation(id);
     const stored = ai?.normalizations === undefined ? [] : await ai.normalizations.listByInvestigation(id);
-    return { normalizations: filterValidNormalizations(investigation, stored) };
+    return { normalizations: filterValidNormalizations(investigation, stored), jobs };
   });
 
   if (ai !== undefined) registerAiRoutes(app, service, ai);
@@ -572,6 +619,36 @@ function registerAiRoutes(app: FastifyInstance, service: InvestigationService, a
     },
   );
 
+  app.post<{ Params: { id: string; evidenceId: string } }>(
+    "/investigations/:id/evidence/:evidenceId/normalize/queue",
+    { onRequest: async (request) => {
+      if (!isLocalSameOriginRequest(request.headers)) {
+        throw new HttpError(403, "FORBIDDEN", "Evidence normalization can only be queued from this computer's InvestIA page");
+      }
+    } },
+    async (request, reply) => {
+      const { id, evidenceId } = input(EvidenceParams, request.params);
+      input(EmptyBody, request.body);
+      const investigation = await serviceCall(() => service.loadInvestigation(id));
+      if (investigation === undefined) throw new HttpError(404, "NOT_FOUND", "Investigation not found");
+      const evidence = investigation.evidence.find((item) => item.id === evidenceId);
+      if (evidence === undefined) throw new HttpError(404, "NOT_FOUND", "Record not found");
+      if (!isDecodoNormalizationEvidence(evidence)) {
+        throw new HttpError(409, "CONFLICT", "Only Decodo page evidence can be normalized");
+      }
+      const configuration = await ai.settings.load();
+      if (configuration?.apiKey == null) {
+        throw new HttpError(409, "AI_NOT_CONFIGURED", "Configure an NVIDIA Build API key first");
+      }
+      if (ai.normalizationJobs === undefined) {
+        throw new HttpError(503, "NORMALIZATION_QUEUE_UNAVAILABLE", "Evidence normalization queue is unavailable");
+      }
+      const result = await ai.normalizationJobs.enqueue(id, evidenceId);
+      ai.wakeNormalizations?.();
+      return reply.code(202).send(result);
+    },
+  );
+
   app.post<{ Params: { id: string } }>("/investigations/:id/report/ai", async (request, reply) => {
     const { id } = input(InvestigationParams, request.params);
     input(EmptyBody, request.body);
@@ -591,7 +668,6 @@ function registerAiRoutes(app: FastifyInstance, service: InvestigationService, a
     );
     return reply.type("text/markdown; charset=utf-8").send(composeAiReport({
       narrative,
-      factualReport: compileInvestigationReport(visible),
       model: configuration.settings.model,
       generatedAt: ai.clock(),
       omittedFindings: countOmittedAiReportFindings(visible, normalizationMap),

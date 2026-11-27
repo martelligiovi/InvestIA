@@ -165,6 +165,26 @@ const PROJECT_AUDIT = `
       a.unsupportedObservationCount = event.unsupportedObservationCount
   MERGE (i)-[:HAS_AUDIT_EVENT]->(a)`;
 
+const REMOVE_REPLACED_BRANCH_NODES = `
+  MATCH (i:Investigation {id: $investigationId})-[:HAS_ACTION|HAS_EVIDENCE|HAS_VALIDATION]->(obsolete)
+  WHERE i.revision = $revision AND obsolete.investigationId = $investigationId AND
+    ((obsolete:CatalogAction AND NOT obsolete.id IN $activeActionIds) OR
+     (obsolete:Evidence AND NOT obsolete.id IN $activeEvidenceIds) OR
+     (obsolete:EvidenceValidation AND NOT obsolete.id IN $activeValidationIds))
+  DETACH DELETE obsolete`;
+
+const REMOVE_REPLACED_USERNAME_DECISIONS = `
+  MATCH (i:Investigation {id: $investigationId})-[link:HAS_SEED]->(seed:UsernameSeed {investigationId: $investigationId})
+  WHERE i.revision = $revision AND NOT seed.value IN $activeUsernameValues
+  REMOVE seed.status, seed.originKind, seed.originEvidenceId, seed.reason, seed.decisionAt, seed.decisionReason
+  DELETE link`;
+
+const REMOVE_ORPHAN_SEEDS = `
+  MATCH (i:Investigation {id: $investigationId}), (seed {investigationId: $investigationId})
+  WHERE i.revision = $revision AND (seed:EmailSeed OR seed:UsernameSeed OR seed:PhotoSeed OR seed:UrlSeed)
+    AND NOT EXISTS { MATCH (seed)--() }
+  DELETE seed`;
+
 const SCHEMA_CONSTRAINTS = [
   "CREATE CONSTRAINT investigation_id_unique IF NOT EXISTS FOR (n:Investigation) REQUIRE n.id IS UNIQUE",
   "CREATE CONSTRAINT email_seed_unique IF NOT EXISTS FOR (n:EmailSeed) REQUIRE (n.investigationId, n.value) IS UNIQUE",
@@ -323,6 +343,18 @@ export class Neo4jInvestigationProjector implements InvestigationProjector {
           ...common,
           audit: investigation.audit.map(auditProjection),
         });
+        if (investigation.audit.some(({ kind }) => kind === "action_rerun_succeeded")) {
+          await transaction.run(REMOVE_REPLACED_BRANCH_NODES, {
+            ...common,
+            activeActionIds: [...new Set([...investigation.actions.map(({ id }) => id), ...investigation.evidence.map(({ actionId }) => actionId)])],
+            activeEvidenceIds: investigation.evidence.map(({ id }) => id),
+            activeValidationIds: investigation.validations.map(({ id }) => id),
+          });
+          await transaction.run(REMOVE_REPLACED_USERNAME_DECISIONS, {
+            ...common, activeUsernameValues: (investigation.usernameSeeds ?? []).map(({ value }) => value),
+          });
+          await transaction.run(REMOVE_ORPHAN_SEEDS, common);
+        }
         return true;
       });
       return { revision: investigation.revision, status: applied ? "applied" : "stale" };

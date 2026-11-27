@@ -8,7 +8,6 @@ import { investigationOperationalStatusLabel } from "./workspace-status";
 const PRINCIPLES = [
   { index: "01", title: "Semillas", text: "Partís de los datos que ya tenés." },
   { index: "02", title: "Evidencia", text: "Cada hallazgo conserva su fuente." },
-  { index: "03", title: "Decisión", text: "Vos validás; nada se confirma solo." },
 ] as const;
 
 type HistoryState =

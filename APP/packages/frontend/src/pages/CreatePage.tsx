@@ -593,16 +593,6 @@ export function CreatePage() {
               </button>
             </section>
 
-            <section className="create-section" aria-labelledby="create-section-run">
-              <div className="create-section-heading">
-                <span className="create-section-index" aria-hidden="true">03</span>
-                <h2 id="create-section-run">Avance automático</h2>
-              </div>
-              <p className="document-note">
-                Al crear el expediente, autorizás las semillas actuales y futuras del caso para el inicio automático con las herramientas configuradas: user-scanner, Gravatar, Maigret, GHunt, FaceCheck y Decodo. Decodo solo recibe las URL públicas de las coincidencias de FaceCheck que aceptes, nunca la foto ni la miniatura. Podés pausar el avance en cualquier momento desde el expediente.
-              </p>
-              <p className="field-hint">user-scanner incluye módulos loud (pueden enviar correos o notificaciones) y cross-scan de datos descubiertos; FaceCheck envía la foto de perfil de Google a facecheck.id y usa créditos fuera del modo prueba.</p>
-            </section>
             {formError !== "" && <p className="form-error" role="alert">{formError}</p>}
           </fieldset>
           <div className="create-submit-bar">
@@ -618,7 +608,6 @@ export function CreatePage() {
           <ol>
             <li><span aria-hidden="true">01</span>Nombrá el caso y escribí su intención.</li>
             <li><span aria-hidden="true">02</span>Sumá los correos que ya conocés como semillas.</li>
-            <li><span aria-hidden="true">03</span>Creá el expediente para iniciar el avance automático.</li>
           </ol>
         </aside>
       </div>

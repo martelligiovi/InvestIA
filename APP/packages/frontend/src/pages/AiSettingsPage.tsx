@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { AI_MAX_TOKENS_RANGE, type AiReasoningEffort, type AiReportSettings } from "@investia/core";
 import { InvestigationApiClient, type AiModelList, type AiSettingsView } from "../api/client";
 import { GhuntSettings } from "../components/GhuntSettings";
 import { FacecheckSettings } from "../components/FacecheckSettings";
 import { DecodoSettings } from "../components/DecodoSettings";
+import { SETTINGS_INTEGRATIONS, SettingsCard, SettingsFooter, type SettingsCardStatus } from "../components/SettingsCard";
 
 const NVIDIA_MODELS_URL = "https://build.nvidia.com/models";
 
@@ -55,20 +56,113 @@ function messageFor(error: unknown): string {
   return "Ocurrió un error inesperado.";
 }
 
-export function AiSettingsPage() {
-  return <>
-    <AiSettingsContent />
-    <div className="creation-page ai-settings-page"><GhuntSettings /><FacecheckSettings /><DecodoSettings /></div>
-  </>;
+function isGoogleDeepLink(): boolean {
+  const [path, query] = window.location.hash.split("?", 2);
+  return path === "#/ajustes" && new URLSearchParams(query).get("seccion") === "ghunt";
 }
 
-function AiSettingsContent() {
+function focusSettingsCard(id: string) {
+  const card = document.getElementById(id);
+  card?.focus({ preventScroll: true });
+  card?.scrollIntoView?.({ block: "start", behavior: "instant" });
+}
+
+export function AiSettingsPage() {
+  const pinnedDeepLinkRef = useRef<{ active: boolean; expectedScrollY: number }>({ active: false, expectedScrollY: 0 });
+
+  const navigateToCard = useCallback((id: string) => {
+    pinnedDeepLinkRef.current.active = false;
+    focusSettingsCard(id);
+  }, []);
+
+  const alignGoogleDeepLink = useCallback(() => {
+    const pinned = pinnedDeepLinkRef.current;
+    if (!pinned.active || !isGoogleDeepLink()) {
+      pinned.active = false;
+      return;
+    }
+    const focusedCard = document.activeElement;
+    if (focusedCard?.id !== SETTINGS_INTEGRATIONS.google.id) {
+      pinned.active = false;
+      return;
+    }
+    if (Math.abs(window.scrollY - pinned.expectedScrollY) > 2) {
+      pinned.active = false;
+      return;
+    }
+    focusedCard.scrollIntoView?.({ block: "start", behavior: "instant" });
+    pinned.expectedScrollY = window.scrollY;
+  }, []);
+
+  useEffect(() => {
+    const followDeepLink = () => {
+      if (!isGoogleDeepLink()) {
+        pinnedDeepLinkRef.current.active = false;
+        return;
+      }
+      focusSettingsCard(SETTINGS_INTEGRATIONS.google.id);
+      pinnedDeepLinkRef.current = { active: true, expectedScrollY: window.scrollY };
+    };
+    const releaseOnManualScroll = () => {
+      const pinned = pinnedDeepLinkRef.current;
+      if (pinned.active && Math.abs(window.scrollY - pinned.expectedScrollY) > 2) {
+        pinned.active = false;
+      }
+    };
+    const releaseOnUserScrollIntent = () => {
+      pinnedDeepLinkRef.current.active = false;
+    };
+    followDeepLink();
+    window.addEventListener("hashchange", followDeepLink);
+    window.addEventListener("scroll", releaseOnManualScroll, { passive: true });
+    window.addEventListener("wheel", releaseOnUserScrollIntent, { passive: true });
+    window.addEventListener("touchmove", releaseOnUserScrollIntent, { passive: true });
+    return () => {
+      window.removeEventListener("hashchange", followDeepLink);
+      window.removeEventListener("scroll", releaseOnManualScroll);
+      window.removeEventListener("wheel", releaseOnUserScrollIntent);
+      window.removeEventListener("touchmove", releaseOnUserScrollIntent);
+    };
+  }, []);
+
+  return (
+    <section className="settings-page" aria-labelledby="settings-title">
+      <header className="settings-intro">
+        <p className="eyebrow">Configuración · Integraciones</p>
+        <h1 id="settings-title">Ajustes</h1>
+        <p>Configurá en esta instancia las integraciones que usás en tus investigaciones.</p>
+      </header>
+      <div className="settings-layout">
+        <nav className="settings-index" aria-label="Integraciones">
+          <ol>
+            {Object.values(SETTINGS_INTEGRATIONS).map(({ id, index, title }) => (
+              <li key={id}>
+                <button type="button" aria-controls={id} onClick={() => navigateToCard(id)}>
+                  <span className="settings-number" aria-hidden="true">{index}</span>{title}
+                </button>
+              </li>
+            ))}
+          </ol>
+        </nav>
+        <div className="settings-cards">
+          <AiSettingsContent onLayoutSettled={alignGoogleDeepLink} />
+          <GhuntSettings />
+          <FacecheckSettings />
+          <DecodoSettings />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AiSettingsContent({ onLayoutSettled }: { readonly onLayoutSettled: () => void }) {
   const api = useMemo(() => new InvestigationApiClient(), []);
   const [view, setView] = useState<AiSettingsView | null>(null);
   const [draft, setDraft] = useState<SettingsDraft | null>(null);
   const [loadError, setLoadError] = useState("");
   const [models, setModels] = useState<AiModelList | null>(null);
   const [modelsError, setModelsError] = useState("");
+  const [modelsPending, setModelsPending] = useState(true);
   const [apiKey, setApiKey] = useState("");
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [notice, setNotice] = useState("");
@@ -87,21 +181,30 @@ function AiSettingsContent() {
     }
   }, [api]);
 
+  const loadModels = useCallback(async (isActive: () => boolean = () => true) => {
+    setModelsPending(true);
+    setModelsError("");
+    try {
+      const list = await api.listAiModels();
+      if (isActive()) setModels(list);
+    } catch (error) {
+      if (isActive()) setModelsError(`No se pudo obtener la lista de modelos: ${messageFor(error)}`);
+    } finally {
+      if (isActive()) setModelsPending(false);
+    }
+  }, [api]);
+
   useEffect(() => {
     let active = true;
     void loadSettings(() => active);
-    void api.listAiModels().then(
-      (list) => { if (active) setModels(list); },
-      (error: unknown) => { if (active) setModelsError(`No se pudo obtener la lista de modelos: ${messageFor(error)}`); },
-    );
+    void loadModels(() => active);
     return () => { active = false; };
-  }, [api, loadSettings]);
+  }, [loadSettings, loadModels]);
 
   useEffect(() => {
-    if (window.location.hash.includes("?seccion=ghunt")) {
-      document.getElementById("ghunt-settings")?.scrollIntoView?.({ block: "start" });
-    }
-  }, [view, loadError]);
+    // Re-align the deep-linked Google card after the first card resolves, unless the user scrolled away.
+    onLayoutSettled();
+  }, [onLayoutSettled, view, loadError, models, modelsError]);
 
   function updateDraft(change: Partial<SettingsDraft>) {
     setDraft((current) => current === null ? current : { ...current, ...change });
@@ -164,140 +267,122 @@ function AiSettingsContent() {
     setNotice("Se cargaron los valores por defecto. Guardá para aplicarlos.");
   }
 
-  const intro = (
-    <header className="page-intro">
-      <p className="kicker">Informe con IA</p>
-      <h1 id="ai-settings-title" className="document-title">Ajustes de <span>IA</span></h1>
-      <p className="document-lead">Configurá NVIDIA Build para redactar informes narrativos e hipotéticos a partir de los datos del expediente.</p>
-    </header>
-  );
+  const status: SettingsCardStatus = pending
+    ? { label: "En curso", tone: "pending" }
+    : view === null
+      ? loadError === "" ? { label: "Cargando", tone: "pending" } : { label: "Error de carga", tone: "warn" }
+      : view.apiKeyConfigured
+        ? { label: `Configurada${view.apiKeyHint === null ? "" : ` (${view.apiKeyHint})`}`, tone: "ok" }
+        : { label: "Sin configurar", tone: "off" };
+  const modelOptions = models?.models ?? [];
+  const savedModelMissing = !modelOptions.some((option) => option.id === draft?.model);
 
-  if (view === null || draft === null) {
-    return (
-      <section className="creation-page ai-settings-page" aria-labelledby="ai-settings-title">
-        {intro}
-        {loadError === "" ? (
-          <p className="document-note" role="status">Cargando ajustes…</p>
+  return (
+    <SettingsCard {...SETTINGS_INTEGRATIONS.ai} status={status}
+      description="Configurá NVIDIA Build para redactar informes ejecutivos de perfil a partir de los datos del expediente.">
+      {view === null || draft === null ? (
+        loadError === "" ? (
+          <p className="settings-notice" role="status">Cargando ajustes…</p>
         ) : (
           <>
             <p className="form-error" role="alert">{loadError}</p>
-            <button className="primary-action ai-settings-retry" type="button" onClick={() => void loadSettings()}>Intentar de nuevo</button>
+            <button className="primary-action settings-retry" type="button" onClick={() => void loadSettings()}>Intentar de nuevo</button>
           </>
-        )}
-      </section>
-    );
-  }
-
-  const modelOptions = models?.models ?? [];
-  const savedModelMissing = !modelOptions.some((option) => option.id === draft.model);
-
-  return (
-    <section className="creation-page ai-settings-page" aria-labelledby="ai-settings-title">
-      {intro}
-      <form className="create-form ai-settings-form" noValidate onSubmit={(event) => void handleSave(event)}>
-        <fieldset className="create-fields" disabled={pending}>
-          <legend className="visually-hidden">Ajustes de NVIDIA Build</legend>
-          <section className="create-section" aria-labelledby="ai-settings-key">
-            <div className="create-section-heading">
-              <span className="create-section-index" aria-hidden="true">01</span>
-              <h2 id="ai-settings-key">Clave de acceso</h2>
+        )
+      ) : (
+        <form className="settings-form" noValidate onSubmit={(event) => void handleSave(event)}>
+          <fieldset className="settings-form settings-fields" disabled={pending}>
+            <legend className="visually-hidden">Ajustes de NVIDIA Build</legend>
+            <div className="settings-group">
+              <div className="form-field">
+                <label htmlFor="ai-api-key">API key de NVIDIA Build</label>
+                <input
+                  id="ai-api-key"
+                  name="apiKey"
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  placeholder={view.apiKeyConfigured ? "Dejala vacía para conservar la actual" : "nvapi-…"}
+                  value={apiKey}
+                  aria-describedby="ai-api-key-hint"
+                  onChange={(event) => { setApiKey(event.currentTarget.value); setFormError(""); setNotice(""); }}
+                />
+                <span id="ai-api-key-hint" className="field-hint">
+                  Conseguí una API key gratuita en <a href={NVIDIA_MODELS_URL} target="_blank" rel="noreferrer">build.nvidia.com/models</a>. Se guarda en el servidor y nunca se vuelve a mostrar completa.
+                </span>
+              </div>
             </div>
-            <p className="ai-settings-key-status">
-              Estado: <strong>{view.apiKeyConfigured ? `Configurada${view.apiKeyHint === null ? "" : ` (${view.apiKeyHint})`}` : "Sin configurar"}</strong>
-            </p>
-            <div className="form-field">
-              <label htmlFor="ai-api-key">API key de NVIDIA Build</label>
-              <input
-                id="ai-api-key"
-                name="apiKey"
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder={view.apiKeyConfigured ? "Dejala vacía para conservar la actual" : "nvapi-…"}
-                value={apiKey}
-                aria-describedby="ai-api-key-hint"
-                onChange={(event) => { setApiKey(event.currentTarget.value); setFormError(""); setNotice(""); }}
-              />
-              <span id="ai-api-key-hint" className="field-hint">
-                Conseguí una API key gratuita en <a href={NVIDIA_MODELS_URL} target="_blank" rel="noreferrer">build.nvidia.com/models</a>. Se guarda en el servidor y nunca se vuelve a mostrar completa.
-              </span>
-            </div>
-            <div className="ai-settings-actions">
-              <button className="text-button" type="button" disabled={!view.apiKeyConfigured} onClick={() => void handleRemoveKey()}>
-                Quitar API key
-              </button>
-            </div>
-          </section>
-
-          <section className="create-section" aria-labelledby="ai-settings-model">
-            <div className="create-section-heading">
-              <span className="create-section-index" aria-hidden="true">02</span>
-              <h2 id="ai-settings-model">Modelo y parámetros</h2>
-            </div>
-            <div className="form-field">
-              <label htmlFor="ai-model">Modelo</label>
-              <select
-                id="ai-model"
-                name="model"
-                value={draft.model}
-                aria-describedby="ai-model-hint"
-                onChange={(event) => updateDraft({ model: event.currentTarget.value })}
-              >
-                {savedModelMissing && <option value={draft.model}>{draft.model}{models === null ? "" : " (no figura en la lista actual)"}</option>}
-                {modelOptions.map((option) => (
-                  <option key={option.id} value={option.id} title={option.description}>
-                    {option.name}{option.reasoning ? " · razonamiento" : ""}
-                  </option>
-                ))}
-              </select>
-              <span id="ai-model-hint" className="field-hint">
-                {modelsError !== ""
-                  ? modelsError
-                  : models === null
-                    ? "Cargando modelos disponibles…"
-                    : models.source === "fallback"
-                      ? "No se pudo consultar el catálogo de NVIDIA Build; se muestra una lista de respaldo de modelos de chat gratuitos."
-                      : "Modelos de chat Free Endpoint de build.nvidia.com."}
-              </span>
-            </div>
-            <details className="ai-settings-advanced">
-              <summary>Parámetros avanzados</summary>
-              <div className="ai-settings-grid">
-                <div className="form-field">
-                  <label htmlFor="ai-reasoning">Esfuerzo de razonamiento</label>
+            <div className="settings-group">
+              <div className="form-field">
+                <label htmlFor="ai-model">Modelo</label>
+                <div className="settings-inline">
                   <select
-                    id="ai-reasoning"
-                    name="reasoningEffort"
-                    value={draft.reasoningEffort}
-                    onChange={(event) => updateDraft({ reasoningEffort: event.currentTarget.value as AiReasoningEffort })}
+                    id="ai-model"
+                    name="model"
+                    value={draft.model}
+                    aria-describedby="ai-model-hint"
+                    onChange={(event) => updateDraft({ model: event.currentTarget.value })}
                   >
-                    {(Object.keys(REASONING_LABELS) as AiReasoningEffort[]).map((effort) => (
-                      <option key={effort} value={effort}>{REASONING_LABELS[effort]}</option>
+                    {savedModelMissing && <option value={draft.model}>{draft.model}{models === null ? "" : " (no figura en la lista actual)"}</option>}
+                    {modelOptions.map((option) => (
+                      <option key={option.id} value={option.id} title={option.description}>
+                        {option.name}{option.reasoning ? " · razonamiento" : ""}
+                      </option>
                     ))}
                   </select>
+                  <button className="secondary-action" type="button" disabled={modelsPending} onClick={() => void loadModels()}>
+                    {modelsPending ? "Cargando modelos…" : "Recargar modelos"}
+                  </button>
                 </div>
-                <NumberField id="ai-temperature" label="Temperatura" value={draft.temperature} error={fieldErrors.temperature} min={0} max={2} step={0.05} onChange={(temperature) => updateDraft({ temperature })} />
-                <NumberField id="ai-top-p" label="Top P" value={draft.topP} error={fieldErrors.topP} min={0.01} max={1} step={0.01} onChange={(topP) => updateDraft({ topP })} />
-                <NumberField id="ai-max-tokens" label="Máximo de tokens" value={draft.maxTokens} error={fieldErrors.maxTokens} min={AI_MAX_TOKENS_RANGE.min} max={AI_MAX_TOKENS_RANGE.max} step={1} onChange={(maxTokens) => updateDraft({ maxTokens })} />
+                <span id="ai-model-hint" className="field-hint" aria-live="polite">
+                  {modelsError !== ""
+                    ? modelsError
+                    : models === null
+                      ? "Cargando modelos disponibles…"
+                      : models.source === "fallback"
+                        ? "No se pudo consultar el catálogo de NVIDIA Build; se muestra una lista de respaldo de modelos de chat gratuitos."
+                        : "Modelos de chat Free Endpoint de build.nvidia.com."}
+                </span>
               </div>
-              <p className="field-hint">“Predeterminado del modelo” no envía el esfuerzo de razonamiento. Si elegís otro valor y el modelo no lo admite, NVIDIA Build rechaza el pedido y vas a ver el error al generar el informe.</p>
-            </details>
-            <div className="ai-settings-actions">
-              <button className="text-button" type="button" onClick={restoreDefaults}>Restaurar valores por defecto</button>
+              <details className="ai-settings-advanced">
+                <summary>Parámetros avanzados</summary>
+                <div className="settings-fields-pair">
+                  <div className="form-field">
+                    <label htmlFor="ai-reasoning">Esfuerzo de razonamiento</label>
+                    <select
+                      id="ai-reasoning"
+                      name="reasoningEffort"
+                      value={draft.reasoningEffort}
+                      onChange={(event) => updateDraft({ reasoningEffort: event.currentTarget.value as AiReasoningEffort })}
+                    >
+                      {(Object.keys(REASONING_LABELS) as AiReasoningEffort[]).map((effort) => (
+                        <option key={effort} value={effort}>{REASONING_LABELS[effort]}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <NumberField id="ai-temperature" label="Temperatura" value={draft.temperature} error={fieldErrors.temperature} min={0} max={2} step={0.05} onChange={(temperature) => updateDraft({ temperature })} />
+                  <NumberField id="ai-top-p" label="Top P" value={draft.topP} error={fieldErrors.topP} min={0.01} max={1} step={0.01} onChange={(topP) => updateDraft({ topP })} />
+                  <NumberField id="ai-max-tokens" label="Máximo de tokens" value={draft.maxTokens} error={fieldErrors.maxTokens} min={AI_MAX_TOKENS_RANGE.min} max={AI_MAX_TOKENS_RANGE.max} step={1} onChange={(maxTokens) => updateDraft({ maxTokens })} />
+                </div>
+                <p className="field-hint">“Predeterminado del modelo” no envía el esfuerzo de razonamiento. Si elegís otro valor y el modelo no lo admite, NVIDIA Build rechaza el pedido y vas a ver el error al generar el informe.</p>
+              </details>
             </div>
-          </section>
-
-          <p className="document-note ai-settings-privacy">
-            Al generar un informe con IA, los datos recopilados del expediente se envían a NVIDIA Build. El informe es hipotético y no confirma identidades.
-          </p>
-          {formError !== "" && <p className="form-error" role="alert">{formError}</p>}
-          {notice !== "" && <p className="ai-settings-notice" role="status">{notice}</p>}
-        </fieldset>
-        <div className="create-submit-bar">
-          <button className="primary-action create-submit" type="submit" disabled={pending}>{pending ? "Guardando…" : "Guardar"}</button>
-        </div>
-      </form>
-    </section>
+            <p className="settings-privacy">
+              Al generar un informe con IA, los datos recopilados del expediente se envían a NVIDIA Build. La síntesis asistida por IA no verifica identidad ni titularidad de cuentas.
+            </p>
+            {formError !== "" && <p className="form-error" role="alert">{formError}</p>}
+            {notice !== "" && <p className="settings-notice" role="status">{notice}</p>}
+            <SettingsFooter
+              secondary={<>
+                <button className="text-button" type="button" onClick={restoreDefaults}>Restaurar valores por defecto</button>
+                <button className="text-button" type="button" disabled={!view.apiKeyConfigured} onClick={() => void handleRemoveKey()}>Quitar API key</button>
+              </>}
+              primary={<button className="primary-action" type="submit" disabled={pending}>{pending ? "Guardando…" : "Guardar ajustes de IA"}</button>}
+            />
+          </fieldset>
+        </form>
+      )}
+    </SettingsCard>
   );
 }
 

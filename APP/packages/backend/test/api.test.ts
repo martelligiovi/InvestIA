@@ -145,6 +145,95 @@ function makeHarness(executorFailure?: string) {
   };
 }
 
+test("HTTP rerun queues only the confirmed action from a current local snapshot", async (t) => {
+  const harness = makeHarness();
+  const { app } = harness;
+  t.after(() => app.close());
+  const at = "2025-02-01T00:00:00.000Z";
+  const root: GitHubCatalogAction = { id: "completed", status: "succeeded", proposedAt: at, completedAt: at, proposalReason: "Fixture",
+    queuedByCatalog: true, spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: { kind: "email", value: "fixture@example.org" } } };
+  const id = "rerun-case";
+  await harness.store.create({ ...createInitialInvestigation(id, at), revision: 3, advancementMode: "manual",
+    authorization: { granted: true, at, operator: "local-operator", catalogScopes: ["user-scanner.email.v1"], reason: "Fixture grant" },
+    emailSeeds: [root.spec.seed as { kind: "email"; value: string }], actions: [root, { ...root, id: "unrelated" }],
+    evidence: [{ id: "old-result", actionId: root.id, seed: root.spec.seed, provider: "Fixture", status: "registered", sourceId: "user-scanner:email", recordedAt: at }],
+  });
+  const path = `/investigations/${id}`;
+  const headers = { host: "localhost:4317", origin: "http://localhost:4317" };
+  const prior = (await app.inject({ method: "GET", url: path })).json<Investigation>();
+  const rerunUrl = `${path}/actions/${root.id}/rerun`;
+  for (const [requestHeaders, payload, status, error, message] of [
+    [{ ...headers, origin: "https://unrelated.example" }, { expectedRevision: prior.revision }, 403, "FORBIDDEN", "Reruns require a local same-origin request"],
+    [headers, { expectedRevision: prior.revision, actionId: "sibling" }, 400, "INVALID_REQUEST", "Invalid request"],
+    [headers, { expectedRevision: prior.revision - 1 }, 409, "CONFLICT", "The action cannot be rerun in the current state"],
+  ] as const) {
+    const rejected = await app.inject({ method: "POST", url: rerunUrl, headers: requestHeaders, payload });
+    assert.equal(rejected.statusCode, status);
+    assert.deepEqual(rejected.json(), { error, message });
+    assert.deepEqual((await app.inject({ method: "GET", url: path })).json(), prior);
+    assert.equal(harness.executions, 0);
+  }
+  const queued = await app.inject({ method: "POST", url: rerunUrl, headers, payload: { expectedRevision: prior.revision } });
+  assert.equal(queued.statusCode, 202);
+  const current = queued.json<Investigation>();
+  assert.equal(current.revision, prior.revision + 1);
+  assert.equal(current.actions.find((item) => item.id === root.id)?.status, "queued");
+  assert.deepEqual(current.evidence, prior.evidence);
+  assert.deepEqual(current.actions.filter((item) => item.id !== root.id), prior.actions.filter((item) => item.id !== root.id));
+  assert.equal(harness.executions, 0, "posting the request does not bypass manual mode or execute a provider directly");
+});
+
+test("HTTP GET allows only public failure details on actions and audit events", async (t) => {
+  const harness = makeHarness();
+  const { app } = harness;
+  t.after(() => app.close());
+  const at = "2025-02-01T00:00:00.000Z";
+  const decodoAction: GitHubCatalogAction = {
+    id: "decodo-1", status: "failed", proposedAt: at, completedAt: at, proposalReason: "Fixture",
+    queuedByCatalog: true, failure: "Decodo target requires login", lastRerunFailed: true,
+    lastRerunFailure: "Decodo scrape blocked by anti-bot protection (999)",
+    spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: "https://example.org/profile" } },
+  };
+  const leakedAction: GitHubCatalogAction = {
+    id: "scanner-1", status: "succeeded", proposedAt: at, completedAt: at, proposalReason: "Fixture",
+    queuedByCatalog: true, lastRerunFailed: true, lastRerunFailure: "secret-token internal traceback",
+    spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: { kind: "email", value: "a@example.org" } },
+  };
+  const id = "rerun-failure-mask";
+  const decodoFailure = "Decodo scrape blocked by anti-bot protection (999)";
+  const conflict = "Prior results changed during execution; the replacement was not applied.";
+  const unconfirmed = "The replacement returned no confirmed results.";
+  const masked = "Execution failed.";
+  const failures = [
+    [decodoAction.id, decodoFailure, decodoFailure],
+    [decodoAction.id, "Decodo target requires login", "Decodo target requires login"],
+    [decodoAction.id, `${decodoFailure}: secret-token`, masked],
+    [leakedAction.id, "secret-token internal traceback", masked],
+    [leakedAction.id, decodoFailure, masked],
+    ["removed-action", decodoFailure, masked],
+    [leakedAction.id, conflict, conflict],
+    [decodoAction.id, unconfirmed, unconfirmed],
+  ] as const;
+  const legacyEvent = { id: "legacy", at, actor: "system", kind: "action_failed", actionId: decodoAction.id, reason: "Legacy failure" } as const;
+  const successEvent = { ...legacyEvent, id: "success", kind: "action_rerun_succeeded", reason: "Replaced prior results" } as const;
+  const audit = failures.map(([actionId, failure], index) => ({ ...legacyEvent, id: `attempt-${index}`, actionId, failure }));
+  const snapshot: Investigation = {
+    ...createInitialInvestigation(id, at), revision: 2, advancementMode: "manual",
+    actions: [decodoAction, leakedAction], audit: [legacyEvent, ...audit, successEvent],
+  };
+  await harness.store.create(snapshot);
+  const response = await app.inject({ method: "GET", url: `/investigations/${id}` });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json<Investigation>(), {
+    ...snapshot,
+    actions: [decodoAction, { ...leakedAction, lastRerunFailure: masked }],
+    audit: [legacyEvent, ...audit.map((event, index) => ({ ...event, failure: failures[index]![2] })), successEvent],
+  });
+  assert.doesNotMatch(response.body, /secret-token/);
+  assert.deepEqual(await harness.store.get(id), snapshot);
+  assert.equal(harness.executions, 0);
+});
+
 test("HTTP username seeds queue Maigret and reject invalid or duplicate input without changes", async (t) => {
   const harness = makeHarness();
   t.after(() => harness.app.close());
@@ -660,7 +749,13 @@ test("sanitizes executor failure details in load, run, and report responses", as
   assert.equal(run.json<{ action: { status: string; failure: string } }>().action.status, "failed");
   assert.equal(run.json<{ action: { failure: string } }>().action.failure, "Execution failed.");
   const loaded = await harness.app.inject({ method: "GET", url: `/investigations/${id}` });
-  assert.equal(loaded.json<Investigation>().actions[0]?.failure, "Execution failed.");
+  assert.equal(loaded.statusCode, 200);
+  const snapshot = loaded.json<Investigation>();
+  assert.equal(snapshot.actions[0]?.failure, "Execution failed.");
+  const event = snapshot.audit.at(-1);
+  assert.equal(event?.kind, "action_failed");
+  assert.equal(event?.actionId, action.id);
+  assert.equal(event?.failure, "Execution failed.");
   const report = await harness.app.inject({ method: "GET", url: `/investigations/${id}/report` });
   assert.match(report.body, /Execution failed/);
   for (const response of [run, loaded, report]) assert.doesNotMatch(response.body, /credentials|private/i);
@@ -802,5 +897,5 @@ test("preserves factual report output and empty normalizations when AI adapters 
 
   const normalizations = await app.inject({ method: "GET", url: `/investigations/${created.id}/normalizations` });
   assert.equal(normalizations.statusCode, 200);
-  assert.deepEqual(normalizations.json(), { normalizations: [] });
+  assert.deepEqual(normalizations.json(), { normalizations: [], jobs: [] });
 });

@@ -5,11 +5,28 @@ import {
   buildEvidenceNormalizationMessages,
   decodoSourceContentHash,
   EVIDENCE_NORMALIZATION_SYSTEM_PROMPT,
+  isValidNormalizationJobErrorCode,
   isValidNormalizedPageData,
+  NORMALIZATION_JOB_ERROR_CODES,
+  NORMALIZATION_JOB_STATUSES,
   parseEvidenceNormalization,
   type EvidenceRecord,
   type NormalizedPageData,
 } from "../src/index.ts";
+
+test("normalization job statuses and error codes are closed allowlists", () => {
+  assert.deepEqual(NORMALIZATION_JOB_STATUSES, ["queued", "running", "succeeded", "failed"]);
+  assert.deepEqual(NORMALIZATION_JOB_ERROR_CODES, [
+    "AI_NOT_CONFIGURED", "AI_PROVIDER_UNAUTHORIZED", "AI_PROVIDER_RATE_LIMITED",
+    "AI_PROVIDER_REJECTED", "AI_PROVIDER_TIMEOUT", "AI_PROVIDER_TRUNCATED",
+    "AI_PROVIDER_UNAVAILABLE", "AI_PROVIDER_INVALID_RESPONSE", "EVIDENCE_UNAVAILABLE",
+    "JOB_INTERRUPTED", "INTERNAL_ERROR",
+  ]);
+  for (const code of NORMALIZATION_JOB_ERROR_CODES) assert.equal(isValidNormalizationJobErrorCode(code), true);
+  for (const value of [undefined, null, 0, {}, ["INTERNAL_ERROR"], "", "internal_error", "INTERNAL_ERROR ", "raw detail"]) {
+    assert.equal(isValidNormalizationJobErrorCode(value), false);
+  }
+});
 
 function decodoEvidence(overrides?: Partial<EvidenceRecord>): EvidenceRecord {
   const seed = { kind: "url" as const, value: "https://example.org/ana-perez" };
@@ -201,11 +218,16 @@ test("buildEvidenceNormalizationMessages enforces Spanish grounding, safety, and
 
   const user = messages[1]!.content;
   assert.ok(user.includes("evidence-decodo-1"));
+  assert.ok(user.includes("source_host: example.org"));
   assert.ok(user.includes("https://example.org/ana-perez"));
   assert.ok(user.includes("Ana Pérez — Perfil profesional"));
   assert.ok(user.includes("Ingeniera de software e investigadora de seguridad."));
   assert.ok(user.includes("https://github.com/anaperez"));
   assert.ok(user.includes("Perfil público de Ana."));
+  assert.match(EVIDENCE_NORMALIZATION_SYSTEM_PROMPT, /source_host/i);
+  assert.match(EVIDENCE_NORMALIZATION_SYSTEM_PROMPT, /sujeto principal/i);
+  assert.match(EVIDENCE_NORMALIZATION_SYSTEM_PROMPT, /terceros/i);
+  assert.match(EVIDENCE_NORMALIZATION_SYSTEM_PROMPT, /encabezados/i);
 
   const startMatches = user.match(/<<<UNTRUSTED_WEBPAGE_START>>>/g) ?? [];
   const endMatches = user.match(/<<<UNTRUSTED_WEBPAGE_END>>>/g) ?? [];

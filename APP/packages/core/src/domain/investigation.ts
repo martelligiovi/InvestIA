@@ -42,6 +42,8 @@ export type AuditKind =
   | "username_proposal_rejected"
   | "action_proposed"
   | "action_queued"
+  | "action_rerun_requested"
+  | "action_rerun_succeeded"
   | "authorization_changed"
   | "action_approved"
   | "paused"
@@ -159,7 +161,13 @@ export interface GitHubCatalogAction {
    * actions whose input is the operator email embedded in their spec.
    */
   readonly sourceSeedId?: string;
+  /** Producing action for a follow-up with no finding seed. */
+  readonly sourceActionId?: InvestigationActionId;
   readonly status: InvestigationActionStatus;
+  /** Prior results stay active while a replacement claim is queued or running. */
+  readonly rerun?: { readonly previousStatus: "succeeded" | "failed"; readonly fingerprint: string };
+  readonly lastRerunFailed?: true;
+  readonly lastRerunFailure?: string;
   readonly proposedAt: string;
   readonly proposalReason: string;
   /** System catalog eligibility, not a human approval. Absent on historical actions. */
@@ -222,6 +230,8 @@ export interface AuditEvent {
   readonly evidenceId?: EvidenceId;
   readonly granted?: boolean;
   readonly decision?: ValidationStatus;
+  /** Per-attempt detail for an action failure; public views must sanitize it. */
+  readonly failure?: string;
   readonly unsupportedObservationCount?: number;
 }
 
