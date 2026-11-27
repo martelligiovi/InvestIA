@@ -28,6 +28,40 @@ export interface EvidenceAiNormalization {
   readonly data: NormalizedPageData;
 }
 
+export const NORMALIZATION_JOB_STATUSES = ["queued", "running", "succeeded", "failed"] as const;
+export type EvidenceNormalizationJobStatus = (typeof NORMALIZATION_JOB_STATUSES)[number];
+
+export const NORMALIZATION_JOB_ERROR_CODES = [
+  "AI_NOT_CONFIGURED",
+  "AI_PROVIDER_UNAUTHORIZED",
+  "AI_PROVIDER_RATE_LIMITED",
+  "AI_PROVIDER_REJECTED",
+  "AI_PROVIDER_TIMEOUT",
+  "AI_PROVIDER_TRUNCATED",
+  "AI_PROVIDER_UNAVAILABLE",
+  "AI_PROVIDER_INVALID_RESPONSE",
+  "EVIDENCE_UNAVAILABLE",
+  "JOB_INTERRUPTED",
+  "INTERNAL_ERROR",
+] as const;
+export type NormalizationJobErrorCode = (typeof NORMALIZATION_JOB_ERROR_CODES)[number];
+
+export function isValidNormalizationJobErrorCode(value: unknown): value is NormalizationJobErrorCode {
+  return NORMALIZATION_JOB_ERROR_CODES.some((code) => value === code);
+}
+
+export interface EvidenceNormalizationJob {
+  readonly id: string;
+  readonly investigationId: string;
+  readonly evidenceId: string;
+  readonly attemptNumber: number;
+  readonly status: EvidenceNormalizationJobStatus;
+  readonly errorCode?: NormalizationJobErrorCode;
+  readonly createdAt: string;
+  readonly startedAt?: string;
+  readonly completedAt?: string;
+}
+
 const UNTRUSTED_START = "<<<UNTRUSTED_WEBPAGE_START>>>";
 const UNTRUSTED_END = "<<<UNTRUSTED_WEBPAGE_END>>>";
 
