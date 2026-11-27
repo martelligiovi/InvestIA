@@ -794,14 +794,32 @@ describe("execution queue popover", () => {
     const panel = screen.getByRole("region", { name: "Cola de ejecución" });
     expect(within(panel).getByText("1 en ejecución · 2 en cola · 1 completa · 1 fallida")).toBeInTheDocument();
     expect(within(panel).getByText("Las etapas siguientes se suman al desbloquearse nuevos hallazgos.")).toBeInTheDocument();
-    const rows = within(panel).getAllByRole("listitem");
-    expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["running", "queued", "queued", "completed", "failed"]);
-    expect(within(rows[0]!).getByRole("progressbar")).not.toHaveAttribute("aria-valuenow");
-    expect(within(rows[1]!).getByText("Siguiente")).toBeInTheDocument();
-    const second = within(rows[2]!).getByRole("button", { name: /En cola · #2/u });
-    expect(within(rows[3]!).getByText("Completo")).toBeInTheDocument();
-    expect(within(rows[4]!).getByRole("button", { name: /Falló/u }))
+
+    // Active (running + queued) stay expanded; completed and errors start collapsed with errors last.
+    const initialRows = within(panel).getAllByRole("listitem");
+    expect(initialRows.map((row) => row.getAttribute("data-kind"))).toEqual(["running", "queued", "queued"]);
+    expect(within(initialRows[0]!).getByRole("progressbar")).not.toHaveAttribute("aria-valuenow");
+    expect(within(initialRows[1]!).getByText("Siguiente")).toBeInTheDocument();
+    const second = within(initialRows[2]!).getByRole("button", { name: /En cola · #2/u });
+
+    const completedToggle = within(panel).getByRole("button", { name: /Completadas/u });
+    const errorsToggle = within(panel).getByRole("button", { name: /Errores/u });
+    expect(completedToggle).toHaveAttribute("aria-expanded", "false");
+    expect(errorsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(Boolean(completedToggle.compareDocumentPosition(errorsToggle) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(within(panel).getByText("Completo")).not.toBeVisible();
+    expect(within(panel).getByText("La página requiere iniciar sesión para ver su contenido.")).not.toBeVisible();
+
+    await user.click(completedToggle);
+    expect(completedToggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(panel).getByText("Completo")).toBeInTheDocument();
+
+    await user.click(errorsToggle);
+    expect(errorsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(panel).getByRole("button", { name: /Falló/u }))
       .toHaveAccessibleDescription("La página requiere iniciar sesión para ver su contenido.");
+    const expandedRows = within(panel).getAllByRole("listitem");
+    expect(expandedRows.map((row) => row.getAttribute("data-kind"))).toEqual(["running", "queued", "queued", "completed", "failed"]);
 
     await user.click(second);
     expect(disclosure).not.toHaveAttribute("open");
@@ -814,6 +832,11 @@ describe("execution queue popover", () => {
     expect(within(graph).getByRole("button", { name: /^Acción: queued-a\./u })).toHaveAttribute("aria-pressed", "true");
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.every((call) => pathOf(call) === "/investigations/case-1" && (call.init?.method ?? "GET") === "GET")).toBe(true);
+
+    // Reopening starts with completed and errors cleanly collapsed again.
+    await user.click(summary);
+    expect(within(panel).getByRole("button", { name: /Completadas/u })).toHaveAttribute("aria-expanded", "false");
+    expect(within(panel).getByRole("button", { name: /Errores/u })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("dismisses an empty queue with Escape or an outside click", async () => {
@@ -843,14 +866,50 @@ describe("execution queue popover", () => {
     render(<WorkspacePage id="case-1" />);
     const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
     await user.click(summary);
-    await user.click(within(screen.getByRole("region", { name: "Cola de ejecución" }))
-      .getByRole("button", { name: /Completo/u }));
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    await user.click(within(panel).getByRole("button", { name: /Completadas/u }));
+    await user.click(within(panel).getByRole("button", { name: /Completo/u }));
     await user.click(summary);
     const detail = screen.getByRole("tabpanel", { name: "Detalle" });
     detail.focus();
     expect(detail).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(summary.closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("keeps collapsed controls linked, gives failures distinct descriptions, and resets on outside close", async () => {
+    installFetch(async () => json(snapshot({ actions: [
+      { ...action("failed"), id: "failed-a" },
+      { ...action("succeeded"), id: "done" },
+      { ...action("proposed"), id: "waiting" },
+      { ...action("failed"), id: "failed-b" },
+    ] })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    await user.click(summary);
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    expect(within(panel).getAllByRole("listitem").map((row) => row.dataset.kind)).toEqual(["waiting"]);
+
+    const toggles = [/Completadas/u, /Errores/u].map((name) => within(panel).getByRole("button", { name }));
+    for (const toggle of toggles) {
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      const target = document.getElementById(toggle.getAttribute("aria-controls")!);
+      expect(target).toBeInTheDocument();
+      expect(target).not.toBeVisible();
+      await user.click(toggle);
+      expect(summary.closest("details")).toHaveAttribute("open");
+      expect(target).toBeVisible();
+    }
+    const failures = within(panel).getAllByRole("button", { name: /Falló/u });
+    expect(failures).toHaveLength(2);
+    expect(new Set(failures.map((button) => button.getAttribute("aria-describedby"))).size).toBe(2);
+    for (const button of failures) expect(button).toHaveAccessibleDescription(/La acción no pudo completarse/u);
+
+    await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    await user.click(summary);
+    for (const toggle of toggles) expect(toggle).toHaveAttribute("aria-expanded", "false");
   });
 });
 
