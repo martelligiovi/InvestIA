@@ -1,8 +1,9 @@
 import { expect, test } from "@playwright/test";
 import type { Investigation } from "@investia/core";
 
-for (const viewport of [{ width: 1672, height: 941 }, { width: 390, height: 844 }]) {
+for (const viewport of [{ width: 1672, height: 941 }, { width: 840, height: 941 }, { width: 390, height: 844 }]) {
   test(`2722 findings remain navigable at ${viewport.width}px`, async ({ page }) => {
+    const isMobile = viewport.width <= 820;
     await page.setViewportSize(viewport);
     const at = "2025-01-01T00:00:00Z";
     const seed = { kind: "email" as const, value: "person@example.org" };
@@ -31,13 +32,40 @@ for (const viewport of [{ width: 1672, height: 941 }, { width: 390, height: 844 
     await expect(first).toHaveCount(1);
     await expect(first.locator(".graph-stack-sheet[aria-hidden='true']")).toHaveCount(2);
     await page.locator(".graph-node-list summary").click();
+    const canvas = page.locator(".graph-viewport");
+    const canvasWidth = () => canvas.evaluate((element) => element.clientWidth);
+    const widthBeforeDrawer = viewport.width === 840 ? await canvasWidth() : null;
     await page.locator(".graph-node-list button").nth(2).click();
-    if (viewport.width < 600) {
+    if (widthBeforeDrawer !== null) {
+      await expect.poll(async () => widthBeforeDrawer - await canvasWidth()).toBeGreaterThan(300);
+      await expect(first).toHaveAttribute("aria-pressed", "true");
+      await expect.poll(() => canvas.evaluate((element) => {
+        const card = element.querySelector(".graph-node.is-selected .graph-node-card")?.getBoundingClientRect();
+        const bounds = element.getBoundingClientRect();
+        return !!card && card.left >= bounds.left - 2 && card.right <= bounds.right + 2
+          && card.top >= bounds.top - 2 && card.bottom <= bounds.bottom + 2;
+      })).toBe(true);
+      expect(await canvas.evaluate((element) => [element.scrollLeft, element.scrollTop])).toEqual([0, 0]);
+    }
+    if (isMobile) {
       await page.getByRole("tab", { name: "Detalle", exact: true }).click();
       await expect(page.getByRole("tabpanel", { name: "Detalle" })).toContainText("2722 resultados");
       await page.getByRole("tab", { name: "Grafo", exact: true }).click();
     } else await expect(page.getByRole("tabpanel", { name: "Detalle" })).toContainText("2722 resultados");
-    const canvas = page.locator(".graph-viewport");
+    const { overflowX, overflowY, verticalGutter, horizontalGutter } = await canvas.evaluate((node) => {
+      const element = node as HTMLDivElement;
+      const style = getComputedStyle(element);
+      return {
+        overflowX: style.overflowX,
+        overflowY: style.overflowY,
+        verticalGutter: element.offsetWidth - element.clientLeft * 2 - element.clientWidth,
+        horizontalGutter: element.offsetHeight - element.clientTop * 2 - element.clientHeight,
+      };
+    });
+    expect(overflowX).toMatch(/^(clip|hidden)$/u);
+    expect(overflowY).toMatch(/^(clip|hidden)$/u);
+    expect(verticalGutter).toBe(0);
+    expect(horizontalGutter).toBe(0);
     await canvas.screenshot({ path: `test-results/redesign/large-graph-before-${viewport.width}.png`, animations: "disabled" });
     await page.getByRole("button", { name: "Centrar grafo completo", exact: true }).click();
     await expect(first).toHaveAttribute("aria-pressed", "true");
@@ -80,7 +108,7 @@ for (const viewport of [{ width: 1672, height: 941 }, { width: 390, height: 844 
     expect((await first.boundingBox())!.width).toBeLessThan(fittedWidth);
     await expect(first).toHaveAttribute("aria-pressed", "true");
     await canvas.screenshot({ path: `test-results/redesign/large-graph-zoomed-out-${viewport.width}.png`, animations: "disabled" });
-    if (viewport.width < 600) await page.getByRole("tab", { name: "Detalle", exact: true }).click();
+    if (isMobile) await page.getByRole("tab", { name: "Detalle", exact: true }).click();
     await expect(page.getByRole("button", { name: /^Ver resultado:/ })).toHaveCount(50);
     await page.getByRole("button", { name: "Siguiente página del grupo" }).click();
     await expect(page.getByText("Resultados 51–100 de 2722", { exact: true })).toBeVisible();
@@ -91,7 +119,7 @@ for (const viewport of [{ width: 1672, height: 941 }, { width: 390, height: 844 
     await expect(page.getByRole("tabpanel", { name: "Detalle" })).toContainText("Platform 2721");
     await expect(page.getByRole("button", { name: "Aceptar observación" })).toBeVisible();
     await page.getByRole("button", { name: "Volver al grupo" }).click();
-    if (viewport.width < 600) await page.getByRole("tab", { name: "Grafo", exact: true }).click();
+    if (isMobile) await page.getByRole("tab", { name: "Grafo", exact: true }).click();
     await page.screenshot({ path: `test-results/redesign/leaf-stack-${viewport.width}.png`, fullPage: true });
     expect(errors).toEqual([]);
     expect(mutations).toEqual([]);

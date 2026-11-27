@@ -237,7 +237,8 @@
 .graph-viewport {
   height: clamp(320px, calc(100svh - 300px), 820px);
   margin-top: var(--space-3);
-  overflow: auto;
+  overflow: hidden;
+  overflow: clip;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   background-color: var(--linen);

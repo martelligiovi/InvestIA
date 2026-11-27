@@ -225,6 +225,176 @@ function graphCanvas() {
   return { svg, viewport: svg.closest<HTMLDivElement>(".graph-viewport")! };
 }
 
+describe("graph selection during viewport resize", () => {
+  const wideGraph: WorkspaceGraph = {
+    width: 800,
+    height: 700,
+    nodes: [node("left", 40, 60), node("right", 600, 60)],
+    edges: [],
+  };
+
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  function renderResizableGraph() {
+    let notify: (() => void) | undefined;
+    const disconnect = vi.fn();
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { notify = callback; }
+      observe() {}
+      disconnect = disconnect;
+    });
+    const select = vi.fn();
+    const { rerender, unmount } = render(<InvestigationGraph graph={wideGraph} selectedId={null} onSelect={select} />);
+    const { svg, viewport } = graphCanvas();
+    let width = 800, height = 400;
+    Object.defineProperties(viewport, {
+      clientWidth: { get: () => width },
+      clientHeight: { get: () => height },
+    });
+    function resize(nextWidth: number, nextHeight = height) {
+      width = nextWidth;
+      height = nextHeight;
+      act(() => notify?.());
+    }
+    resize(width);
+    return {
+      svg, viewport, resize, select, unmount, disconnect,
+      setSelectedId: (selectedId: string | null) => rerender(<InvestigationGraph graph={wideGraph} selectedId={selectedId} onSelect={select} />),
+    };
+  }
+
+  function selectRightFromList() {
+    const list = screen.getByText(/^Lista accesible de nodos/u).closest("details")!;
+    fireEvent.click(within(list).getByText(/^Lista accesible de nodos/u));
+    fireEvent.click(within(list).getByRole("button", { name: "Semilla: right" }));
+  }
+
+  it("re-centers the list selection in the narrowed SVG viewport without scrolling", () => {
+    const { svg, viewport, resize, select, unmount, disconnect } = renderResizableGraph();
+    Object.defineProperties(viewport, {
+      clientLeft: { value: 2 }, clientTop: { value: 4 },
+      getBoundingClientRect: { value: () => ({ left: 100, top: 200 }) },
+    });
+    Object.defineProperty(svg, "getScreenCTM", { value: () => ({ a: 2, b: 0, c: 0, d: 2, e: 82, f: 184 }) });
+    fireEvent.click(screen.getByRole("button", { name: "Acercar grafo" }));
+    selectRightFromList();
+    const before = readGraphTransform(svg);
+    expect(before.zoom).toBe(1);
+
+    resize(800);
+    expect(readGraphTransform(svg)).toEqual(before);
+    resize(0, 0);
+    expect(readGraphTransform(svg)).toEqual(before);
+    resize(480, 400);
+
+    expect(readGraphTransform(svg)).toEqual({ x: -520, y: 0, zoom: 1 });
+    expect([viewport.scrollLeft, viewport.scrollTop]).toEqual([0, 0]);
+    expect(select).toHaveBeenCalledExactlyOnceWith(wideGraph.nodes[1]);
+    unmount();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { id: "right", key: null, width: 480, height: 400, x: -220, y: 0 },
+    { id: "right", key: "Enter", width: 480, height: 400, x: -220, y: 0 },
+    { id: "right", key: null, width: 710, height: 400, x: 0, y: 0 },
+    { id: "right", key: " ", width: 100, height: 100, x: -600, y: -60 },
+    { id: "left", key: null, width: 480, height: 400, x: 0, y: 0 },
+  ])("reveals the $id canvas node with minimum pan at $width × $height (key: $key)", ({ id, key, width, height, x, y }) => {
+    const { svg, viewport, resize, select } = renderResizableGraph();
+    const button = within(svg).getByRole("button", { name: `Semilla: ${id}` });
+    if (key === null) fireEvent.click(button);
+    else fireEvent.keyDown(button, { key });
+    expect(readGraphTransform(svg)).toEqual({ x: 0, y: 0, zoom: 1 });
+
+    resize(width, height);
+
+    expect(readGraphTransform(svg)).toEqual({ x, y, zoom: 1 });
+    expect([viewport.scrollLeft, viewport.scrollTop]).toEqual([0, 0]);
+    expect(select).toHaveBeenCalledExactlyOnceWith(wideGraph.nodes.find((item) => item.id === id));
+  });
+
+  it.each(["drag", "wheel zoom", "zoom button", "Centrar"])("does not re-center after manual %s", (control) => {
+    const { svg, viewport, resize, select } = renderResizableGraph();
+    selectRightFromList();
+    const before = readGraphTransform(svg);
+    if (control === "drag") {
+      pointer(viewport, "pointerdown", 0, 0);
+      pointer(viewport, "pointermove", 30, 20);
+      pointer(viewport, "pointerup", 30, 20);
+    } else if (control === "wheel zoom") {
+      wheel(viewport, { deltaY: -100 });
+    } else {
+      fireEvent.click(screen.getByRole("button", { name: control === "Centrar" ? "Centrar grafo completo" : "Acercar grafo" }));
+    }
+    const manual = readGraphTransform(svg);
+    expect(manual).not.toEqual(before);
+
+    resize(480);
+
+    expect(readGraphTransform(svg)).toEqual(manual);
+    expect([viewport.scrollLeft, viewport.scrollTop]).toEqual([0, 0]);
+    expect(select).toHaveBeenCalledExactlyOnceWith(wideGraph.nodes[1]);
+  });
+
+  it("discards a queued reveal when a drag starts in the same batch", () => {
+    const { svg, viewport, resize, select } = renderResizableGraph();
+
+    act(() => {
+      // Queue the list camera first so React defers the resize updater until the batch flushes.
+      selectRightFromList();
+      resize(480);
+      pointer(viewport, "pointerdown", 0, 0);
+    });
+
+    expect(readGraphTransform(svg)).toEqual({ x: -250, y: 240, zoom: 1 });
+    expect([viewport.scrollLeft, viewport.scrollTop]).toEqual([0, 0]);
+    expect(select).toHaveBeenCalledExactlyOnceWith(wideGraph.nodes[1]);
+  });
+
+  it("discards a queued reveal after the list camera has settled", () => {
+    const { svg, viewport, resize, setSelectedId } = renderResizableGraph();
+    selectRightFromList();
+    setSelectedId("right");
+    const before = readGraphTransform(svg);
+
+    act(() => {
+      resize(480);
+      pointer(viewport, "pointerdown", 0, 0);
+    });
+
+    expect(readGraphTransform(svg)).toEqual(before);
+  });
+
+  it("starts a later drag from the committed reveal", () => {
+    const { svg, viewport, resize, setSelectedId } = renderResizableGraph();
+    selectRightFromList();
+    setSelectedId("right");
+    resize(480);
+    const revealed = readGraphTransform(svg);
+    expect(revealed).toEqual({ x: -410, y: 90, zoom: 1 });
+
+    pointer(viewport, "pointerdown", 0, 0);
+    expect(readGraphTransform(svg)).toEqual(revealed);
+    pointer(viewport, "pointermove", 30, 20);
+    pointer(viewport, "pointerup", 30, 20);
+
+    expect(readGraphTransform(svg)).toEqual({ x: revealed.x + 30, y: revealed.y + 20, zoom: 1 });
+  });
+
+  it("cancels re-centering when the controlled selection is cleared", () => {
+    const { svg, resize, setSelectedId } = renderResizableGraph();
+    selectRightFromList();
+    setSelectedId("right");
+    setSelectedId(null);
+    const before = readGraphTransform(svg);
+
+    resize(480);
+
+    expect(readGraphTransform(svg)).toEqual(before);
+  });
+});
+
 function expectWheelAnchor(svg: Element, x: number, y: number) {
   const { x: panX, y: panY, zoom } = readGraphTransform(svg);
   expect((x - panX) / zoom).toBeCloseTo(x, 8);
@@ -273,7 +443,7 @@ describe("graph wheel zoom", () => {
     const { svg, viewport } = graphCanvas();
     Object.defineProperty(svg, "getScreenCTM", { value: () => ({ a: 0.5, b: 0, c: 0, d: 0.5, e: 20, f: 30 }) });
     expect(viewport).toHaveAttribute("aria-label", "Área del grafo; arrastrá el fondo para desplazarlo o usá la rueda del mouse para hacer zoom");
-    expect(screen.getByText(/Usá Centrar para ajustar el grafo completo a la vista, la rueda del mouse para hacer zoom progresivo, − para alejarlo y \+ para acercarlo\./u)).toBeInTheDocument();
+    expect(screen.getByText(/Seleccioná un nodo con Enter o espacio; arrastrá el fondo para desplazarlo\. Usá Centrar para ajustar el grafo completo a la vista, la rueda del mouse para hacer zoom progresivo, − para alejarlo y \+ para acercarlo\./u)).toBeInTheDocument();
 
     expect(wheel(viewport, { deltaY: -100, ctrlKey: true }).defaultPrevented).toBe(true);
 
@@ -412,19 +582,32 @@ describe("graph wheel zoom", () => {
   });
 });
 
-it("resets zoom and pan when changing the graph page", () => {
+it.each([
+  { layout: "without viewport dimensions", size: null, pan: { x: 0, y: 0 } },
+  { layout: "with an off-screen first node", size: { width: 300, height: 180 }, pan: { x: -736, y: -24 } },
+])("resets zoom and pans without scrolling on page change $layout", ({ size, pan }) => {
   const select = vi.fn();
-  const evidence = Array.from({ length: 51 }, (_, i) => ({ ...node(`e${i}`, 100, i * 138), kind: "evidence" as const }));
+  const evidence = Array.from({ length: 51 }, (_, i) => ({ ...node(`e${i}`, 836, i * 138), kind: "evidence" as const }));
   render(<InvestigationGraph graph={{ ...graph, nodes: evidence }} selectedId={null} onSelect={select} />);
-  const { svg } = graphCanvas();
+  const { svg, viewport } = graphCanvas();
+  if (size) {
+    Object.defineProperties(viewport, { clientWidth: { value: size.width }, clientHeight: { value: size.height } });
+  } else {
+    expect(viewport.clientWidth).toBe(0);
+    expect(viewport.clientHeight).toBe(0);
+  }
+  viewport.scrollLeft = 12;
+  viewport.scrollTop = 90;
   fireEvent.click(screen.getByRole("button", { name: "Acercar grafo" }));
-  expect(readGraphTransform(svg)).not.toEqual({ x: 0, y: 0, zoom: 1 });
+  expect(readGraphTransform(svg).zoom).toBe(GRAPH_BUTTON_ZOOM_IN);
 
   fireEvent.click(screen.getByRole("button", { name: "Siguiente página de resultados" }));
 
-  expect(readGraphTransform(svg)).toEqual({ x: 0, y: 0, zoom: 1 });
+  expect(viewport.scrollLeft).toBe(0);
+  expect(viewport.scrollTop).toBe(0);
+  expect(readGraphTransform(svg)).toEqual({ ...pan, zoom: 1 });
   expect(screen.getByRole("status")).toHaveTextContent("Resultados 51–51 de 51");
-  expect(select).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "e50" }));
+  expect(select).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "e50", x: 836, y: 64, width: 100, height: 100 }));
 });
 
 describe("desplazamiento del lienzo", () => {
