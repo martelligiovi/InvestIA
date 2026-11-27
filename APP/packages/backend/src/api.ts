@@ -611,7 +611,6 @@ function registerAiRoutes(app: FastifyInstance, service: InvestigationService, a
     );
     return reply.type("text/markdown; charset=utf-8").send(composeAiReport({
       narrative,
-      factualReport: compileInvestigationReport(visible),
       model: configuration.settings.model,
       generatedAt: ai.clock(),
       omittedFindings: countOmittedAiReportFindings(visible, normalizationMap),
