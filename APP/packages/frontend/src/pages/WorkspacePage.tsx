@@ -389,8 +389,8 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
           <summary>{aiReport ? "Informe con IA · vista previa y descarga" : "Informe Markdown · vista previa y descarga"}</summary>
           <div className="report-heading-row">
             <div>
-              <p className="eyebrow">{aiReport ? "SALIDA GENERADA CON IA · HIPOTÉTICA" : "SALIDA DOCUMENTAL"}</p>
-              <h2 id="report-heading">{aiReport ? "Informe con IA (hipotético)" : "Informe Markdown"}</h2>
+              <p className="eyebrow">{aiReport ? "SÍNTESIS ASISTIDA POR IA" : "SALIDA DOCUMENTAL"}</p>
+              <h2 id="report-heading">{aiReport ? "Informe con IA" : "Informe Markdown"}</h2>
             </div>
             <a
               className="workspace-button"

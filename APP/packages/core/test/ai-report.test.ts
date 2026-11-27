@@ -110,7 +110,7 @@ test("factual report includes only FaceCheck candidates with a latest accepted d
   assert.equal(report.split("## Validation decisions\n")[1], compileInvestigationReport(withoutCandidates).split("## Validation decisions\n")[1]);
 });
 
-test("AI request and factual appendix exclude non-accepted FaceCheck candidates without charging the size budget", () => {
+test("AI request and factual report exclude non-accepted FaceCheck candidates without charging the size budget", () => {
   const value = facecheckCase();
   const data = requestData(value);
   assert.deepEqual(data.findings.map((item) => item.evidenceId), ["evidence-1", "evidence-2", "face-accepted", "face-reaccepted"]);
@@ -118,9 +118,11 @@ test("AI request and factual appendix exclude non-accepted FaceCheck candidates 
   assert.equal(data.findings[3]!.operatorValidation, "accepted");
   assert.equal(data.omittedFindings, undefined);
   assert.equal(countOmittedAiReportFindings(value), 0);
-  const report = composeAiReport({ narrative: "Resumen", factualReport: compileInvestigationReport(value), model: "test/model", generatedAt: "2026-10-01" });
-  for (const name of ["accepted", "reaccepted"]) assert.ok(report.includes(`https://candidate\\.example/${name}`));
-  for (const name of ["rejected", "rerejected", "inconclusive", "undecided"]) assert.ok(!report.includes(`https://candidate\\.example/${name}`));
+  const factualReport = compileInvestigationReport(value);
+  for (const name of ["accepted", "reaccepted"]) assert.ok(factualReport.includes(`https://candidate\\.example/${name}`));
+  for (const name of ["rejected", "rerejected", "inconclusive", "undecided"]) assert.ok(!factualReport.includes(`https://candidate\\.example/${name}`));
+  const aiReport = composeAiReport({ narrative: "Resumen conciso", model: "test/model", generatedAt: "2026-10-01" });
+  assert.doesNotMatch(aiReport, /Datos utilizados|candidate\\\.example/);
 
   const base = investigation();
   const evidence = Array.from({ length: 400 }, (_, index) => ({
@@ -149,12 +151,12 @@ test("Decodo evidence reaches factual and AI reports only for FaceCheck parents 
   const snapshot = { ...base, actions, evidence: [...base.evidence, ...children] };
   const factualReport = compileInvestigationReport(snapshot);
   const aiMessage = buildAiReportMessages(snapshot)[1]!.content;
-  const aiAppendix = composeAiReport({ narrative: "Summary", factualReport, model: "test/model", generatedAt: "2026-10-01" });
+  const aiReport = composeAiReport({ narrative: "Summary", factualReport, model: "test/model", generatedAt: "2026-10-01" });
   for (const parent of ["rejected", "rerejected", "inconclusive", "undecided"]) {
     const title = `Scraped face-${parent}`;
     assert.ok(!factualReport.includes(title.replace("-", "\\-")), `factual report must not expose ${title}`);
     assert.ok(!aiMessage.includes(title), `AI request must not expose ${title}`);
-    assert.ok(!aiAppendix.includes(title.replace("-", "\\-")), `AI appendix must not expose ${title}`);
+    assert.ok(!aiReport.includes(title.replace("-", "\\-")), `AI report must not expose ${title}`);
   }
   assert.equal(countOmittedAiReportFindings(snapshot), 0);
   const findings = requestData(snapshot).findings.filter((record) => record.evidenceId.startsWith("child-"));
@@ -162,7 +164,9 @@ test("Decodo evidence reaches factual and AI reports only for FaceCheck parents 
     ["child-face-accepted", seed.value], ["child-face-reaccepted", seed.value],
   ]);
   assert.ok(factualReport.includes("url: https://example\\.org/public\\-profile"));
-  assert.ok(aiAppendix.includes("Scraped face\\-reaccepted"));
+  assert.ok(factualReport.includes("Scraped face\\-reaccepted"));
+  assert.ok(aiMessage.includes("Scraped face-reaccepted"));
+  assert.ok(!aiReport.includes("Scraped face\\-reaccepted"));
 });
 
 test("Decodo results with unresolved explicit parents are excluded from factual and AI evidence", () => {
@@ -193,7 +197,7 @@ test("Decodo results with unresolved explicit parents are excluded from factual 
   }
 });
 
-test("rejected evidence from another provider remains in factual and AI reports", () => {
+test("rejected evidence from another provider remains in factual report and AI request payload", () => {
   const value = investigation();
   const report = compileInvestigationReport(value);
   assert.ok(report.includes("| evidence\\-2 | action\\-1 | email: ana@example\\.com | steam | registered | user\\-scanner |"));
@@ -250,23 +254,27 @@ test("settings normalization rejects values the provider cannot accept", () => {
   }
 });
 
-test("system prompt asks who the person could be, in Spanish, as a hypothesis", () => {
+test("system prompt asks for a concise Spanish profile report without naming sources or technical IDs", () => {
   for (const phrase of [
-    "¿quién podría ser esta persona?",
-    "hipótesis",
-    "confianza",
     "español",
-    "Conclusiones",
-    "Gustos e intereses posibles",
+    "Perfil general",
+    "Ocupación y formación",
+    "Intereses y actividades",
+    "Foco y motivaciones",
+    "NO nombres fuentes, plataformas, herramientas, sitios web, URLs, puntajes ni identificadores técnicos",
+    "falso positivo",
+    "no confirma por sí solo identidad ni titularidad de cuentas",
+    "pendiente pesa menos que la aceptada",
     "salud",
     "orientación sexual",
     "situación migratoria o estatus legal",
     "rechazada",
-    "No intentes ubicar ni localizar físicamente a la persona",
-    "No agregues una sección con los datos",
+    "domicilio particular",
+    "No agregues encabezados de fuentes, anexos, tablas ni secciones de datos utilizados",
   ]) {
     assert.ok(AI_REPORT_SYSTEM_PROMPT.includes(phrase), phrase);
   }
+  assert.doesNotMatch(AI_REPORT_SYSTEM_PROMPT, /Citá entre paréntesis/);
 });
 
 test("messages carry the system prompt and every collected finding with its validation", () => {
@@ -316,44 +324,100 @@ test("findings beyond the request budget are counted instead of sent", () => {
   assert.equal(countOmittedAiReportFindings(base), 0);
 });
 
-test("appendix says which findings were not sent when the request budget truncated them", () => {
+test("concise report notes omitted count inline when the request budget truncated findings", () => {
   const report = composeAiReport({
-    narrative: "## Resumen\nTexto",
-    factualReport: "# Caso",
+    narrative: "## Perfil general\nTexto",
     model: "openai/gpt-oss-20b",
     generatedAt: "2026-10-28T12:00:00.000Z",
     omittedFindings: 12,
   });
-  assert.match(report, /Estos son todos los datos recopilados\. Por el tamaño del pedido, 12 hallazgos no se enviaron al modelo y no sostienen las conclusiones; igual figuran en este anexo\./);
-  assert.doesNotMatch(report, /que se enviaron al modelo para elaborar/);
+  assert.match(report, /Por límite de contexto se omitieron 12 registros\./);
+  assert.doesNotMatch(report, /Datos utilizados/);
 });
 
-test("composed report puts the hypothetical narrative first and all the data used last", () => {
+test("composed report returns only the concise header note and narrative without raw factual appendix", () => {
   const report = composeAiReport({
-    narrative: "## Resumen\nPodría tratarse de una persona aficionada a la música.",
+    narrative: [
+      "## Perfil general",
+      "Ana se dedica al [desarrollo de software](https://example.org/dev/) (Decodo, evidence-123) y disfruta de la música. https://example.org/perfil/",
+      "- https://example.org/solo-link/",
+      "",
+      "## Datos utilizados",
+      "| Decodo | https://example.org | evidence-123 |",
+    ].join("\n"),
     factualReport: "# Caso Ana\n\n## Evidence\nrows",
     model: "openai/gpt-oss-20b",
     generatedAt: "2026-10-28T12:00:00.000Z",
   });
   assert.equal(report, [
-    "# Informe hipotético: ¿quién podría ser esta persona?",
+    "# Informe de perfil",
     "",
-    "> Generado por IA (openai/gpt-oss-20b) el 2026-10-28T12:00:00.000Z. Todo el contenido es hipotético: son conclusiones posibles, no hechos verificados, y no confirma identidad ni titularidad de cuentas.",
+    "> Síntesis asistida por IA (openai/gpt-oss-20b) generada el 2026-10-28T12:00:00.000Z a partir de fuentes públicas; no verifica identidad ni titularidad de cuentas.",
     "",
-    "## Resumen\nPodría tratarse de una persona aficionada a la música.",
-    "",
-    "---",
-    "",
-    "## Datos utilizados",
-    "",
-    "Estos son todos los datos recopilados que se enviaron al modelo para elaborar las conclusiones.",
-    "",
-    "### Caso Ana",
-    "",
-    "#### Evidence",
-    "rows",
+    "## Perfil general\nAna se dedica al desarrollo de software y disfruta de la música.",
     "",
   ].join("\n"));
+  assert.doesNotMatch(report, /Datos utilizados|Caso Ana|Evidence|Decodo|evidence-123|https?:\/\/|\[|\]/);
+});
+
+test("concise report strips echoes and technical formatting without losing profile text (S1–S3)", () => {
+  const note = {
+    model: "test/model",
+    generatedAt: "2026-10-01T00:00:00.000Z",
+  };
+  const cases: readonly (readonly [string, string])[] = [
+    ["# Informe de perfil", "## Perfil general\nNo hay datos suficientes para redactar el informe."],
+    ["> Generado por IA", "## Perfil general\nNo hay datos suficientes para redactar el informe."],
+    ["Ana hace cerámica.\n\n> Generado por IA a partir de fuentes públicas.", "Ana hace cerámica."],
+    ["Según Decodo, Ana hace cerámica.", "Ana hace cerámica."],
+    ["Ana hace cerámica.\n\nDato | Valor\n--- | ---\nOrigen | interno", "Ana hace cerámica."],
+    ['Le gusta la [cerámica](https://example.org/taller/ "Taller").', "Le gusta la cerámica."],
+    ["Ana hace cerámica. https://[2001:db8::1]/perfil/", "Ana hace cerámica."],
+    ["Ana hace cerámica. https://example.org/perfil/.", "Ana hace cerámica.."],
+    ["Ana hace cerámica.\n1. https://example.org/perfil/", "Ana hace cerámica."],
+    ...["Datos utilizados", "Fuentes", "Anexo", "Referencias", "Evidencias"].map((heading): readonly [string, string] => [
+      `## Perfil general\nAna vive en Córdoba.\n\n## ${heading}\nFicha interna.\n\n## Intereses y actividades\nHace cerámica.`,
+      "## Perfil general\nAna vive en Córdoba.\n\n## Intereses y actividades\nHace cerámica.",
+    ]),
+  ];
+
+  for (const [narrative, expected] of cases) {
+    const report = composeAiReport({ ...note, narrative });
+    assert.equal(report.split("\n\n").slice(2).join("\n\n").trimEnd(), expected, narrative);
+    assert.equal(report.match(/^> /gm)?.length, 1, narrative);
+  }
+});
+
+test("AI report removes alternate echoes and audit markup (S1–S3)", () => {
+  const fallback = "## Perfil general\nNo hay datos suficientes para redactar el informe.";
+  for (const [narrative, expected] of [
+    ["# Perfil de Ana", fallback],
+    ["**Aviso:** Esta síntesis no verifica identidad ni titularidad de cuentas.", fallback],
+    ["Ana hace cerámica.\n\n| Dato | Valor |\n--- | ---\nOrigen | interno", "Ana hace cerámica."],
+    ['Le gusta la [cerámica](https://example.org/taller_(centro)/ "Taller").', "Le gusta la cerámica."],
+  ] as const) {
+    const report = composeAiReport({ narrative, model: "test/model", generatedAt: "2026-10-01" });
+    assert.equal(report.split("\n\n").slice(2).join("\n\n").trimEnd(), expected, narrative);
+  }
+});
+
+test("AI report falls back after a standalone verification echo or empty H1 (S3)", () => {
+  for (const narrative of [
+    "> Esta síntesis no verifica identidad ni titularidad de cuentas.",
+    "#",
+  ]) {
+    const report = composeAiReport({
+      narrative,
+      model: "test/model",
+      generatedAt: "2026-10-01",
+    });
+    assert.equal(report.match(/^> /gm)?.length, 1, narrative);
+    assert.equal(
+      report.split("\n\n").slice(2).join("\n\n").trimEnd(),
+      "## Perfil general\nNo hay datos suficientes para redactar el informe.",
+      narrative,
+    );
+  }
 });
 
 test("model reasoning blocks are removed from the narrative", () => {
@@ -473,7 +537,7 @@ test("AI report substitutes compact provenance and aiNormalizedPage only when De
   assert.deepEqual(normalizedJson.findings[1].aiNormalizedPage, {
     model: "nvidia/nemotron-3.5-super-vl-120b-a12b",
     generatedAt: "2026-11-26T10:05:00.000Z",
-    note: "Extracted by AI from the stored raw page; verify against factual appendix.",
+    note: "Extracted by AI from the stored raw page.",
     ...freshNorm.data,
   });
   assert.equal(normalizedUser.includes("A".repeat(5200)), false);
