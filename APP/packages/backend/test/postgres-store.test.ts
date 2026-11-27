@@ -236,14 +236,14 @@ test("a legacy failed action survives a rerun error at the Unicode storage bound
   const result = await store.completeAction({
     investigationId: created.id, actionId: run.id, claimId: claimRequest.claimId,
     completedAt: claimRequest.claimedAt, auditEvent: auditEvent("unicode", "action_failed"),
-    result: { kind: "failure", error: "bad\u0000" + "x".repeat(996) + "🚀" },
+    result: { kind: "failure", error: "bad\u0000\uDC00\uD800" + "x".repeat(994) + "🚀" },
   });
   const restored = result.actions.find(({ id }) => id === run.id)!;
   assert.equal(restored.status, "failed");
   assert.equal(restored.failure, "Prior failure");
   assert.deepEqual(result.evidence, legacy.evidence);
   assert.ok(restored.lastRerunFailure);
-  assert.doesNotMatch(restored.lastRerunFailure, /\u0000|[\uD800-\uDBFF]$/);
+  assert.doesNotMatch(restored.lastRerunFailure, /\u0000|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
 });
 
 test("prevents a rerun from overlapping an already-claimed child and leaves the snapshot unchanged", async () => {
