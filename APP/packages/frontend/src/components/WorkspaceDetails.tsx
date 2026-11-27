@@ -1,5 +1,5 @@
 import { Fragment, useState } from "react";
-import { authorizationCovers, findingSeedNodeId, isActionEligibleByParentValidation, isSafePublicHttpUrl, latestValidationStatus, type EvidenceAiNormalization, type EvidenceRecord, type ScannerFinding, type Investigation, type ValidationStatus } from "@investia/core";
+import { actionBranch, authorizationCovers, findingSeedNodeId, isActionEligibleByParentValidation, isSafePublicHttpUrl, isScopedCatalogId, latestValidationStatus, pendingRerunDescendants, type EvidenceAiNormalization, type EvidenceRecord, type GitHubCatalogAction, type ScannerFinding, type Investigation, type ValidationStatus } from "@investia/core";
 import { actionTitle, decodoPageTitle, evidenceHeading, GRAPH_PAGE_SIZE, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 import { facecheckReviewState } from "./FacecheckReview";
@@ -20,6 +20,7 @@ export interface WorkspaceDetailsProps {
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
   readonly onQueueDecodo?: (evidenceIds: readonly string[]) => Promise<boolean>;
+  readonly onRerun?: (actionId: string, expectedRevision: number) => Promise<boolean>;
   readonly onNormalizeEvidence?: (evidenceId: string) => Promise<boolean>;
   readonly onApproveGravatar?: (actionId: string, reason: string) => Promise<boolean>;
   /** Opens the card review for the candidates of one FaceCheck search. */
@@ -320,9 +321,63 @@ function LeafGroupDetails({ node, investigation, disabled, decodoConfigured, onS
   );
 }
 
+function ActionRerunControl({ action, investigation, disabled, onRerun }: {
+  readonly action: GitHubCatalogAction;
+  readonly investigation: Investigation;
+  readonly disabled: boolean;
+  readonly onRerun: NonNullable<WorkspaceDetailsProps["onRerun"]>;
+}) {
+  const [confirmation, setConfirmation] = useState<number | null>(null);
+  if (action.rerun !== undefined) {
+    return <section className="detail-control" aria-labelledby="rerun-heading">
+      <h3 id="rerun-heading">{action.status === "claimed" ? "Reejecución en curso" : "Reejecución en cola"}</h3>
+      <p role="status">Los resultados anteriores siguen visibles hasta que la nueva ejecución termine bien.</p>
+    </section>;
+  }
+  if ((action.status !== "succeeded" && action.status !== "failed") || !isScopedCatalogId(action.spec.catalogId)) return null;
+  let branchBlock: string | null = null;
+  try {
+    const branch = actionBranch(investigation, action.id);
+    if (pendingRerunDescendants(investigation).has(action.id) || investigation.actions.some((candidate) =>
+      candidate.id !== action.id && branch.actionIds.has(candidate.id) && (candidate.status === "claimed" || candidate.rerun !== undefined))) {
+      branchBlock = "Esperá a que termine el trabajo en curso en esta rama.";
+    }
+  } catch {
+    branchBlock = "No se puede reejecutar porque no se pudo determinar qué resultados pertenecen a esta rama.";
+  }
+  const blocked = investigation.paused ? "Reanudá el expediente para poder reejecutar esta acción."
+    : !authorizationCovers(investigation.authorization, action.spec.catalogId) ? "Necesitás autorización para esta herramienta."
+    : !isActionEligibleByParentValidation(investigation, action) ? "Volvé a aceptar la coincidencia de origen para ejecutar esta acción."
+    : branchBlock;
+  return <section className="detail-control" aria-labelledby="rerun-heading">
+    <h3 id="rerun-heading">Reejecución</h3>
+    {action.lastRerunFailed && <p className="detail-warning break-value" role="status">
+      La reejecución falló. Se conservaron los resultados anteriores.
+      {action.lastRerunFailure ? ` Motivo: ${action.lastRerunFailure}` : ""}
+    </p>}
+    {blocked !== null && <p>{blocked}</p>}
+    {confirmation === null ? <div className="detail-rerun-actions">
+      <button type="button" className="workspace-button" disabled={disabled || blocked !== null}
+        onClick={() => setConfirmation(investigation.revision)}>Reejecutar</button>
+    </div> : <>
+      <p>Se reemplazarán los resultados de esta acción y sus ramas hijas solo si la nueva ejecución termina bien.</p>
+      {investigation.advancementMode === "manual" && <p>El expediente está en modo manual: la acción quedará en cola hasta que la ejecutes.</p>}
+      {confirmation !== investigation.revision && <p role="status">El expediente cambió. Cancelá y revisá el estado antes de confirmar.</p>}
+      <div className="detail-rerun-actions">
+        <button type="button" className="workspace-button workspace-button--primary"
+          disabled={disabled || blocked !== null || confirmation !== investigation.revision} onClick={() => {
+            setConfirmation(null);
+            void onRerun(action.id, confirmation);
+          }}>Confirmar reejecución</button>
+        <button type="button" className="workspace-button" onClick={() => setConfirmation(null)}>Cancelar</button>
+      </div>
+    </>}
+  </section>;
+}
+
 export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, facecheckConfigured, decodoConfigured,
   normalization, normalizationStatus, normalizeDisabled, normalizationError, onValidate, onSelectNode, onQueueDecodo,
-  onNormalizeEvidence, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
+  onRerun, onNormalizeEvidence, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
@@ -423,6 +478,7 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
                   <p className="detail-warning" role="note">Acción reclamada: efecto externo incierto o aún en curso. Esta interfaz no la vuelve a ejecutar.</p>
                 )}
               </section>
+              {onRerun && <ActionRerunControl action={node.action} investigation={investigation} disabled={disabled} onRerun={onRerun} />}
               {node.action.status === "proposed" && (node.action.spec.catalogId === "gravatar.email.v1" && onApproveGravatar !== undefined ? (
                 <section className="detail-control" aria-labelledby="approval-heading">
                   <h3 id="approval-heading">¿Querés buscarlo por Gravatar?</h3>

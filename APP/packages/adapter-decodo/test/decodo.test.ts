@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isScannerFinding } from "../../core/src/index.ts";
-import { createDecodoAdapter, DECODO_API_MODES, isDecodoApiMode, type DecodoAdapterOptions } from "../src/index.ts";
+import {
+  createDecodoAdapter,
+  DECODO_API_MODES,
+  isDecodoApiMode,
+  isPublicDecodoFailure,
+  type DecodoAdapterOptions,
+  type DecodoDiagnosticEvent,
+} from "../src/index.ts";
 
 const seed = { kind: "url", value: "https://example.org/profile" } as const;
 const TOKEN = "test-token-not-for-errors";
@@ -16,6 +23,7 @@ function scraped(content: string, fields = {}) {
 
 function fixture(replies: Array<() => Response>, overrides: Partial<DecodoAdapterOptions> = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
+  const diagnostics: DecodoDiagnosticEvent[] = [];
   const fetcher: typeof fetch = async (input, init = {}) => {
     const next = replies[calls.length];
     calls.push({ url: String(input), init });
@@ -25,9 +33,10 @@ function fixture(replies: Array<() => Response>, overrides: Partial<DecodoAdapte
   const adapter = createDecodoAdapter({
     fetch: fetcher,
     settings: async () => ({ token: TOKEN, apiMode: "web_data" }),
+    onDiagnostic: (event) => { diagnostics.push(event); },
     ...overrides,
   });
-  return { adapter, calls };
+  return { adapter, calls, diagnostics };
 }
 
 function assertRequest(call: ReturnType<typeof fixture>["calls"][number], endpoint: string, authorization: string, headless = true) {
@@ -110,7 +119,7 @@ test("Scraping API v2 scrapes HTML using normalized Basic auth and retains only 
   assert.equal(extra.title, reason);
   assert.equal(extra.description, "Developer and designer — based in Oslo.");
   assert.equal(extra.content_format, "html");
-  assert.equal(extra.content, "Public Profile\nHello & welcome !\nProjects Duplicate Script link Credentials Local");
+  assert.equal(extra.content, "# Public Profile\nHello & welcome !\nProjects Duplicate Script link Credentials Local");
   assert.equal(extra.content_length, String(extra.content).length);
   assert.equal(extra.content_truncated, false);
   assert.equal(extra.links, "https://example.org/projects");
@@ -212,7 +221,7 @@ for (const [status, message] of [
   [401, "Decodo API credentials were rejected"], [403, "Decodo API credentials were rejected"],
   [429, "Decodo API rate limit or quota exceeded"], [400, "Decodo API rejected the scrape request"],
   [422, "Decodo API rejected the scrape request"], [500, "Decodo service failure (HTTP 500)"],
-  [524, "Decodo request timed out"], [612, "Decodo service failure (HTTP 612)"], [613, "Decodo service failure (HTTP 613)"],
+  [524, "Decodo request timed out"],
 ] as const) {
   test(`maps HTTP ${status} without exposing secrets or retrying`, async () => {
     const { adapter, calls } = fixture([() => syntheticHttpStatus(status)]);
@@ -221,30 +230,104 @@ for (const [status, message] of [
   });
 }
 
-for (const [name, reply, message] of [
-  ["malformed JSON", () => new Response(`${PRIVATE_BODY}: ${TOKEN}`), "Unexpected Decodo response"],
-  ["missing results", () => Response.json({ private: TOKEN }), "Unexpected Decodo response"],
-  ["missing status", () => Response.json({ results: [{ content: TOKEN }] }), "Unexpected Decodo response"],
-  ["empty content", () => scraped("<html><body><script>discard</script> &nbsp; </body></html>"), "Decodo returned empty page content"],
-  ["target 404", () => scraped(TOKEN, { status_code: 404 }), "Decodo target returned HTTP 404"],
-  ["network failure", () => { throw new Error(TOKEN); }, "Decodo request failed"],
-  ["aborted fetch", () => { throw new DOMException(TOKEN, "AbortError"); }, "Decodo request timed out"],
-  ["timed-out fetch", () => { throw new DOMException(TOKEN, "TimeoutError"); }, "Decodo request timed out"],
-  ["aborted body", () => new Response(new ReadableStream({ start(controller) { controller.error(new DOMException(TOKEN, "AbortError")); } })), "Decodo request timed out"],
-] as const) {
-  test(`fails on ${name} without exposing secrets or retrying`, async () => {
-    const { adapter, calls } = fixture([reply]);
-    await assertFailure(adapter.execute(seed), message);
-    assert.equal(calls.length, 1);
+for (const status of [612, 613] as const) {
+  for (const [shape, failedReply] of [
+    ["HTTP status", () => syntheticHttpStatus(status)],
+    ["root JSON status_code", () => Response.json({ status_code: status, message: `${PRIVATE_BODY}: ${TOKEN}`, task_id: "t-1" })],
+    ["results[0].status_code", () => Response.json({ results: [{ status_code: status, message: `${PRIVATE_BODY}: ${TOKEN}` }] })],
+  ] as const) {
+    test(`retries once without headless on ${status} ${shape} and returns fallback finding`, async () => {
+      const { adapter, calls, diagnostics } = fixture([failedReply, () => scraped(MARKDOWN)]);
+      const observations = await adapter.execute(seed);
+      assert.equal(observations.length, 1);
+      assert.equal(observations[0]?.finding.extra.status_code, 200);
+      assert.equal(calls.length, 2);
+      assertRequest(calls[0]!, WEB_DATA, `Bearer ${TOKEN}`, true);
+      assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+      assert.deepEqual(diagnostics, []);
+    });
+  }
+
+  test(`a second ${status} is terminal without exposing secrets and never sends a third request`, async () => {
+    const { adapter, calls, diagnostics } = fixture([
+      () => Response.json({ status_code: status, message: `${PRIVATE_BODY}: ${TOKEN}` }),
+      () => syntheticHttpStatus(status),
+    ]);
+    await assertFailure(adapter.execute(seed), `Decodo service failure (HTTP ${status})`);
+    assert.equal(calls.length, 2);
+    assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+    assert.deepEqual(diagnostics, []);
   });
 }
 
+test("maps root-level 999, 524, 429, and other 6xx codes without collapsing into unexpected response", async () => {
+  const retry999 = fixture([() => Response.json({ status_code: 999, message: PRIVATE_BODY }), () => scraped(MARKDOWN)]);
+  const [ok] = await retry999.adapter.execute(seed);
+  assert.equal(ok?.finding.extra.status_code, 200);
+  assert.equal(retry999.calls.length, 2);
+
+  for (const [reply, message] of [
+    [() => Response.json({ status_code: 524, message: TOKEN }), "Decodo request timed out"],
+    [() => Response.json({ status_code: 429, message: TOKEN }), "Decodo API rate limit or quota exceeded"],
+    [() => Response.json({ status_code: "614", message: TOKEN }), "Decodo service failure (HTTP 614)"],
+    [() => Response.json({ results: [{ status_code: 614, content: TOKEN }] }), "Decodo service failure (HTTP 614)"],
+  ] as const) {
+    const { adapter, calls, diagnostics } = fixture([reply]);
+    await assertFailure(adapter.execute(seed), message);
+    assert.equal(isPublicDecodoFailure(message), true);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(diagnostics, []);
+  }
+});
+
+for (const [name, reply, message, expectedReason] of [
+  ["malformed JSON", () => new Response(`${PRIVATE_BODY}: ${TOKEN}`, { headers: { "content-type": `text/html; secret=${TOKEN}` } }), "Unexpected Decodo response (invalid JSON)", "invalid_json"],
+  ["non-object JSON", () => Response.json([TOKEN]), "Unexpected Decodo response (invalid JSON)", "non_object_json"],
+  ["missing results", () => Response.json({ [TOKEN]: PRIVATE_BODY, status: "failed" }), "Unexpected Decodo response (missing results)", "missing_results"],
+  ["missing status", () => Response.json({ results: [{ content: TOKEN }] }), "Unexpected Decodo response (missing status)", "missing_status"],
+  ["non-text content", () => Response.json({ results: [{ status_code: 200, content: { nested: TOKEN } }] }), "Unexpected Decodo response (missing text content)", "missing_text_content"],
+  ["target 404", () => scraped(TOKEN, { status_code: 404 }), "Decodo target returned HTTP 404", undefined],
+  ["network failure", () => { throw new Error(TOKEN); }, "Decodo request failed", undefined],
+  ["aborted fetch", () => { throw new DOMException(TOKEN, "AbortError"); }, "Decodo request timed out", undefined],
+  ["timed-out fetch", () => { throw new DOMException(TOKEN, "TimeoutError"); }, "Decodo request timed out", undefined],
+  ["aborted body", () => new Response(new ReadableStream({ start(controller) { controller.error(new DOMException(TOKEN, "AbortError")); } })), "Decodo request timed out", undefined],
+] as const) {
+  test(`fails on ${name} without exposing secrets or retrying`, async () => {
+    const { adapter, calls, diagnostics } = fixture([reply]);
+    await assertFailure(adapter.execute(seed), message);
+    assert.equal(isPublicDecodoFailure(message), true);
+    assert.equal(calls.length, 1);
+    if (expectedReason === undefined) {
+      assert.deepEqual(diagnostics, []);
+    } else {
+      assert.equal(diagnostics.length, 1);
+      assert.equal(diagnostics[0]?.reason, expectedReason);
+      assert.doesNotMatch(JSON.stringify(diagnostics), new RegExp(`${TOKEN}|${PRIVATE_BODY}`));
+    }
+  });
+}
+
+test("isPublicDecodoFailure preserves legacy and differentiated unexpected response reasons", () => {
+  for (const message of [
+    "Unexpected Decodo response",
+    "Unexpected Decodo response (invalid JSON)",
+    "Unexpected Decodo response (missing results)",
+    "Unexpected Decodo response (missing status)",
+    "Unexpected Decodo response (missing text content)",
+  ]) {
+    assert.equal(isPublicDecodoFailure(message), true, message);
+  }
+});
+
 test("rejects authwalls and login/sign-up pages, but not a LinkedIn profile with a sign-in link", async () => {
   const profile = { kind: "url", value: "https://www.linkedin.com/in/public-profile/" } as const;
-  const { adapter, calls } = fixture([
+  const gated = [
     () => scraped("# Welcome\n\nA generic page", { url: "https://www.linkedin.com/authwall?trk=profile" }),
     () => scraped(`[LinkedIn](https://www.linkedin.com/)\n\n# Sign in to LinkedIn\n\nStay updated on your professional world\n\nEmail or phone\n\nPassword\n\nShow\n\n[Forgot password?](https://www.linkedin.com/reset)\n\nNew to LinkedIn? Join now\n\nLinkedIn © 2026`),
     () => scraped('<title>Sign Up | LinkedIn</title><nav>Home</nav><main><h1>Join LinkedIn</h1><p>Make the most of your professional life</p><form><label>Email or phone</label><label>Password</label><button>Join now</button></form></main>'),
+  ];
+  const { adapter, calls } = fixture([
+    ...gated.flatMap((reply) => [reply, reply]),
     () => scraped('<title>Public Profile | LinkedIn</title><nav><a href="/login">Sign in</a></nav><main><h1>Jamie Example</h1><p>Software engineer building research tools.</p><h2>Experience</h2><p>Research Engineer at Example Studio</p></main>'),
     () => scraped('[Sign in](https://www.linkedin.com/login)\n\n# Jamie Example\n\nSoftware engineer\n\n## Experience\n\nResearch Engineer at Example Studio'),
   ]);
@@ -254,7 +337,9 @@ test("rejects authwalls and login/sign-up pages, but not a LinkedIn profile with
     assert.equal(observation?.finding.url, profile.value);
     assert.match(String(observation?.finding.extra.content), /Research Engineer at Example Studio/);
   }
-  assert.equal(calls.length, 5);
+  assert.equal(calls.length, 8);
+  assert.deepEqual(calls.map((call) => JSON.parse(String(call.init.body)).headless),
+    ["html", undefined, "html", undefined, "html", undefined, "html", "html"]);
 });
 
 test("a standalone sign-in link does not make a sparse Markdown profile a login gate", async () => {
@@ -268,21 +353,23 @@ test("a standalone sign-in link does not make a sparse Markdown profile a login 
   assert.equal(calls.length, 1);
 });
 
-test("an HTML login form is terminal even with marketing copy on the original profile URL", async () => {
-  const { adapter, calls } = fixture([() => scraped(
-    '<main><p>Explore local news and discover new communities.</p><form><h1>Sign in</h1><label>Password <input type="password"></label></form></main>',
-    { url: seed.value },
-  )]);
+test("an HTML login form stays terminal after fallback even with marketing copy and JSON-LD", async () => {
+  const reply = () => scraped('<html><head><script type="application/ld+json">'
+    + JSON.stringify({ description: "Public stories about local communities and engineering projects. ".repeat(6) })
+    + '</script></head><main><p>Explore local news and discover new communities.</p>'
+    + '<form><h1>Sign in</h1><label>Password <input type="password"></label></form></main></html>', { url: seed.value });
+  const { adapter, calls } = fixture([reply, reply]);
   await assertFailure(adapter.execute(seed), "Decodo target requires login");
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test("Decodo rejects a members-only password gate on the original profile URL", async () => {
   const content = '<main><h1>Members only</h1><p>Enter your credentials to continue reading.</p>'
     + '<form><label>Password <input type="password"></label><button>Sign in</button></form></main>';
-  const { adapter, calls } = fixture([() => scraped(content, { url: seed.value })]);
+  const reply = () => scraped(content, { url: seed.value });
+  const { adapter, calls } = fixture([reply, reply]);
   await assertFailure(adapter.execute(seed), "Decodo target requires login");
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test("bounds title, description, preview, content and links without storing partial URLs", async () => {
@@ -447,13 +534,14 @@ test("strips large footer language chrome and prefers meta or twitter descriptio
 });
 
 test("still rejects modal or dialog password login walls when substantive non-chrome body is sparse", async () => {
-  const { adapter, calls } = fixture([
+  const modalPages = [
     () => scraped('<body><main><p>View this profile.</p></main><div role="dialog" aria-modal="true"><h1>Sign in</h1><form><input type="password"><button>Sign in</button></form></div></body>'),
     () => scraped('<body><dialog open><h1>Log in</h1><form><input type="password"><button>Log in</button></form></dialog></body>'),
-  ]);
+  ];
+  const { adapter, calls } = fixture(modalPages.flatMap((reply) => [reply, reply]));
   await assertFailure(adapter.execute(seed), "Decodo target requires login");
   await assertFailure(adapter.execute(seed), "Decodo target requires login");
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 4);
 });
 
 test("deduplicates repeated boilerplate blocks in both HTML and Markdown before clipping to 6000 chars", async () => {
@@ -497,6 +585,150 @@ test("deduplicates repeated boilerplate blocks in both HTML and Markdown before 
   assert.match(mdContent, /Closing remarks on reproducible builds/);
 });
 
+test("keeps local header and footer content while excluding global and explicit chrome", async () => {
+  const sections = ["main", "article", "section", "div role=\"main\""];
+  for (const region of sections) {
+    const tag = region.split(" ")[0];
+    const html = `<header><a href="/menu">Global menu</a></header>
+      <${region}><header><h1>Jamie Example</h1><a href="/work">Selected work</a></header>
+      <nav>Local navigation</nav><header role="banner">Explicit banner</header>
+      <footer hidden>Hidden footer</footer><footer aria-hidden="true">Hidden clone</footer>
+      <footer>Published recently</footer></${tag}><footer><a href="/languages">Languages</a></footer>`;
+    const { adapter, calls } = fixture([() => scraped(html)]);
+    const [result] = await adapter.execute(seed);
+    assert.equal(result?.finding.extra.content, "# Jamie Example\nSelected work\nPublished recently", region);
+    assert.equal(result?.finding.extra.links, "https://example.org/work");
+    assert.equal(calls.length, 1);
+  }
+});
+
+test("adds only bounded, deduplicated factual JSON-LD and validated non-asset links", async () => {
+  const rawSchema = (value: string) => `<script type="application/ld+json">${value}</script>`;
+  const schema = (value: unknown) => rawSchema(JSON.stringify(value));
+  const html = `<html><head>${rawSchema("{invalid")}
+    ${schema({ name: "Oversized UTF-8 block", description: "é".repeat(33000) })}
+    ${schema({ "@graph": [{ mainEntity: {
+      name: "JAMIE EXAMPLE", alternateName: "Jamie E.", jobTitle: "Research engineer",
+      description: "Builds &lt;svg onload=alert(1)&gt; research tools.",
+      worksFor: { name: "Example Lab" }, alumniOf: [{ name: "Example College" }],
+      address: { streetAddress: "Unlisted street", addressLocality: "Córdoba" },
+      knowsAbout: ["Software testing", "software testing"], telephone: "Not public evidence",
+      url: "https://example.org/work#about",
+      sameAs: ["https://example.net/bio", "https://example.net/vol%2E3", "http://127.0.0.1/", "https://x.test/photo.png", "https://x.test/portrait.avif",
+        "https://x.test/portrait%2Epng", "https://name:pass@example.net/", "javascript:alert(1)"],
+    } }] })}
+    ${rawSchema('{"__proto__":{"name":"Inherited text"},"mainEntity":{"constructor":{"name":"Inherited field"}}}')}
+    ${Array.from({ length: 4 }, () => schema([])).join("")}${schema({ name: "Ignored ninth block" })}
+    <script>{"name":"Not JSON-LD"}</script></head><body><main><h1>Jamie Example</h1>
+    <a href="/work">Selected work</a></main></body></html>`;
+  const { adapter, calls } = fixture([() => scraped(html)]);
+  const [result] = await adapter.execute(seed);
+  const extra = result!.finding.extra;
+  assert.equal(extra.content, ["# Jamie Example", "Selected work", "Jamie E.", "Builds &lt;svg onload=alert(1)> research tools.",
+    "Research engineer", "Software testing", "Example Lab", "Example College", "Córdoba"].join("\n"));
+  assert.equal(extra.links, "https://example.org/work\nhttps://example.net/bio\nhttps://example.net/vol%2E3");
+  assert.equal(extra.content_truncated, false);
+  assert.equal(calls.length, 1);
+  assert.equal(Object.hasOwn(Object.prototype, "name"), false);
+});
+
+test("ignores hidden, chrome, oversized raw, and invalid JSON-LD blocks", async () => {
+  const html = `<html><body><main><h1>Public profile</h1>
+    ${["hidden", 'aria-hidden="true"', 'aria-modal="true"', 'role="banner"'].map((attribute, i) =>
+      `<script type="application/ld+json" ${attribute}>{"name":"Hidden claim ${i}","url":"https://example.org/hidden-${i}"}</script>`).join("")}
+    <script type="application/ld+json">${"\r\n".repeat(33000)}{"name":"Above raw limit"}</script>
+    <script type="application/ld+json">{"name":"Invalid\u0001metadata"}</script>
+    <script type="application/ld+json">{"headline":"Visible claim"}</script></main></body></html>`;
+  const { adapter, calls } = fixture([() => scraped(html)]);
+  const [result] = await adapter.execute(seed);
+  assert.equal(result?.finding.extra.content, "# Public profile\nVisible claim");
+  assert.equal(result?.finding.extra.links, undefined);
+  assert.equal(calls.length, 1);
+});
+
+test("retains descriptive alt text in visible primary regions without image URLs or icon text", async () => {
+  const html = `<body><img alt="A descriptive caption outside the primary region">
+    <main><h1>A workshop</h1><article>
+      <img src="https://example.org/private.png" alt="An open course on testing &amp; software">
+      <img alt="An open course on testing &amp; software">
+      <img alt="abcdefghijklmnopqrstuvwx"><img alt="Too few verylongwordsindeed">
+      <img alt="Profile picture of the workshop presenter">
+      <img hidden alt="Another caption that is not displayed">
+      <div aria-hidden="true"><img alt="A repeated caption from hidden content"></div>
+      <nav><img alt="A caption placed inside site navigation"></nav>
+      <img alt="Students &lt;img onerror=alert(1)&gt; reviewing an example">
+    </article></main></body>`;
+  const { adapter, calls } = fixture([() => scraped(html)]);
+  const [result] = await adapter.execute(seed);
+  assert.equal(result?.finding.extra.content,
+    "# A workshop\nAn open course on testing & software\nStudents &lt;img onerror=alert(1)> reviewing an example");
+  assert.equal(result?.finding.extra.links, undefined);
+  assert.equal(calls.length, 1);
+});
+
+const loginWall = () => scraped("<h1>Sign in</h1>", { url: "https://example.org/authwall" });
+const empty = () => scraped("<body><script>discard</script> &nbsp; </body>");
+
+test("retries a headless login or empty page once and keeps only the public fallback finding", async () => {
+  for (const first of [loginWall, empty]) {
+    const { adapter, calls } = fixture([first, () => scraped("<main><h1>Public page</h1><p>Public biography for visitors.</p></main>", { task_id: "fallback" })]);
+    const [result, ...rest] = await adapter.execute(seed);
+    assert.deepEqual(rest, []);
+    assert.equal(result?.finding.extra.content, "# Public page\nPublic biography for visitors.");
+    assert.equal(result?.finding.extra.task_id, "fallback");
+    assert.equal(result?.finding.url, seed.value);
+    assert.equal(calls.length, 2);
+    assertRequest(calls[0]!, WEB_DATA, `Bearer ${TOKEN}`);
+    assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+  }
+});
+
+test("unrelated structured site metadata does not turn a sign-in shell into a finding", async () => {
+  const shell = `<html><head><title>Sign in</title><script type="application/ld+json">${JSON.stringify({
+    "@type": "WebSite", name: "Welcome", description: "Public stories about local communities and engineering projects. ".repeat(6),
+  })}</script></head><body><main><h1>Sign in</h1><p>Welcome</p></main></body></html>`;
+  const { adapter, calls } = fixture([() => scraped(shell), () => scraped("<main><h1>Public fallback profile</h1></main>")]);
+  const [result] = await adapter.execute(seed);
+  assert.equal(result?.finding.extra.content, "# Public fallback profile");
+  assert.equal(calls.length, 2);
+  assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+
+  const body = "Builds software for scientific experiments and maintains public research tools. ".repeat(4).trim();
+  for (const type of ["WebSite", "Person"]) {
+    const branded = `<html><head><title>Sign in | Civic Library</title><script type="application/ld+json">${JSON.stringify({
+      "@type": type, name: "Civic Library", description: body,
+    })}</script></head><main><h1>Civic Library</h1><form><button>Sign in</button></form></main></html>`;
+    const brandedFixture = fixture([() => scraped(branded), () => scraped(branded)]);
+    await assertFailure(brandedFixture.adapter.execute(seed), "Decodo target requires login");
+    assert.equal(brandedFixture.calls.length, 2);
+    assertRequest(brandedFixture.calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+  }
+  const profile = `<html><head><title>Sign in | Community</title><script type="application/ld+json">${JSON.stringify({
+    "@type": "Person", name: "Jamie Example", description: body,
+  })}</script></head><main><h1>Jamie Example</h1></main></html>`;
+  const publicFixture = fixture([() => scraped(profile)]);
+  const [publicResult] = await publicFixture.adapter.execute(seed);
+  assert.equal(publicResult?.finding.extra.content, `# Jamie Example\n${body}`);
+  assert.equal(publicFixture.calls.length, 1);
+});
+
+test("stops after the second request and retains the relevant public error", async () => {
+  const blocked = () => scraped(PRIVATE_BODY, { status_code: 999 });
+  for (const [first, second, message] of [
+    [loginWall, loginWall, "Decodo target requires login"],
+    [loginWall, blocked, "Decodo target requires login"],
+    [empty, empty, "Decodo returned empty page content"],
+    [empty, loginWall, "Decodo target requires login"],
+    [blocked, empty, "Decodo returned empty page content"],
+  ] as const) {
+    const { adapter, calls } = fixture([first, second]);
+    await assertFailure(adapter.execute(seed), message);
+    assert.equal(calls.length, 2);
+    assertRequest(calls[0]!, WEB_DATA, `Bearer ${TOKEN}`);
+    assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+  }
+});
+
 test("preserves XSS entity escaping across title, description, preview, and cleaned content", async () => {
   const html = `<!doctype html><html><head>
     <title>Alert &lt;script&gt;alert(1)&lt;/script&gt;</title>
@@ -514,4 +746,192 @@ test("preserves XSS entity escaping across title, description, preview, and clea
   for (const field of [extra.title, extra.description, extra.preview, extra.content]) {
     assert.doesNotMatch(String(field), /<[a-z!/]/i);
   }
+});
+
+test("preserves generic HTML heading levels for section context without polluting preview", async () => {
+  const html = `<!doctype html><html><head><title>Ada Lovelace</title></head><body><main>
+    <h1>Ada Lovelace</h1>
+    <p>Analytical engine researcher in London.</p>
+    <section><h2>About</h2><p>Designs algorithms and mathematical notation.</p></section>
+    <section><h3>Activity</h3><p>Liked a post by Charles Babbage about mechanical gears.</p></section>
+  </main></body></html>`;
+  const { adapter } = fixture([() => scraped(html)]);
+  const [observation] = await adapter.execute(seed);
+  const extra = observation!.finding.extra;
+  assert.equal(extra.preview, "Ada Lovelace");
+  assert.equal(extra.content, [
+    "# Ada Lovelace",
+    "Analytical engine researcher in London.",
+    "## About",
+    "Designs algorithms and mathematical notation.",
+    "### Activity",
+    "Liked a post by Charles Babbage about mechanical gears.",
+  ].join("\n"));
+});
+
+test("accepts a concise public guest profile under 250 chars when sign-in modals exist in the DOM", async () => {
+  const html = `<!doctype html><html><head>
+    <title>Ada Lovelace | Network</title>
+    <script type="application/ld+json">${JSON.stringify({
+      "@type": "Person", name: "Ada Lovelace", jobTitle: "Systems Student",
+      worksFor: { "@type": "Organization", name: "Analytical Group" },
+      alumniOf: { "@type": "CollegeOrUniversity", name: "University of London" },
+    })}</script>
+  </head><body>
+    <main>
+      <h1>Ada Lovelace</h1>
+      <h3>London, United Kingdom</h3>
+      <p>Analytical Group · University of London</p>
+      <h2>About</h2>
+      <p>Final-year computer science student focusing on distributed systems.</p>
+      <div role="dialog" aria-modal="true">
+        <h2>Sign in to view Ada's full profile</h2>
+        <form><input type="email"><input type="password"><button type="submit">Sign in</button></form>
+      </div>
+      <section>
+        <form><h2>Welcome back</h2><input type="password"><button type="submit">Sign in</button></form>
+      </section>
+    </main>
+  </body></html>`;
+  const { adapter, calls } = fixture([() => scraped(html)]);
+  const [observation] = await adapter.execute(seed);
+  const content = String(observation!.finding.extra.content);
+  assert.equal(calls.length, 1);
+  assert.match(content, /^# Ada Lovelace/m);
+  assert.match(content, /^## About$/m);
+  assert.match(content, /Final-year computer science student/);
+  assert.doesNotMatch(content, /Sign in to view|Welcome back/);
+});
+
+test("still rejects a page-level sign-in wall with non-modal gate heading and marketing lines under 250 chars", async () => {
+  const wall = `<!doctype html><html><head><title>Portal</title></head><body><main>
+    <h1>Sign in to your account</h1>
+    <p>Discover opportunities and connect with professionals across industries worldwide.</p>
+    <p>Build your network every day with curated updates.</p>
+    <p>Already have credentials ready?</p>
+    <form><input type="email"><input type="password"><button type="submit">Sign in</button></form>
+  </main></body></html>`;
+  const { adapter, calls } = fixture([() => scraped(wall), () => scraped(wall)]);
+  await assertFailure(adapter.execute(seed), "Decodo target requires login");
+  assert.equal(calls.length, 2);
+});
+
+test("heading markers do not change which visible subject corroborates JSON-LD", async () => {
+  const heading = "A detailed guide to restoring historic instruments, maintaining public archives, and documenting workshop practice";
+  assert.ok(heading.length < 120 && heading.length + 7 >= 120);
+  const html = `<html><head><script type="application/ld+json">
+    {"@type":"Person","name":"Ada Lovelace"}
+    </script></head><body><p>Ada Lovelace</p><main><h6>${heading}</h6></main></body></html>`;
+  const { adapter } = fixture([() => scraped(html)]);
+  const [result] = await adapter.execute(seed);
+  assert.equal(result?.finding.extra.preview, "Ada Lovelace");
+  assert.equal(result?.finding.extra.content, `Ada Lovelace\n###### ${heading}`);
+});
+
+test("a page-level form heading is still a login signal when marketing surrounds it", async () => {
+  const html = `<main>
+    <p>Discover opportunities and connect with professionals across industries worldwide.</p>
+    <p>Build your network every day with curated updates.</p>
+    <p>Membership benefits and resources</p>
+    <form><h1>Sign in to your account</h1><input type="password"><button>Sign in</button></form>
+    </main>`;
+  const { adapter, calls } = fixture([() => scraped(html), () => scraped(html)]);
+  await assertFailure(adapter.execute(seed), "Decodo target requires login");
+  assert.equal(calls.length, 2);
+});
+
+test("a two-line public profile remains readable beside a contextual sign-in dialog", async () => {
+  const html = `<main><h1>Ada Lovelace</h1><p>Studies public archives.</p>
+    <dialog><h2>Sign in to follow Ada</h2><form><input type="password">
+    <button>Sign in</button></form></dialog></main>`;
+  const { adapter, calls } = fixture([() => scraped(html)]);
+  const [result] = await adapter.execute(seed);
+  assert.equal(result?.finding.extra.content, "# Ada Lovelace\nStudies public archives.");
+  assert.equal(calls.length, 1);
+});
+
+test("does not echo an arbitrary MIME token to callbacks or stderr", async (t) => {
+  const token = "fixture-secret/diagnostic";
+  const settings = async () => ({ token, apiMode: "web_data" as const });
+  const reply = () => new Response("not JSON", { headers: { "content-type": token } });
+  const callback = fixture([reply], { settings });
+  await assertFailure(callback.adapter.execute(seed), "Unexpected Decodo response (invalid JSON)");
+  assert.equal(callback.diagnostics.length, 1);
+  assert.equal(callback.diagnostics[0]?.responseContentType, "other");
+  assert.equal(JSON.stringify(callback.diagnostics).includes(token), false);
+
+  const log = t.mock.method(console, "error", () => {});
+  const fallback = fixture([reply], { settings, onDiagnostic: undefined });
+  await assertFailure(fallback.adapter.execute(seed), "Unexpected Decodo response (invalid JSON)");
+  assert.equal(log.mock.callCount(), 1);
+  assert.equal(JSON.stringify(log.mock.calls[0]?.arguments).includes(token), false);
+});
+
+test("isolates rejected async diagnostic callbacks", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const run = spawnSync(process.execPath, [
+    "--unhandled-rejections=strict", "--experimental-strip-types", "--input-type=module", "--eval",
+    `import assert from "node:assert/strict";
+     import { createDecodoAdapter } from ${JSON.stringify(new URL("../src/index.ts", import.meta.url).href)};
+     const adapter = createDecodoAdapter({
+       settings: async () => ({ token: ${JSON.stringify(TOKEN)}, apiMode: "web_data" }),
+       fetch: async () => new Response("not JSON"),
+       onDiagnostic: async () => { throw new Error(${JSON.stringify(TOKEN)}); },
+     });
+     await assert.rejects(adapter.execute(${JSON.stringify(seed)}), {
+       message: "Unexpected Decodo response (invalid JSON)",
+     });`,
+  ], { encoding: "utf8" });
+  assert.equal(run.stderr.includes(TOKEN), false);
+  assert.equal(run.status, 0);
+});
+
+test("rejects invalid result containers even with a root success status", async () => {
+  for (const results of [undefined, [], [null], ["invalid"], [[]]]) {
+    const { adapter, calls } = fixture([() => Response.json({ status: " 200 ", results })]);
+    await assertFailure(adapter.execute(seed), "Unexpected Decodo response (missing results)");
+    assert.equal(calls.length, 1);
+  }
+});
+
+test("root failure takes precedence over nested result entries and retries on 613", async () => {
+  const retry613 = fixture([
+    () => Response.json({ status_code: "613", results: [{}] }),
+    () => scraped(MARKDOWN),
+  ]);
+  assert.equal((await retry613.adapter.execute(seed)).length, 1);
+  assert.equal(retry613.calls.length, 2);
+  assertRequest(retry613.calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+
+  const rootErrorOverNested = fixture([
+    () => Response.json({ status_code: 614, results: [{ status_code: 200, content: MARKDOWN }] }),
+  ]);
+  await assertFailure(rootErrorOverNested.adapter.execute(seed), "Decodo service failure (HTTP 614)");
+  assert.equal(rootErrorOverNested.calls.length, 1);
+});
+
+test("uses the fallback failure for mixed 612 or 613 outcomes", async () => {
+  const loginWall = () => scraped("<main><h1>Sign in</h1><form><input type=\"password\"></form></main>");
+  const empty = () => scraped("<html><body><nav>Home</nav></body></html>");
+  for (const status of [612, 613]) {
+    const failed = () => syntheticHttpStatus(status);
+    const blocked = () => syntheticHttpStatus(999);
+    for (const [first, second, message] of [
+      [loginWall, failed, `Decodo service failure (HTTP ${status})`],
+      [failed, blocked, "Decodo scrape blocked by anti-bot protection (999)"],
+      [failed, loginWall, "Decodo target requires login"],
+      [failed, empty, "Decodo returned empty page content"],
+    ] as const) {
+      const { adapter, calls } = fixture([first, second]);
+      await assertFailure(adapter.execute(seed), message);
+      assert.equal(calls.length, 2);
+      assertRequest(calls[1]!, WEB_DATA, `Bearer ${TOKEN}`, false);
+    }
+  }
+});
+
+test("classifies the failure from a Fetch network-error response as public", async () => {
+  const { adapter, calls } = fixture([() => Response.error()]);
+  await assert.rejects(adapter.execute(seed), (error: Error) => isPublicDecodoFailure(error.message));
+  assert.equal(calls.length, 1);
 });

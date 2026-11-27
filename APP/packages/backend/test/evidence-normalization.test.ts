@@ -575,7 +575,7 @@ test("POST /investigations/:id/evidence/:evidenceId/normalize propagates provide
   assert.deepEqual(listed.json(), { normalizations: [expectedRecord], jobs: [] });
 });
 
-test("POST /investigations/:id/report/ai sends compact aiNormalizedPage when fresh, falls back to raw metadata when stale or absent, updates budget count, and keeps factual appendix raw", async (t) => {
+test("POST /investigations/:id/report/ai sends compact aiNormalizedPage when fresh, falls back to raw metadata when stale or absent, updates budget count, and omits raw factual appendix", async (t) => {
   const heavyFindings = Array.from({ length: 6 }, (_, index) =>
     makeDecodoEvidence(`decodo-heavy-${index + 1}`, {
       url: `https://example.org/heavy/${index + 1}`,
@@ -596,12 +596,12 @@ test("POST /investigations/:id/report/ai sends compact aiNormalizedPage when fre
   t.after(() => app.close());
 
   await settings.save({ apiKey: API_KEY, settings: DEFAULT_AI_REPORT_SETTINGS }, NOW);
-  gateway.nextCompletion = "## Resumen\nHipótesis basada en evidencia pública (confianza media).";
+  gateway.nextCompletion = "## Perfil general\nPersona con actividad pública en proyectos digitales.";
 
   const withoutNorms = await app.inject({ method: "POST", url: "/investigations/investigation-1/report/ai" });
   assert.equal(withoutNorms.statusCode, 200);
   assert.equal(countOmittedAiReportFindings(investigation), 1);
-  assert.match(withoutNorms.body, /1 hallazgos no se enviaron al modelo/);
+  assert.match(withoutNorms.body, /Por límite de contexto se omitieron 1 registros\./);
 
   for (const ev of heavyFindings) {
     await normalizations!.save("investigation-1", {
@@ -627,15 +627,15 @@ test("POST /investigations/:id/report/ai sends compact aiNormalizedPage when fre
   assert.doesNotMatch(promptContent, /xxxxxxxxxx/);
 
   const rawFactualReport = compileInvestigationReport(investigation);
+  assert.match(rawFactualReport, /Contenido público extenso 1:/);
+  assert.doesNotMatch(rawFactualReport, /aiNormalizedPage/);
   assert.equal(withNorms.body, composeAiReport({
-    narrative: "## Resumen\nHipótesis basada en evidencia pública (confianza media).",
-    factualReport: rawFactualReport,
+    narrative: "## Perfil general\nPersona con actividad pública en proyectos digitales.",
     model: DEFAULT_AI_REPORT_SETTINGS.model,
     generatedAt: NOW,
     omittedFindings: 0,
   }));
-  assert.doesNotMatch(withNorms.body, /aiNormalizedPage/);
-  assert.match(withNorms.body, /Contenido público extenso 1:/);
+  assert.doesNotMatch(withNorms.body, /aiNormalizedPage|Datos utilizados|Contenido público extenso 1:/);
 
   const mutatedFirst = makeDecodoEvidence("decodo-heavy-1", {
     url: "https://example.org/heavy/1",
@@ -1125,4 +1125,29 @@ test("pruning evidence at the clock boundary before final recheck skips saving a
   await runner.drain();
   assert.deepEqual(await h.normalizations!.listByInvestigation(CASE_ID), []);
   assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [terminal(job, "EVIDENCE_UNAVAILABLE")]);
+});
+
+test("AI report does not serve a model-written source appendix or change the factual report", async (t) => {
+  const { app, settings, gateway } = createHarness();
+  t.after(() => app.close());
+  await settings.save({ apiKey: API_KEY, settings: DEFAULT_AI_REPORT_SETTINGS }, NOW);
+
+  const url = "/investigations/investigation-1/report";
+  const before = await app.inject({ method: "GET", url });
+  assert.equal(before.statusCode, 200);
+
+  gateway.nextCompletion = "## Perfil general\nNo hay datos suficientes para describir el perfil.";
+  const valid = await app.inject({ method: "POST", url: `${url}/ai` });
+  assert.equal(valid.statusCode, 200);
+  assert.equal(valid.body.match(/^> Síntesis asistida por IA\b/gm)?.length, 1);
+
+  gateway.nextCompletion += "\n\n## Datos utilizados\n| Decodo | https://example.org | evidence-1 |";
+  const cleaned = await app.inject({ method: "POST", url: `${url}/ai` });
+  assert.equal(cleaned.statusCode, 200);
+  assert.doesNotMatch(cleaned.body, /Datos utilizados|Decodo|https?:\/\/|evidence-1|^\|/m);
+  assert.equal(cleaned.body.match(/^> Síntesis asistida por IA\b/gm)?.length, 1);
+
+  const after = await app.inject({ method: "GET", url });
+  assert.equal(after.statusCode, 200);
+  assert.equal(after.body, before.body);
 });

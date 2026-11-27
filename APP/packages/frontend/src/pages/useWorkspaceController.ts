@@ -32,6 +32,7 @@ export interface WorkspaceController {
   readonly retryLoad: () => Promise<void>;
   readonly mutate: (operation: (api: InvestigationApiClient, id: string) => Promise<unknown>, dispatch?: boolean) => Promise<boolean>;
   readonly queueDecodo: (evidenceIds: readonly string[]) => Promise<boolean>;
+  readonly rerunAction: (actionId: string, expectedRevision: number) => Promise<boolean>;
   readonly normalizeEvidence: (evidenceId: string) => Promise<boolean>;
   readonly loadReport: () => Promise<void>;
   readonly loadAiReport: () => Promise<void>;
@@ -350,6 +351,17 @@ export function useWorkspaceController(id: string): WorkspaceController {
     });
   }, [isCurrent, mutate]);
 
+  const rerunAction = useCallback((actionId: string, expectedRevision: number) => mutate(async (client, investigationId) => {
+    try {
+      await client.rerunAction(investigationId, actionId, expectedRevision);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        throw new Error("El expediente cambió o la acción ya no admite una reejecución");
+      }
+      throw error;
+    }
+  }), [mutate]);
+
   const normalizeEvidence = useCallback(async (evidenceId: string): Promise<boolean> => {
     const activeGeneration = generation.current;
     if (investigationId !== id || stale || !isCurrent(id, activeGeneration) ||
@@ -536,6 +548,7 @@ export function useWorkspaceController(id: string): WorkspaceController {
     retryLoad,
     mutate,
     queueDecodo,
+    rerunAction,
     normalizeEvidence,
     loadReport,
     loadAiReport,

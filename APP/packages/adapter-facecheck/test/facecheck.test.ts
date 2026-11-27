@@ -96,6 +96,15 @@ test("no candidates is a successful empty result", async () => {
   assert.deepEqual(await box(fakeFetch(uploaded, [{ output: { items: null } }])).execute(seed), []);
 });
 
+test("malformed FaceCheck items are not a successful empty search", async () => {
+  for (const output of [{ items: {} }, { items: "unexpected" }, {}]) {
+    await assert.rejects(
+      box(fakeFetch(uploaded, [{ output }])).execute(seed),
+      { message: "Invalid FaceCheck search response" },
+    );
+  }
+});
+
 test("drops candidates whose source link or thumbnail is unsafe and accepts bare base64 thumbnails", async () => {
   const items = [
     item(99, "javascript:alert(1)"),

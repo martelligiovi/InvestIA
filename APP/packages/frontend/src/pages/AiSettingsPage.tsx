@@ -168,7 +168,7 @@ function AiSettingsContent() {
     <header className="page-intro">
       <p className="kicker">Informe con IA</p>
       <h1 id="ai-settings-title" className="document-title">Ajustes de <span>IA</span></h1>
-      <p className="document-lead">Configurá NVIDIA Build para redactar informes narrativos e hipotéticos a partir de los datos del expediente.</p>
+      <p className="document-lead">Configurá NVIDIA Build para redactar informes ejecutivos de perfil a partir de los datos del expediente.</p>
     </header>
   );
 
@@ -288,7 +288,7 @@ function AiSettingsContent() {
           </section>
 
           <p className="document-note ai-settings-privacy">
-            Al generar un informe con IA, los datos recopilados del expediente se envían a NVIDIA Build. El informe es hipotético y no confirma identidades.
+            Al generar un informe con IA, los datos recopilados del expediente se envían a NVIDIA Build. La síntesis asistida por IA no verifica identidad ni titularidad de cuentas.
           </p>
           {formError !== "" && <p className="form-error" role="alert">{formError}</p>}
           {notice !== "" && <p className="ai-settings-notice" role="status">{notice}</p>}
