@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import neo4j from "neo4j-driver";
-import { createInitialInvestigation } from "@investia/core";
+import { createInitialInvestigation, findingSeedNodeId, type Investigation } from "@investia/core";
 import { Neo4jInvestigationProjector } from "../src/neo4j-investigation-projector.ts";
 
 const uri = process.env.INVESTIA_TEST_NEO4J_URI;
@@ -47,6 +47,50 @@ test("real Neo4j transaction fences an older investigation revision", {
       await session.close();
     }
   } finally {
+    await driver.close();
+  }
+});
+
+test("real Neo4j reconciles a replacement without touching sibling branches or another investigation", {
+  skip: uri === undefined || username === undefined || password === undefined
+    ? "Set dedicated INVESTIA_TEST_NEO4J_* connection variables to enable Neo4j integration"
+    : false,
+}, async () => {
+  if (uri === undefined || username === undefined || password === undefined) return;
+  const driver = neo4j.driver(uri, neo4j.auth.basic(username, password));
+  const id = `investia-rerun-test-${randomUUID()}`;
+  const otherId = `${id}-other`;
+  const session = driver.session({ database });
+  try {
+    const projector = new Neo4jInvestigationProjector(driver, database);
+    const at = "2025-07-01T00:00:00.000Z";
+    const email = { kind: "email", value: "fixture@example.org" } as const;
+    const url = { kind: "url", value: "https://example.org/old-page" } as const;
+    const root = { id: "root", spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: email },
+      status: "succeeded", queuedByCatalog: true, proposedAt: at, proposalReason: "Fixture" } as const;
+    const previous: Investigation = { ...createInitialInvestigation(id, at), revision: 1, emailSeeds: [email],
+      actions: [root, { ...root, id: "sibling" }, { ...root, id: "child", sourceSeedId: findingSeedNodeId("old"),
+        spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: url } }],
+      evidence: [{ id: "old", actionId: root.id, seed: email, provider: "Fixture", status: "registered", sourceId: "fixture", recordedAt: at }],
+      validations: [{ id: "validation", evidenceId: "old", status: "accepted", reason: "Fixture", at, operator: "local-operator" }],
+      audit: [{ id: "prior-audit", at, actor: "operator", kind: "evidence_validated", reason: "Fixture", evidenceId: "old" }],
+    };
+    assert.deepEqual(await projector.project(previous), { revision: 1, status: "applied" });
+    assert.deepEqual(await projector.project({ ...previous, id: otherId }), { revision: 1, status: "applied" });
+    const replacement: Investigation = { ...previous, revision: 2, actions: previous.actions.slice(0, 2), validations: [],
+      evidence: [{ ...previous.evidence[0]!, id: "new" }],
+      audit: [...previous.audit, { id: "rerun-audit", at, actor: "system", kind: "action_rerun_succeeded", reason: "Replaced" }],
+    };
+    assert.deepEqual(await projector.project(replacement), { revision: 2, status: "applied" });
+    assert.deepEqual(await projector.project(previous), { revision: 1, status: "stale" });
+    const projected = async (investigationId: string) => {
+      const { records } = await session.run("MATCH (n {investigationId: $investigationId}) RETURN collect(n.id) AS ids, collect(n.value) AS seeds", { investigationId });
+      return { ids: (records[0]!.get("ids") as string[]).sort(), seeds: (records[0]!.get("seeds") as string[]).sort() };
+    };
+    assert.deepEqual(await projected(id), { ids: ["new", "prior-audit", "rerun-audit", "root", "sibling"], seeds: [email.value] });
+    assert.deepEqual(await projected(otherId), { ids: ["child", "old", "prior-audit", "root", "sibling", "validation"], seeds: [email.value, url.value].sort() });
+  } finally {
+    await session.run("MATCH (n) WHERE n.investigationId IN $ids OR n.id IN $ids DETACH DELETE n", { ids: [id, otherId] }).finally(() => session.close());
     await driver.close();
   }
 });

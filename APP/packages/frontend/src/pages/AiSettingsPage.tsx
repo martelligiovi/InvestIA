@@ -279,7 +279,7 @@ function AiSettingsContent({ onLayoutSettled }: { readonly onLayoutSettled: () =
 
   return (
     <SettingsCard {...SETTINGS_INTEGRATIONS.ai} status={status}
-      description="Configurá NVIDIA Build para redactar informes narrativos e hipotéticos a partir de los datos del expediente.">
+      description="Configurá NVIDIA Build para redactar informes ejecutivos de perfil a partir de los datos del expediente.">
       {view === null || draft === null ? (
         loadError === "" ? (
           <p className="settings-notice" role="status">Cargando ajustes…</p>
@@ -368,7 +368,7 @@ function AiSettingsContent({ onLayoutSettled }: { readonly onLayoutSettled: () =
               </details>
             </div>
             <p className="settings-privacy">
-              Al generar un informe con IA, los datos recopilados del expediente se envían a NVIDIA Build. El informe es hipotético y no confirma identidades.
+              Al generar un informe con IA, los datos recopilados del expediente se envían a NVIDIA Build. La síntesis asistida por IA no verifica identidad ni titularidad de cuentas.
             </p>
             {formError !== "" && <p className="form-error" role="alert">{formError}</p>}
             {notice !== "" && <p className="settings-notice" role="status">{notice}</p>}

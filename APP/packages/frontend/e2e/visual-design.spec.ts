@@ -1,4 +1,42 @@
 import { expect, test } from "@playwright/test";
+import type { Investigation } from "@investia/core";
+
+for (const width of [1440, 320]) {
+  test(`action rerun confirmation fits the detail panel at ${width}px`, async ({ page }) => {
+    const at = "2025-03-16T12:00:00.000Z";
+    const id = "rerun-visual-fixture";
+    const seed = { kind: "email", value: "una-semilla-larga-para-probar-el-ajuste@example.test" } as const;
+    const investigation: Investigation = { id, revision: 7, name: "Reejecución de ejemplo", createdAt: at, updatedAt: at,
+      advancementMode: "manual", paused: false, emailSeeds: [seed], evidence: [], validations: [], audit: [],
+      authorization: { granted: true, at, reason: "Fixture", operator: "local-operator", catalogScopes: ["user-scanner.email.v1"] },
+      actions: [{ id: "visual-action", spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed },
+        status: "succeeded", queuedByCatalog: true, proposedAt: at, completedAt: at, proposalReason: "Fixture" }],
+    };
+    await page.route(`**/investigations/${id}`, (route) => route.fulfill({ json: investigation }));
+    await page.setViewportSize({ width, height: 860 });
+    await page.goto(`/#/investigaciones/${id}`);
+    await page.locator('[data-node-id="action:visual-action"]').click();
+    const detailTab = page.getByRole("tab", { name: "Detalle", exact: true });
+    if (await detailTab.isVisible()) await detailTab.click();
+    const panel = page.getByRole("complementary", { name: "Detalle del nodo" });
+    await panel.getByRole("button", { name: "Reejecutar", exact: true }).click();
+    const region = panel.getByRole("region", { name: "Reejecución" });
+    await expect(region).toContainText("solo si la nueva ejecución termina bien");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+    const regionBounds = (await region.boundingBox())!;
+    for (const name of ["Confirmar reejecución", "Cancelar"]) {
+      const button = region.getByRole("button", { name, exact: true });
+      await expect(button).toBeVisible();
+      const bounds = (await button.boundingBox())!;
+      expect(bounds.height).toBeGreaterThanOrEqual(44);
+      expect(bounds.x).toBeGreaterThanOrEqual(regionBounds.x);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(regionBounds.x + regionBounds.width + 1);
+    }
+    await panel.screenshot({ path: `test-results/redesign/rerun-${width}.png` });
+    await region.getByRole("button", { name: "Cancelar", exact: true }).click();
+    await expect(panel.getByRole("button", { name: "Reejecutar", exact: true })).toBeVisible();
+  });
+}
 
 const viewports = [{ width: 1440, height: 1000 }, { width: 900, height: 900 }, { width: 390, height: 844 }];
 
@@ -47,7 +85,8 @@ for (const viewport of viewports) {
     await expect(page.locator(".workspace-title-block h1")).toHaveText("Exposición digital · Caso de ejemplo");
     await checkLayout();
     await expect(page.getByRole("button", { name: "Obtener informe", exact: true })).toBeVisible();
-    await expect(page.locator(".workspace-pause-disclosure summary")).toBeVisible();
+    await expect(page.locator(".workspace-usernames-disclosure summary")).toBeVisible();
+    await expect(page.locator(".workspace-pause-disclosure")).toHaveCount(0);
     await expect(page.getByText("Controles del expediente", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Autorizar expediente" })).toHaveCount(0);
     const title = await page.locator(".workspace-title-block h1").boundingBox();

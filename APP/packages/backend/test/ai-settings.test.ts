@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildAiReportMessages,
-  compileInvestigationReport,
   composeAiReport,
   DEFAULT_AI_REPORT_SETTINGS,
   type AiChatMessage,
@@ -65,7 +64,7 @@ class FakeGateway implements NvidiaBuildGateway {
   async complete(apiKey: string, settings: AiReportSettings, messages: readonly AiChatMessage[]) {
     this.calls.push({ apiKey, settings, messages });
     if (this.failure !== undefined) throw new NvidiaProviderError(this.failure);
-    return "## Resumen\nPodría ser una persona melómana (confianza baja).";
+    return "## Perfil general\nMuestra interés por la música y proyectos culturales.";
   }
 }
 
@@ -388,7 +387,7 @@ test("AI report requires a configured key and never calls the provider without o
   assert.equal(gateway.calls.length, 0);
 });
 
-test("AI report sends the collected data and appends every fact used", async (t) => {
+test("AI report sends the collected data and returns a concise Markdown report without factual appendix", async (t) => {
   const { app, gateway } = harness();
   t.after(() => app.close());
   await app.inject({ method: "PUT", url: "/settings/ai", payload: { apiKey: KEY, settings: { model: "openai/gpt-oss-20b" } } });
@@ -399,12 +398,11 @@ test("AI report sends the collected data and appends every fact used", async (t)
   const publicFixture = { ...fixture(), actions: [{ ...fixture().actions[0]!, failure: "Execution failed." }] };
   assert.deepEqual(gateway.calls, [{ apiKey: KEY, settings, messages: buildAiReportMessages(publicFixture) }]);
   assert.equal(response.body, composeAiReport({
-    narrative: "## Resumen\nPodría ser una persona melómana (confianza baja).",
-    factualReport: compileInvestigationReport(publicFixture),
+    narrative: "## Perfil general\nMuestra interés por la música y proyectos culturales.",
     model: "openai/gpt-oss-20b",
     generatedAt: NOW,
   }));
-  assert.doesNotMatch(response.body, /private\.example/);
+  assert.doesNotMatch(response.body, /private\.example|Datos utilizados/);
 
   assert.equal((await app.inject({ method: "POST", url: "/investigations/missing/report/ai" })).statusCode, 404);
   assert.equal(gateway.calls.length, 1);

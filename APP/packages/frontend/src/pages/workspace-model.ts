@@ -218,9 +218,10 @@ export function buildWorkspaceGraph(investigation: Investigation, ghuntConnected
 
   let resultRow = investigation.evidence.length;
   for (const action of investigation.actions) {
-    const failed = action.status === "failed";
+    const resultStatus = action.rerun?.previousStatus ?? action.status;
+    const failed = resultStatus === "failed";
     const hasEvidence = investigation.evidence.some((record) => record.actionId === action.id);
-    if (!failed && (action.status !== "succeeded" || hasEvidence)) continue;
+    if (!failed && (resultStatus !== "succeeded" || hasEvidence)) continue;
     const state = failed ? "failed" : "no_information";
     const title = failed ? "Error de ejecución" : "Sin información admitida";
     nodes.push({

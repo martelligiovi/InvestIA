@@ -486,10 +486,16 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect((await readState(request, id!)).executionCount, "automatic worker leaves authorized manual cases untouched").toBe(0);
   await expect(dispatch).toBeEnabled();
 
-  await openDisclosure(page, ".workspace-pause-disclosure");
-  await page.getByLabel("Motivo para pausar el expediente").fill("Pausar antes del despacho explícito.");
-  await page.getByRole("button", { name: "Pausar expediente" }).click();
+  const resumeDisclosure = page.locator(".workspace-pause-disclosure");
+  await expect(resumeDisclosure).toHaveCount(0);
+  const paused = await request.post(`${BASE_URL}/investigations/${encodeURIComponent(id)}/pause`, {
+    data: { reason: "Pausar antes del despacho explícito." },
+  });
+  expect(paused.status()).toBe(200);
   await expect.poll(async () => (await readState(request, id!)).investigation.paused).toBe(true);
+  // Queued manual actions do not trigger snapshot polling.
+  await page.reload();
+  await expect(resumeDisclosure.locator("summary")).toHaveText("Reanudar");
   await expect(dispatch).toBeDisabled();
   const blockedDispatch = await request.post(`${BASE_URL}/investigations/${encodeURIComponent(id!)}/actions/run`);
   expect(blockedDispatch.status()).toBe(200);
@@ -500,9 +506,10 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect(count(state, "POST /investigations/:id/actions/run")).toBe(1);
 
   await openDisclosure(page, ".workspace-pause-disclosure");
-  await page.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin despachar automáticamente.");
-  await page.getByRole("button", { name: "Reanudar expediente" }).click();
+  await resumeDisclosure.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin despachar automáticamente.");
+  await resumeDisclosure.getByRole("button", { name: "Reanudar expediente" }).click();
   await expect.poll(async () => (await readState(request, id!)).investigation.paused).toBe(false);
+  await expect(resumeDisclosure).toHaveCount(0);
   await expect(dispatch).toBeEnabled();
   state = await readState(request, id!);
   expect(state.executionCount).toBe(0);
@@ -938,6 +945,7 @@ test("an existing automatic queue respects pause and revocation until authorized
   await page.getByLabel("Motivo para reanudar el expediente").fill("Reanudar sin cambiar la autorización.");
   await page.getByRole("button", { name: "Reanudar expediente" }).click();
   await expect.poll(async () => (await readState(request, id)).investigation.paused).toBe(false);
+  await expect(page.locator(".workspace-pause-disclosure")).toHaveCount(0);
   const resumed = await readState(request, id);
   await expect.poll(async () => (await readState(request, id)).enumerationCount).toBeGreaterThan(resumed.enumerationCount + 1);
   expect((await readState(request, id)).executionCount, "revocation still blocks the resumed queue").toBe(paused.executionCount);

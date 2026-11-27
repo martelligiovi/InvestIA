@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
@@ -114,6 +114,9 @@ describe("App route scaffold", () => {
 
   it("loads the workspace for its decoded identifier without a case-controls popover", async () => {
     const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/investigations/caso%2042/normalizations" && (init?.method ?? "GET") === "GET") {
+        return new Response(JSON.stringify({ normalizations: [], jobs: [] }));
+      }
       if (String(input) !== "/investigations/caso%2042" || (init?.method ?? "GET") !== "GET") {
         throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${String(input)}`);
       }
@@ -135,7 +138,11 @@ describe("App route scaffold", () => {
     window.history.replaceState(null, "", "/#/investigaciones/caso%20%342");
     const { container } = render(<App />);
     expect(await screen.findByRole("heading", { name: "Caso de prueba" })).toBeInTheDocument();
-    expect(fetch.mock.calls.map(([input]) => String(input))).toEqual(["/investigations/caso%2042"]);
+    await waitFor(() => {
+      expect(fetch.mock.calls.map(([input]) => String(input))).toEqual([
+        "/investigations/caso%2042", "/investigations/caso%2042/normalizations",
+      ]);
+    });
     expect(screen.queryByText("Controles del expediente", { exact: true })).not.toBeInTheDocument();
     expect(container.querySelector(".application-shell")).toHaveClass("application-shell--quiet");
     expect(container.querySelector(".site-header .new-investigation-link")).toHaveAttribute("href", "#/nueva");

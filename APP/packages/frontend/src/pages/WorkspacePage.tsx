@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { authorizationCovers, usernameProposals, type ValidationStatus } from "@investia/core";
+import { authorizationCovers, isScopedCatalogId, usernameProposals, type ValidationStatus } from "@investia/core";
 import { InvestigationApiClient } from "../api/client";
 import { AsciiArt } from "../components/AsciiArt";
+import { ExecutionQueuePopover } from "../components/ExecutionQueuePopover";
 import { InvestigationGraph } from "../components/InvestigationGraph";
 import { UsernameSeedsPanel } from "../components/UsernameSeedsPanel";
-import { WorkspaceDetails } from "../components/WorkspaceDetails";
+import { WorkspaceDetails, type NormalizationStatus } from "../components/WorkspaceDetails";
 import { FacecheckReview } from "../components/FacecheckReview";
 import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
@@ -57,13 +58,18 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("graph");
   const [detailOpen, setDetailOpen] = useState(false);
   const [facecheckReview, setFacecheckReview] = useState<string | null>(null);
-  const [pauseReason, setPauseReason] = useState("");
+  const [resumeReason, setResumeReason] = useState("");
   const [formError, setFormError] = useState("");
   const graphTabRef = useRef<HTMLButtonElement>(null);
   const detailTabRef = useRef<HTMLButtonElement>(null);
   const reportRef = useRef<HTMLDetailsElement>(null);
   const reportErrorRef = useRef<HTMLParagraphElement>(null);
   const revealedReport = useRef<string | null>(null);
+  const drawerScrollTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (drawerScrollTimerRef.current !== null) window.clearTimeout(drawerScrollTimerRef.current);
+  }, []);
 
   // Reports and their errors render below the full-height workspace; bring each new one into view.
   useEffect(() => {
@@ -82,23 +88,29 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
 
   useEffect(() => {
     // Header disclosures behave as popovers: interacting elsewhere or pressing Escape dismisses them.
-    function dismissDisclosures(keep: EventTarget | null) {
+    function dismissDisclosures(keep: EventTarget | null): boolean {
+      let dismissed = false;
       for (const disclosure of document.querySelectorAll<HTMLDetailsElement>(".workspace-disclosure[open]")) {
         if (keep instanceof Node && disclosure.contains(keep)) continue;
         const hadFocus = disclosure.contains(document.activeElement);
         disclosure.open = false;
+        dismissed = true;
         if (hadFocus) disclosure.querySelector("summary")?.focus();
       }
+      return dismissed;
     }
-    const onPointerDown = (event: PointerEvent) => dismissDisclosures(event.target);
+    const onPointerDown = (event: PointerEvent) => { dismissDisclosures(event.target); };
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") dismissDisclosures(null);
+      if (event.key === "Escape" && dismissDisclosures(null)) {
+        // Close the open header popover first before nested panels (like the detail drawer) handle Escape.
+        event.stopPropagation();
+      }
     };
     document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
     };
   }, []);
 
@@ -134,10 +146,20 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   if (investigation === null || graph === null) return <LoadingWorkspace />;
   const selectedNode: WorkspaceNode | null = findWorkspaceNode(graph, selectedId) ?? graph.nodes[0] ?? null;
   const selectedNodeId = selectedNode?.id ?? null;
+  const selectedEvidenceId = selectedNode?.evidence?.id;
+  const activeNormalization = controller.normalizationJobs.find((job) => job.evidenceId === selectedEvidenceId &&
+    (job.status === "queued" || job.status === "running"));
+  const normalizationStatus: NormalizationStatus = selectedEvidenceId !== undefined && controller.enqueueingNormalizationIds.has(selectedEvidenceId)
+    ? "enqueueing" : activeNormalization?.status === "running" ? "running" : activeNormalization?.status === "queued" ? "queued" : "idle";
   const automatic = investigation.advancementMode === "automatic";
   const queuedActions = investigation.actions.filter((action) => action.status === "queued" && (action.queuedByCatalog === true || action.approval !== undefined));
   const coveredQueue = queuedActions.filter((action) => authorizationCovers(investigation.authorization, action.spec.catalogId));
   const uncoveredCount = queuedActions.length - coveredQueue.length;
+  const uncoveredTerminalCount = investigation.actions.filter((action) =>
+    (action.status === "succeeded" || action.status === "failed") &&
+    isScopedCatalogId(action.spec.catalogId) &&
+    !authorizationCovers(investigation.authorization, action.spec.catalogId),
+  ).length;
   const claimedActions = investigation.actions.filter((action) => action.status === "claimed");
   const hasDispatchableAction = coveredQueue.some((action) => {
     if (action.spec.catalogId === "ghunt.email.v1") return ghuntConnected === true;
@@ -157,11 +179,20 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     setDetailOpen(true);
     // The opening drawer narrows the canvas; once it settles, bring the chosen node back into view.
     const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    window.setTimeout(() => {
+    if (drawerScrollTimerRef.current !== null) window.clearTimeout(drawerScrollTimerRef.current);
+    drawerScrollTimerRef.current = window.setTimeout(() => {
+      drawerScrollTimerRef.current = null;
       document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(node.groupId ?? node.relatedParentId ?? node.id)}"]`)
         ?.scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: reducedMotion ? "auto" : "smooth" });
     }, reducedMotion ? 0 : DRAWER_SETTLE_MS);
   }
+
+  const selectQueueNode = (nodeId: string) => {
+    const node = findWorkspaceNode(graph, nodeId);
+    if (node === undefined) return;
+    selectNode(node);
+    setMobilePanel("detail");
+  };
 
   function closeDetail() {
     setDetailOpen(false);
@@ -183,17 +214,15 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     (nextPanel === "graph" ? graphTabRef : detailTabRef).current?.focus();
   }
 
-  async function togglePause() {
-    if (pauseReason.trim() === "") {
-      setFormError("Escribí un motivo para pausar o reanudar el expediente.");
+  async function resumeInvestigation() {
+    if (!investigationPaused) return;
+    if (resumeReason.trim() === "") {
+      setFormError("Escribí un motivo para reanudar el expediente.");
       return;
     }
-    const wasPaused = investigationPaused;
-    const saved = await controller.mutate((api, investigationId) => wasPaused
-      ? api.resumeInvestigation(investigationId, pauseReason)
-      : api.pauseInvestigation(investigationId, pauseReason));
+    const saved = await controller.mutate((api, investigationId) => api.resumeInvestigation(investigationId, resumeReason));
     if (saved) {
-      setPauseReason("");
+      setResumeReason("");
       setFormError("");
     }
   }
@@ -239,43 +268,56 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
               <UsernameSeedsPanel investigation={investigation} disabled={controlsDisabled} onAdd={addUsername} onDecide={decideUsername} />
             </div>
           </details>
-          <details className="workspace-pause-disclosure workspace-disclosure">
-            <summary>{investigation.paused ? "Reanudar" : "Pausar"}</summary>
-            <div className="workspace-popover workspace-pause-panel">
-              <label className="workspace-header-reason">
-                <span>Motivo para {investigation.paused ? "reanudar" : "pausar"}</span>
-                <input
-                  value={pauseReason}
-                  maxLength={2_000}
-                  onChange={(event) => { setPauseReason(event.currentTarget.value); setFormError(""); }}
-                  disabled={controlsDisabled}
-                  aria-label={`Motivo para ${investigation.paused ? "reanudar" : "pausar"} el expediente`}
-                />
-              </label>
-              <button className="workspace-button workspace-button--primary" type="button" disabled={controlsDisabled || pauseReason.trim() === ""} onClick={() => void togglePause()}>
-                {investigation.paused ? "Reanudar expediente" : "Pausar expediente"}
-              </button>
-              <p className="workspace-pause-note">Pausar impide nuevas reclamaciones; no cancela acciones en curso.</p>
-            </div>
-          </details>
+          {investigationPaused && (
+            <details className="workspace-pause-disclosure workspace-disclosure">
+              <summary>Reanudar</summary>
+              <div className="workspace-popover workspace-pause-panel">
+                <label className="workspace-header-reason">
+                  <span>Motivo para reanudar</span>
+                  <input
+                    value={resumeReason}
+                    maxLength={2_000}
+                    onChange={(event) => { setResumeReason(event.currentTarget.value); setFormError(""); }}
+                    disabled={controlsDisabled}
+                    aria-label="Motivo para reanudar el expediente"
+                  />
+                </label>
+                <button className="workspace-button workspace-button--primary" type="button" disabled={controlsDisabled || resumeReason.trim() === ""} onClick={() => void resumeInvestigation()}>
+                  Reanudar expediente
+                </button>
+              </div>
+            </details>
+          )}
           <button className="workspace-button workspace-button--report" type="button" disabled={controller.busy || controller.stale} onClick={() => void controller.loadReport()}>
             {controller.reportLoadingKind === "factual" ? "Obteniendo informe…" : "Obtener informe"}
           </button>
           <button className="workspace-button workspace-button--ai-report" type="button" disabled={controller.busy || controller.stale} onClick={() => void controller.loadAiReport()}>
             {controller.reportLoadingKind === "ai" ? "Generando informe con IA…" : "Generar informe con IA"}
           </button>
+          <ExecutionQueuePopover
+            investigation={investigation}
+            ghuntConnected={ghuntConnected}
+            facecheckConfigured={facecheckConfigured}
+            decodoConfigured={decodoConfigured}
+            normalizationJobs={controller.normalizationJobs}
+            normalizations={controller.normalizations}
+            onSelectAction={(actionId) => selectQueueNode(`action:${actionId}`)}
+            onSelectEvidence={(evidenceId) => selectQueueNode(`evidence:${evidenceId}`)}
+          />
         </div>
       </header>
       {controller.reportLoadingKind === "ai" && (
         <p className="workspace-claimed-warning" role="status">Generando el informe con IA en NVIDIA Build. Puede tardar varios minutos; el resultado aparece al final de la página.</p>
       )}
 
-      {(uncoveredCount > 0 || investigation.authorization?.granted !== true) && (
+      {(uncoveredCount > 0 || uncoveredTerminalCount > 0 || investigation.authorization?.granted !== true) && (
         <div className="workspace-claimed-warning workspace-notice-with-action">
           <div>
-            <span role="status">Esperando autorización: {uncoveredCount === 0
-              ? "el expediente no tiene permiso para ejecutar las herramientas configuradas."
-              : `${uncoveredCount === 1 ? "1 acción en cola bloqueada" : `${uncoveredCount} acciones en cola bloqueadas`}.`}</span>
+            <span role="status">Esperando autorización: {uncoveredCount > 0
+              ? `${uncoveredCount === 1 ? "1 acción en cola bloqueada" : `${uncoveredCount} acciones en cola bloqueadas`}.`
+              : investigation.authorization?.granted !== true
+                ? "el expediente no tiene permiso para ejecutar las herramientas configuradas."
+                : "hay acciones anteriores fuera del permiso actual; autorizá el expediente si querés reejecutarlas."}</span>
             <p className="dispatch-note">Autorizar habilita semillas actuales y futuras con user-scanner (módulos loud y cross-scan), Gravatar, Maigret, GHunt, FaceCheck (envía la foto de perfil de Google y usa créditos fuera del modo prueba) y Decodo (solo URL públicas de coincidencias de FaceCheck aceptadas, nunca la foto ni la miniatura).</p>
           </div>
           <button className="workspace-button workspace-button--quiet" type="button" disabled={controlsDisabled}
@@ -363,11 +405,13 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             ghuntConnected={ghuntConnected}
             facecheckConfigured={facecheckConfigured}
             decodoConfigured={decodoConfigured}
-            normalization={selectedNode?.evidence ? controller.normalizations[selectedNode.evidence.id] : undefined}
-            normalizing={selectedNode?.evidence !== undefined && controller.normalizingEvidenceId === selectedNode.evidence.id}
-            normalizationError={selectedNode?.evidence ? controller.normalizationErrors[selectedNode.evidence.id] ?? "" : ""}
+            normalization={selectedEvidenceId === undefined ? undefined : controller.normalizations[selectedEvidenceId]}
+            normalizationStatus={normalizationStatus}
+            normalizeDisabled={controller.stale}
+            normalizationError={selectedEvidenceId === undefined ? undefined : controller.normalizationErrors[selectedEvidenceId]}
             onValidate={validate}
             onQueueDecodo={controller.queueDecodo}
+            onRerun={controller.rerunAction}
             onNormalizeEvidence={controller.normalizeEvidence}
             onApproveGravatar={(actionId, reason) => controller.mutate((api, investigationId) => api.approveAction(investigationId, actionId, reason))}
             onReviewFacecheck={setFacecheckReview}
@@ -389,8 +433,8 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
           <summary>{aiReport ? "Informe con IA · vista previa y descarga" : "Informe Markdown · vista previa y descarga"}</summary>
           <div className="report-heading-row">
             <div>
-              <p className="eyebrow">{aiReport ? "SALIDA GENERADA CON IA · HIPOTÉTICA" : "SALIDA DOCUMENTAL"}</p>
-              <h2 id="report-heading">{aiReport ? "Informe con IA (hipotético)" : "Informe Markdown"}</h2>
+              <p className="eyebrow">{aiReport ? "SÍNTESIS ASISTIDA POR IA" : "SALIDA DOCUMENTAL"}</p>
+              <h2 id="report-heading">{aiReport ? "Informe con IA" : "Informe Markdown"}</h2>
             </div>
             <a
               className="workspace-button"
