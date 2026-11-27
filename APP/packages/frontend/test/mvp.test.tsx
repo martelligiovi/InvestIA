@@ -143,9 +143,10 @@ describe("creación nombrada y recuperación", () => {
     routeTo("#/nueva");
     const user = userEvent.setup();
     const first = render(<App />);
-    const advancement = screen.getByRole("region", { name: "Avance automático" });
-    expect(advancement).toHaveTextContent(/semillas actuales y futuras/i);
-    expect(advancement).toHaveTextContent(/Decodo.*URL públicas.*FaceCheck.*nunca.*foto/i);
+    expect(screen.getByRole("region", { name: /^Expediente$/ })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Semillas iniciales" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Avance automático" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Creá el expediente para iniciar el avance automático/u)).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText(/nombre de la investigación/i), "Consentido");
     await user.type(screen.getByLabelText(/intención de la investigación/i), "Revisar exposición");
