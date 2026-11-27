@@ -22,6 +22,8 @@ import {
 } from "@investia/core";
 import { PostgresAiSettingsStore } from "./ai-settings-store.ts";
 import { PostgresDecodoSettingsStore } from "./decodo-settings-store.ts";
+import { PostgresEvidenceNormalizationJobStore } from "./evidence-normalization-job-store.ts";
+import { EvidenceNormalizationRunner } from "./evidence-normalization-runner.ts";
 import { PostgresEvidenceNormalizationStore } from "./evidence-normalization-store.ts";
 import { PostgresFacecheckSettingsStore } from "./facecheck-settings-store.ts";
 import { createBackendApp } from "./api.ts";
@@ -38,7 +40,7 @@ export interface BackendStartOptions {
   readonly neo4jDriver?: Neo4jDriverLike;
   /** In-memory savers are for offline tests only; production defaults to PostgresSaver. */
   readonly checkpointer?: BaseCheckpointSaver;
-  /** Offline tests inject a fake; production calls NVIDIA Build only when the operator requests a report. */
+  /** Offline tests inject a fake; production sends reports and normalizations to NVIDIA Build. */
   readonly nvidiaGateway?: NvidiaBuildGateway;
   /** Offline tests inject a fake Google session; production uses GHUNT_SESSION_HOME when set. */
   readonly ghuntSession?: GhuntSession;
@@ -77,6 +79,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
   let app: ReturnType<typeof createBackendApp> | undefined;
   let driver: Neo4jDriverLike | undefined;
   let automaticRunner: AutomaticInvestigationRunner | undefined;
+  let normalizationRunner: EvidenceNormalizationRunner | undefined;
   try {
     driver = options.neo4jDriver ?? neo4j.driver(
       config.neo4jUri,
@@ -93,6 +96,8 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     await decodoSettings.migrate();
     const normalizationStore = new PostgresEvidenceNormalizationStore(pool);
     await normalizationStore.migrate();
+    const normalizationJobs = new PostgresEvidenceNormalizationJobStore(pool);
+    await normalizationJobs.migrate();
     const ghuntSession = options.ghuntSession ?? (config.ghuntSessionHome === undefined ? undefined : createGhuntSession({
       sessionHome: config.ghuntSessionHome,
       ...(config.ghuntPython === undefined ? {} : { pythonExecutable: config.ghuntPython }),
@@ -139,14 +144,23 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
         if (persisted !== undefined) await projector.project(persisted);
       },
     });
+    const gateway = options.nvidiaGateway ?? createNvidiaBuildGateway();
+    const clock = () => new Date().toISOString();
+    normalizationRunner = new EvidenceNormalizationRunner({
+      service, jobs: normalizationJobs, settings: aiSettings, gateway, normalizations: normalizationStore, clock,
+    }, {
+      onError: () => console.error("Evidence normalization sweep failed; queued work remains persisted."),
+    });
     app = createBackendApp(service, {
       actionRunner: createInvestigationRunGraph(service, checkpointer),
       projector,
       ai: {
         settings: aiSettings,
-        gateway: options.nvidiaGateway ?? createNvidiaBuildGateway(),
-        clock: () => new Date().toISOString(),
+        gateway,
+        clock,
         normalizations: normalizationStore,
+        normalizationJobs,
+        wakeNormalizations: () => { void normalizationRunner?.drain(); },
       },
       ghunt: { session: ghuntSession },
       facecheck: facecheckSettings,
@@ -158,11 +172,12 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
         "Frontend build is missing; the backend is API-only. Build it with `pnpm --dir APP --filter @investia/frontend build`.",
       ),
     });
-    app.addHook("onClose", async () => { await automaticRunner!.stop(); });
+    app.addHook("onClose", async () => { await Promise.all([automaticRunner!.stop(), normalizationRunner!.stop()]); });
     await app.listen({ host: config.host, port: config.port });
     automaticRunner.start();
+    normalizationRunner.start();
   } catch (error) {
-    await automaticRunner?.stop();
+    await Promise.all([automaticRunner?.stop(), normalizationRunner?.stop()]);
     if (app !== undefined) await app.close().catch(() => undefined);
     await Promise.allSettled([pool.end(), driver?.close() ?? Promise.resolve()]);
     throw error;
@@ -174,7 +189,7 @@ export async function startBackend(config: BackendConfig, options: BackendStartO
     close(): Promise<void> {
       closing ??= (async () => {
         try {
-          await automaticRunner!.stop();
+          await Promise.all([automaticRunner!.stop(), normalizationRunner!.stop()]);
           await app!.close();
         } finally {
           const results = await Promise.allSettled([pool.end(), driver?.close() ?? Promise.resolve()]);

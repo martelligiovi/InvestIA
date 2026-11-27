@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import {
   authorizationCovers,
+  canReplaceActionResults,
   DEFAULT_INVESTIGATION_NAME,
+  pendingRerunDescendants,
+  withoutActionResults,
   findingSeedNodeId,
   gravatarFindingTargetsEmail,
   isActionEligibleByParentValidation,
@@ -202,6 +205,13 @@ const ACTION_SPECS: Readonly<Record<string, { readonly provider: string; readonl
   "decodo.url.v1": { provider: "decodo", seed: isUrlSeed },
 };
 
+const HAS_INVALID_JSONB_CHAR = /\u0000|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
+const STRIP_INVALID_JSONB_CHAR = /\u0000|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g;
+
+function sanitizeStoredFailure(raw: string): string {
+  return raw.replace(/\u0000/g, "").trim().slice(0, 1_000).replace(STRIP_INVALID_JSONB_CHAR, "").trim() || "Execution failed.";
+}
+
 function isStoredAction(value: unknown): boolean {
   if (!isRecord(value) || !isNonEmptyString(value.id) || !isRecord(value.spec)) return false;
   const expected = Object.prototype.hasOwnProperty.call(ACTION_SPECS, String(value.spec.catalogId))
@@ -216,6 +226,12 @@ function isStoredAction(value: unknown): boolean {
   if (approvalPresent && !isApproval(value.approval)) return false;
   if (value.queuedByCatalog !== undefined && value.queuedByCatalog !== true) return false;
   if (value.sourceSeedId !== undefined && !isNonEmptyString(value.sourceSeedId)) return false;
+  if (value.sourceActionId !== undefined && (!isNonEmptyString(value.sourceActionId) || value.sourceActionId === value.id || value.sourceSeedId !== undefined)) return false;
+  if (value.lastRerunFailed !== undefined && (value.lastRerunFailed !== true || !["failed", "succeeded"].includes(String(value.status)))) return false;
+  if (value.lastRerunFailure !== undefined && (value.lastRerunFailed !== true || !isNonEmptyString(value.lastRerunFailure) || value.lastRerunFailure.length > 1_000 || HAS_INVALID_JSONB_CHAR.test(value.lastRerunFailure))) return false;
+  if (value.rerun !== undefined && (!isRecord(value.rerun) || !["queued", "claimed"].includes(String(value.status)) ||
+    !["failed", "succeeded"].includes(String(value.rerun.previousStatus)) || typeof value.rerun.fingerprint !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.rerun.fingerprint))) return false;
   if (["queued", "claimed", "succeeded", "failed"].includes(String(value.status)) &&
     !approvalPresent && value.queuedByCatalog !== true) return false;
 
@@ -376,7 +392,8 @@ export class PostgresInvestigationStore implements InvestigationStore {
       const proposedEvents: (typeof input.auditEvent)[] = [];
       const actions = current.actions.map((candidate) => {
         if (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.status !== "queued" ||
-          candidate.queuedByCatalog !== true || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) return candidate;
+          candidate.queuedByCatalog !== true || candidate.sourceSeedId !== undefined || candidate.sourceActionId !== undefined ||
+          candidate.approval !== undefined || candidate.rerun !== undefined) return candidate;
         const scannerIds = new Set(current.actions.filter((scanner) => scanner.spec.catalogId === "user-scanner.email.v1" &&
           scanner.spec.seed.value === candidate.spec.seed.value && scanner.status === "succeeded").map((scanner) => scanner.id));
         if (scannerIds.size === 0) return candidate;
@@ -385,15 +402,17 @@ export class PostgresInvestigationStore implements InvestigationStore {
           gravatarFindingTargetsEmail(record.finding.target, candidate.spec.seed.value));
         if (finding !== undefined) return { ...candidate, sourceSeedId: findingSeedNodeId(finding.id) };
         const { queuedByCatalog: _legacyEligibility, ...legacy } = candidate;
-        proposedEvents.push({ ...input.auditEvent, id: `${input.auditEvent.id}:proposal:${candidate.id}`,
+        const { failure: _claimFailure, ...claimAudit } = input.auditEvent;
+        proposedEvents.push({ ...claimAudit, id: `${claimAudit.id}:proposal:${candidate.id}`,
           kind: "action_proposed", actionId: candidate.id, reason: proposalReason });
         return { ...legacy, status: "proposed" as const, proposalReason };
       });
       const changed = actions.some((candidate, index) => candidate !== current.actions[index]);
+      const rerunDescendants = pendingRerunDescendants(changed ? { ...current, actions } : current);
       // Unlinked catalog Gravatar entries still waiting for their scanner are never dispatched.
-      const action = actions.find((candidate) => candidate.status === "queued" &&
+      const action = actions.find((candidate) => candidate.status === "queued" && !rerunDescendants.has(candidate.id) &&
         (candidate.queuedByCatalog === true || candidate.approval !== undefined) &&
-        (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.sourceSeedId !== undefined || candidate.approval !== undefined) &&
+        (candidate.spec.catalogId !== "gravatar.email.v1" || candidate.sourceSeedId !== undefined || candidate.approval !== undefined || candidate.rerun !== undefined) &&
         !(input.deferredCatalogIds ?? []).includes(candidate.spec.catalogId) &&
         authorizationCovers(current.authorization, candidate.spec.catalogId) &&
         isActionEligibleByParentValidation(current, candidate));
@@ -406,9 +425,10 @@ export class PostgresInvestigationStore implements InvestigationStore {
         status: "claimed" as const,
         claim: { id: input.claimId, claimedAt: input.claimedAt },
       };
+      const { failure: _claimedAuditFailure, ...claimedAudit } = input.auditEvent;
       const next = revise(current, input.claimedAt, {
         actions: actions.map((candidate) => candidate.id === action.id ? claimedAction : candidate),
-        audit: [...current.audit, ...proposedEvents, { ...input.auditEvent, actionId: action.id }],
+        audit: [...current.audit, ...proposedEvents, { ...claimedAudit, actionId: action.id }],
       });
       return {
         next,
@@ -426,43 +446,68 @@ export class PostgresInvestigationStore implements InvestigationStore {
       if (action?.status !== "claimed" || action.claim?.id !== input.claimId) {
         throw new InvestigationClaimConflictError();
       }
+      const { rerun, ...active } = action;
+      const { failure: _suppliedFailure, ...completionEvent } = input.auditEvent;
+      const result = input.result.kind === "failure"
+        ? { ...input.result, storedFailure: sanitizeStoredFailure(input.result.error) }
+        : input.result;
+      if (rerun !== undefined && (result.kind === "failure" || !canReplaceActionResults(current, action))) {
+        const { claim: _replacementClaim, ...prior } = active;
+        const conflictReason = "Prior results changed during execution; the replacement was not applied.";
+        const rerunFailure = result.kind === "failure" ? result.storedFailure : sanitizeStoredFailure(conflictReason);
+        const restored = { ...prior, status: rerun.previousStatus, lastRerunFailed: true as const, lastRerunFailure: rerunFailure };
+        const next = revise(current, input.completedAt, {
+          actions: current.actions.map((candidate) => candidate.id === action.id ? restored : candidate),
+          audit: [...current.audit, { ...completionEvent, kind: "action_failed", actionId: action.id, failure: rerunFailure,
+            reason: result.kind === "failure" ? "Replacement execution failed; prior results were retained." : conflictReason }],
+        });
+        return { next, result: next };
+      }
+      const basis = rerun === undefined ? current : withoutActionResults(current, action.id);
+      const { failure: _priorFailure, unsupportedObservationCount: _priorCount, ...completedFields } = active;
       const completed = {
-        ...action,
-        status: input.result.kind === "success" ? "succeeded" as const : "failed" as const,
+        ...(rerun === undefined ? active : completedFields),
+        status: result.kind === "success" ? "succeeded" as const : "failed" as const,
         completedAt: input.completedAt,
-        ...(input.result.kind === "failure" ? { failure: input.result.error } : {
-          unsupportedObservationCount: input.result.unsupportedObservationCount,
+        // Preserve initial action detail unless it would prevent the JSONB update.
+        ...(result.kind === "failure" ? { failure: HAS_INVALID_JSONB_CHAR.test(result.error) ? result.storedFailure : result.error } : {
+          unsupportedObservationCount: result.unsupportedObservationCount,
         }),
       };
-      const followUps = input.result.kind === "success" ? (input.followUps ?? []).filter(({ action: followUp }, index, all) =>
+      const followUps = result.kind === "success" ? (input.followUps ?? []).filter(({ action: followUp }, index, all) =>
         all.findIndex(({ action: other }) => other.spec.catalogId === followUp.spec.catalogId &&
           other.spec.seed.kind === followUp.spec.seed.kind && other.spec.seed.value === followUp.spec.seed.value) === index) : [];
-      const actions = current.actions.map((candidate) => candidate.id === input.actionId ? completed : candidate);
+      const actions = basis.actions.map((candidate) => candidate.id === input.actionId ? completed : candidate);
       const followUpEvents: typeof input.auditEvent[] = [];
       for (const followUp of followUps) {
+        const { failure: _followUpFailure, ...event } = followUp.auditEvent;
         const existingIndex = actions.findIndex((existing) => existing.spec.catalogId === followUp.action.spec.catalogId &&
           existing.spec.seed.kind === followUp.action.spec.seed.kind && existing.spec.seed.value === followUp.action.spec.seed.value);
         if (existingIndex < 0) {
           actions.push(followUp.action);
-          followUpEvents.push(followUp.auditEvent);
+          followUpEvents.push(event);
           continue;
         }
         const existing = actions[existingIndex]!;
         // Convert only an unclaimed legacy catalog sibling; never rewrite completed or human-approved work.
-        if (existing.spec.catalogId !== "gravatar.email.v1" || existing.status !== "queued" ||
-          existing.queuedByCatalog !== true || existing.sourceSeedId !== undefined || existing.approval !== undefined) continue;
+        if (rerun !== undefined || existing.spec.catalogId !== "gravatar.email.v1" || existing.status !== "queued" ||
+          existing.queuedByCatalog !== true || existing.sourceSeedId !== undefined || existing.sourceActionId !== undefined ||
+          existing.approval !== undefined || existing.rerun !== undefined) continue;
         const { queuedByCatalog: _legacyEligibility, ...legacy } = existing;
         actions[existingIndex] = { ...legacy, status: followUp.action.status, proposalReason: followUp.action.proposalReason,
           ...(followUp.action.sourceSeedId === undefined ? {} : { sourceSeedId: followUp.action.sourceSeedId }),
           ...(followUp.action.queuedByCatalog === true ? { queuedByCatalog: true as const } : {}) };
-        followUpEvents.push({ ...followUp.auditEvent, actionId: existing.id });
+        followUpEvents.push({ ...event, actionId: existing.id });
       }
-      const next = revise(current, input.completedAt, {
+      const auditEvent = result.kind === "failure"
+        ? { ...completionEvent, kind: "action_failed" as const, failure: result.storedFailure }
+        : rerun === undefined ? completionEvent : {
+          ...completionEvent, kind: "action_rerun_succeeded" as const, reason: "Replacement succeeded; prior results and dependent branches were replaced.",
+        };
+      const next = revise(basis, input.completedAt, {
         actions,
-        evidence: input.result.kind === "success"
-          ? [...current.evidence, ...input.result.evidence]
-          : current.evidence,
-        audit: [...current.audit, { ...input.auditEvent, actionId: input.actionId }, ...followUpEvents],
+        evidence: result.kind === "success" ? [...basis.evidence, ...result.evidence] : basis.evidence,
+        audit: [...basis.audit, { ...auditEvent, actionId: input.actionId }, ...followUpEvents],
       });
       return { next, result: next };
     });
