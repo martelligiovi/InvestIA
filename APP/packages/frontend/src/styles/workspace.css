@@ -83,7 +83,6 @@
   font-size: 15px;
   animation: popover-in 220ms var(--ease) both;
 }
-.workspace-usernames-panel { width: min(420px, calc(100vw - 32px)); }
 .username-seeds-panel { display: grid; gap: var(--space-3); }
 .username-seeds-panel h3 { margin: 0; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
 .username-seeds-panel ul { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
@@ -391,7 +390,8 @@
 .graph-viewport {
   height: clamp(320px, calc(100svh - 300px), 820px);
   margin-top: var(--space-3);
-  overflow: auto;
+  overflow: hidden;
+  overflow: clip;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   background-color: var(--linen);

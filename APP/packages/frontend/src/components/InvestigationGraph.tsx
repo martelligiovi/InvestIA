@@ -1,6 +1,22 @@
-import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { GRAPH_PAGE_SIZE, workspaceGraphPage, workspacePageEvidence, workspaceNodeSelected, type WorkspaceGraph, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
+
+export const GRAPH_MIN_ZOOM = 0.25;
+export const GRAPH_MAX_ZOOM = 2.4;
+export const GRAPH_BUTTON_ZOOM_OUT = 0.8;
+export const GRAPH_BUTTON_ZOOM_IN = 1.25;
+export const GRAPH_WHEEL_ZOOM_SENSITIVITY = 0.0008;
+export const GRAPH_WHEEL_MAX_DELTA = 200;
+
+export function wheelZoomFactor(deltaY: number, deltaMode = 0, pageHeight = 400): number {
+  if (!Number.isFinite(deltaY) || deltaY === 0) return 1;
+  let pixels = deltaY;
+  if (deltaMode === 1) pixels *= 32;
+  if (deltaMode === 2) pixels *= Number.isFinite(pageHeight) && pageHeight > 0 ? pageHeight : 400;
+  const clamped = Math.min(GRAPH_WHEEL_MAX_DELTA, Math.max(-GRAPH_WHEEL_MAX_DELTA, pixels));
+  return Math.exp(-clamped * GRAPH_WHEEL_ZOOM_SENSITIVITY);
+}
 
 export interface InvestigationGraphProps {
   readonly graph: WorkspaceGraph;
@@ -11,6 +27,11 @@ export interface InvestigationGraphProps {
 interface SvgPoint {
   readonly x: number;
   readonly y: number;
+}
+
+interface GraphView {
+  zoom: number;
+  pan: SvgPoint;
 }
 
 function displayLines(value: string, limit = 27): readonly string[] {
@@ -68,14 +89,26 @@ export function clientDeltaToSvgUnits(
   };
 }
 
-function fallbackClientDeltaToSvgUnits(deltaX: number, deltaY: number, svg: SVGSVGElement, graph: WorkspaceGraph): SvgPoint {
-  const rect = svg.getBoundingClientRect();
-  const scaleX = rect.width / graph.width;
-  const scaleY = rect.height / graph.height;
+function fallbackClientDeltaToSvgUnits(
+  deltaX: number,
+  deltaY: number,
+  rect: Pick<DOMRectReadOnly, "width" | "height">,
+  viewWidth: number,
+  viewHeight: number,
+): SvgPoint {
+  const scaleX = rect.width / viewWidth;
+  const scaleY = rect.height / viewHeight;
   return {
     x: scaleX > 0 ? deltaX / scaleX : deltaX,
     y: scaleY > 0 ? deltaY / scaleY : deltaY,
   };
+}
+
+function nearestRevealPan(pan: number, start: number, end: number, visibleStart: number, visibleEnd: number): number {
+  const minPan = visibleStart - start;
+  const maxPan = visibleEnd - end;
+  // An oversized node has no pan that fits it, so center it on this axis.
+  return minPan > maxPan ? (minPan + maxPan) / 2 : Math.min(maxPan, Math.max(minPan, pan));
 }
 
 export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: InvestigationGraphProps) {
@@ -85,12 +118,30 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
   const currentPage = Math.min(page, pageCount - 1);
   const graph = useMemo(() => workspaceGraphPage(fullGraph, currentPage), [fullGraph, currentPage]);
   const viewHeight = Math.max(graph.height, 700);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [view, setView] = useState<GraphView>({ zoom: 1, pan: { x: 0, y: 0 } });
+  const { zoom, pan } = view;
   const viewportRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<{ pointerId: number; x: number; y: number; startX: number; startY: number } | null>(null);
+  const pendingRevealRef = useRef<{ nodeId: string; mode: "center" | "nearest" } | null>(null);
+  const revealRollbackRef = useRef<GraphView | null>(null);
+  const nodesRef = useRef(graph.nodes);
+  const prevSelectedIdRef = useRef(selectedId);
+  nodesRef.current = graph.nodes;
+  if (prevSelectedIdRef.current !== null && selectedId === null) pendingRevealRef.current = null;
+  prevSelectedIdRef.current = selectedId;
   const empty = graph.nodes.length === 0;
+
+  useLayoutEffect(() => { revealRollbackRef.current = null; }, [view]);
+
+  function cancelPendingReveal() {
+    pendingRevealRef.current = null;
+    const rollback = revealRollbackRef.current;
+    if (rollback !== null) {
+      revealRollbackRef.current = null;
+      setView(rollback);
+    }
+  }
 
   function viewportCenter(): SvgPoint {
     const svg = svgRef.current, viewport = viewportRef.current;
@@ -101,42 +152,156 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
     return { x: graph.width / 2, y: viewHeight / 2 };
   }
 
-  function changeZoom(factor: number) {
-    const next = Math.min(2.4, Math.max(1, zoom * factor));
-    const center = viewportCenter();
-    setPan({ x: center.x - (center.x - pan.x) * next / zoom, y: center.y - (center.y - pan.y) * next / zoom });
-    setZoom(next);
+  function clientPointToSvg(clientX: number, clientY: number): SvgPoint {
+    const svg = svgRef.current;
+    if (svg) {
+      const matrix = svg.getScreenCTM?.();
+      if (matrix) return clientDeltaToSvgUnits(clientX - matrix.e, clientY - matrix.f, matrix);
+      const rect = svg.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        return fallbackClientDeltaToSvgUnits(clientX - rect.left, clientY - rect.top, rect, graph.width, viewHeight);
+      }
+    }
+    return viewportCenter();
   }
 
+  function applyZoom(factor: number, anchor: SvgPoint) {
+    setView((current) => {
+      const nextZoom = Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, current.zoom * factor));
+      if (nextZoom === current.zoom) return current;
+      return {
+        zoom: nextZoom,
+        pan: {
+          x: anchor.x - (anchor.x - current.pan.x) * nextZoom / current.zoom,
+          y: anchor.y - (anchor.y - current.pan.y) * nextZoom / current.zoom,
+        },
+      };
+    });
+  }
+
+  function changeZoom(factor: number) {
+    cancelPendingReveal();
+    applyZoom(factor, viewportCenter());
+  }
+
+  useEffect(() => {
+    if (empty) {
+      drag.current = null;
+      cancelPendingReveal();
+    }
+  }, [empty]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (empty || !viewport || typeof ResizeObserver === "undefined") return;
+    let lastWidth = viewport.clientWidth;
+    let lastHeight = viewport.clientHeight;
+
+    // The detail drawer changes the canvas width; scrolling cannot reveal nodes on a clipped canvas.
+    const observer = new ResizeObserver(() => {
+      const width = viewport.clientWidth;
+      const height = viewport.clientHeight;
+      if (width <= 0 || height <= 0 || (width === lastWidth && height === lastHeight)) return;
+      lastWidth = width;
+      lastHeight = height;
+
+      const pending = pendingRevealRef.current;
+      if (!pending) return;
+      const target = nodesRef.current.find((node) => workspaceNodeSelected(node, pending.nodeId));
+      if (!target) return;
+
+      let topLeft = { x: 0, y: 0 };
+      let bottomRight = { x: width, y: height };
+      const matrix = svgRef.current?.getScreenCTM?.();
+      if (matrix) {
+        const rect = viewport.getBoundingClientRect();
+        const x = rect.left + viewport.clientLeft - matrix.e;
+        const y = rect.top + viewport.clientTop - matrix.f;
+        topLeft = clientDeltaToSvgUnits(x, y, matrix);
+        bottomRight = clientDeltaToSvgUnits(x + width, y + height, matrix);
+      }
+
+      setView((current) => {
+        if (pendingRevealRef.current !== pending) return current;
+        const { zoom, pan } = current;
+        const nextPan = pending.mode === "center"
+          ? {
+              x: (topLeft.x + bottomRight.x) / 2 - (target.x + target.width / 2) * zoom,
+              y: (topLeft.y + bottomRight.y) / 2 - (target.y + target.height / 2) * zoom,
+            }
+          : {
+              x: nearestRevealPan(pan.x, target.x * zoom, (target.x + target.width) * zoom, topLeft.x, bottomRight.x),
+              y: nearestRevealPan(pan.y, target.y * zoom, (target.y + target.height) * zoom, topLeft.y, bottomRight.y),
+            };
+        if (nextPan.x === pan.x && nextPan.y === pan.y) return current;
+        // An idle React queue can evaluate this updater before a same-batch camera control cancels the reveal.
+        if (revealRollbackRef.current === null) revealRollbackRef.current = current;
+        return { ...current, pan: nextPan };
+      });
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [empty]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (empty || !viewport) return;
+    function onWheel(event: WheelEvent) {
+      if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+      event.preventDefault();
+      if (drag.current !== null) return;
+      cancelPendingReveal();
+      const factor = wheelZoomFactor(event.deltaY, event.deltaMode, viewport!.clientHeight);
+      const anchor = clientPointToSvg(event.clientX, event.clientY);
+      applyZoom(factor, anchor);
+    }
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", onWheel);
+  }, [empty, graph.width, viewHeight]);
+
   function selectFromList(node: WorkspaceNode) {
+    pendingRevealRef.current = { nodeId: node.id, mode: "center" };
     const center = viewportCenter();
-    setZoom(1);
-    setPan({ x: center.x - node.x - node.width / 2, y: center.y - node.y - node.height / 2 });
+    setView({ zoom: 1, pan: { x: center.x - node.x - node.width / 2, y: center.y - node.y - node.height / 2 } });
+    onSelect(node);
+  }
+
+  function selectFromCanvas(node: WorkspaceNode) {
+    pendingRevealRef.current = { nodeId: node.id, mode: "nearest" };
     onSelect(node);
   }
 
   function changePage(next: number) {
     const bounded = Math.max(0, Math.min(pageCount - 1, next));
     setPage(bounded);
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
     const projected = workspaceGraphPage(fullGraph, bounded);
     const pageable = new Set(workspacePageEvidence(fullGraph).map((node) => node.id));
     const first = projected.nodes.find((node) => pageable.has(node.id));
-    if (first) {
-      const viewport = viewportRef.current;
-      if (viewport) {
-        viewport.scrollLeft = Math.max(0, first.x + first.width / 2 - viewport.clientWidth / 2);
-        viewport.scrollTop = Math.max(0, first.y + first.height / 2 - viewport.clientHeight / 2);
-      }
-      onSelect(first);
+    pendingRevealRef.current = first ? { nodeId: first.id, mode: "nearest" } : null;
+    const viewport = viewportRef.current;
+    if (viewport) {
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = 0;
     }
+    if (first && viewport && viewport.clientWidth > 0 && viewport.clientHeight > 0) {
+      setView({
+        zoom: 1,
+        pan: {
+          x: Math.min(0, viewport.clientWidth / 2 - first.x - first.width / 2),
+          y: Math.min(0, viewport.clientHeight / 2 - first.y - first.height / 2),
+        },
+      });
+    } else {
+      setView({ zoom: 1, pan: { x: 0, y: 0 } });
+    }
+    if (first) onSelect(first);
   }
 
   function beginPan(event: PointerEvent<HTMLDivElement>) {
     // Pan from empty canvas only: the SVG background or the viewport area around a smaller graph.
     const onEmptyCanvas = event.target === event.currentTarget || (event.target as Element).tagName.toLowerCase() === "svg";
     if (!onEmptyCanvas || svgRef.current === null) return;
+    cancelPendingReveal();
     drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, startX: pan.x, startY: pan.y };
     event.currentTarget.setPointerCapture?.(event.pointerId);
   }
@@ -149,9 +314,9 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
     const deltaY = event.clientY - active.y;
     const matrix = svg.getScreenCTM?.() ?? null;
     const delta = matrix === null
-      ? fallbackClientDeltaToSvgUnits(deltaX, deltaY, svg, { ...graph, height: viewHeight })
+      ? fallbackClientDeltaToSvgUnits(deltaX, deltaY, svg.getBoundingClientRect(), graph.width, viewHeight)
       : clientDeltaToSvgUnits(deltaX, deltaY, matrix);
-    setPan({ x: active.startX + delta.x, y: active.startY + delta.y });
+    setView((current) => ({ ...current, pan: { x: active.startX + delta.x, y: active.startY + delta.y } }));
   }
 
   function finishPan(event: PointerEvent<HTMLDivElement>) {
@@ -160,9 +325,41 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   }
 
-  function centerSelectedNode() {
-    const node = graph.nodes.find((item) => workspaceNodeSelected(item, selectedId)) ?? graph.nodes[0];
-    if (node) selectFromList(node);
+  function fitGraphToViewport() {
+    if (empty) {
+      cancelPendingReveal();
+      return;
+    }
+    pendingRevealRef.current = null;
+    revealRollbackRef.current = null;
+    const viewport = viewportRef.current;
+    if (viewport) {
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = 0;
+    }
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const node of graph.nodes) {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + node.width);
+      maxY = Math.max(maxY, node.y + node.height);
+    }
+    const vw = viewport && viewport.clientWidth > 0 ? viewport.clientWidth : graph.width;
+    const vh = viewport && viewport.clientHeight > 0 ? viewport.clientHeight : viewHeight;
+    const pad = Math.min(32, Math.floor(Math.min(vw, vh) * 0.1));
+    const availW = Math.max(1, vw - pad * 2);
+    const availH = Math.max(1, vh - pad * 2);
+    const rawScale = Math.min(availW / (maxX - minX), availH / (maxY - minY), 1);
+    const nextZoom = Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, rawScale));
+
+    setView({
+      zoom: nextZoom,
+      pan: {
+        x: vw / 2 - ((minX + maxX) / 2) * nextZoom,
+        y: vh / 2 - ((minY + maxY) / 2) * nextZoom,
+      },
+    });
   }
 
   return (
@@ -172,13 +369,13 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
           <h2 id="graph-heading" className="sr-only">Grafo factual</h2>
           <details className="graph-description">
             <summary>Sobre el grafo</summary>
-            <p id="graph-description" className="graph-caption">Las líneas expresan referencias registradas, no relaciones personales. Las semillas sin acciones de una misma rama se agrupan; seleccioná la pila para consultar cada resultado. Seleccioná un nodo con Enter o espacio; arrastrá el fondo o usá las barras de desplazamiento. Centrar lleva el nodo seleccionado al centro sin achicarlo.</p>
+            <p id="graph-description" className="graph-caption">Las líneas expresan referencias registradas, no relaciones personales. Las semillas sin acciones de una misma rama se agrupan; seleccioná la pila para consultar cada resultado. Seleccioná un nodo con Enter o espacio; arrastrá el fondo para desplazarlo. Usá Centrar para ajustar el grafo completo a la vista, la rueda del mouse para hacer zoom progresivo, − para alejarlo y + para acercarlo.</p>
           </details>
         </div>
         <div className="graph-controls" aria-label="Controles del grafo">
-          <button type="button" aria-label="Alejar grafo" disabled={zoom <= 1} onClick={() => changeZoom(0.8)}>−</button>
-          <button type="button" aria-label="Acercar grafo" onClick={() => changeZoom(1.25)}>+</button>
-          <button type="button" aria-label="Centrar nodo seleccionado" onClick={centerSelectedNode}>Centrar</button>
+          <button type="button" aria-label="Alejar grafo" disabled={zoom <= GRAPH_MIN_ZOOM} onClick={() => changeZoom(GRAPH_BUTTON_ZOOM_OUT)}>−</button>
+          <button type="button" aria-label="Acercar grafo" disabled={zoom >= GRAPH_MAX_ZOOM} onClick={() => changeZoom(GRAPH_BUTTON_ZOOM_IN)}>+</button>
+          <button type="button" aria-label="Centrar grafo completo" onClick={fitGraphToViewport}>Centrar</button>
         </div>
       </div>
       {pageCount > 1 && (
@@ -204,7 +401,10 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
             onPointerMove={movePan}
             onPointerUp={finishPan}
             onPointerCancel={finishPan}
-            aria-label="Área del grafo; arrastrá el fondo para desplazarlo"
+            onLostPointerCapture={(event) => {
+              if (drag.current?.pointerId === event.pointerId) drag.current = null;
+            }}
+            aria-label="Área del grafo; arrastrá el fondo para desplazarlo o usá la rueda del mouse para hacer zoom"
           >
             <svg
               ref={svgRef}
@@ -244,8 +444,8 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
                       tabIndex={0}
                       aria-label={node.accessibleLabel}
                       aria-pressed={active}
-                      onClick={() => onSelect(node)}
-                      onKeyDown={(event) => handleNodeKey(event, node, onSelect)}
+                      onClick={() => selectFromCanvas(node)}
+                      onKeyDown={(event) => handleNodeKey(event, node, selectFromCanvas)}
                     >
                       <title>{node.accessibleLabel}</title>
                       {node.kind === "leaf-group" && [-3, 2.5].map((angle) => (

@@ -84,7 +84,13 @@
   .home-principles { grid-template-columns: minmax(0, 1fr); }
   .home-stamp-face { padding: 20px 18px 14px; }
   .home-stamp .ascii-art { font-size: 9px; letter-spacing: 0.2em; }
-  .history-entry { grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2) var(--space-3); }
-  .history-entry-date { grid-row: 2; }
+  .history-entry { grid-template-columns: minmax(0, 1fr) fit-content(56%); gap: var(--space-2) var(--space-3); }
+  .history-entry-date { grid-column: 1 / -1; grid-row: 2; }
+  .history-entry .status-chip { min-width: 0; max-width: 100%; justify-self: start; white-space: normal; overflow-wrap: anywhere; }
+  .history-entry .status-chip::before { flex: none; }
   .history-entry-arrow { display: none; }
+}
+
+@media (max-width: 360px) {
+  .history-entry { grid-template-columns: minmax(0, 1fr); }
 }

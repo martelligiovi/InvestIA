@@ -183,6 +183,15 @@ function publicFailureDetail(message: string, catalogId: GitHubCatalogAction["sp
   return "Execution failed.";
 }
 
+async function readOperationalReadiness(readLocal: () => Promise<boolean | null>): Promise<boolean | null> {
+  try {
+    return await readLocal();
+  } catch {
+    // A failed local readiness read must not hide the persisted investigation history.
+    return null;
+  }
+}
+
 function publicAction(action: GitHubCatalogAction): GitHubCatalogAction {
   const failure = action.failure === undefined ? undefined : publicFailureDetail(action.failure, action.spec.catalogId);
   const lastRerunFailure = action.lastRerunFailure === undefined ? undefined : publicFailureDetail(action.lastRerunFailure, action.spec.catalogId, true);
@@ -316,7 +325,19 @@ export function createBackendApp(
     return { outcomes };
   });
 
-  app.get("/investigations", async () => serviceCall(() => service.listInvestigations()));
+  app.get("/investigations", async () => {
+    const [ghuntConnected, decodoConfigured] = await Promise.all([
+      readOperationalReadiness(async () => {
+        const status = await adapters.ghunt?.session?.status();
+        return status === undefined ? null : status.state === "connected";
+      }),
+      readOperationalReadiness(async () => {
+        const settings = await adapters.decodo?.load();
+        return settings === undefined ? null : settings.token !== undefined;
+      }),
+    ]);
+    return serviceCall(() => service.listInvestigations({ ghuntConnected, decodoConfigured }));
+  });
 
   app.get<{ Params: { id: string } }>("/investigations/:id", async (request) => {
     const { id } = input(InvestigationParams, request.params);

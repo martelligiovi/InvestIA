@@ -168,7 +168,7 @@ describe("espacio de investigación factual", () => {
     expect(document.querySelector(".workspace-meta-bar, .workspace-commandbar, .workspace-command-bar")).toBeNull();
     expect(screen.queryByText("Controles del expediente")).not.toBeInTheDocument();
     const header = within(document.querySelector<HTMLElement>(".workspace-header-actions")!);
-    expect(header.getByText("Usernames", { selector: "summary" }).closest("details")).not.toHaveAttribute("open");
+    expect(header.queryByText(/^Usernames\b/u, { selector: "summary" })).not.toBeInTheDocument();
     expect(document.querySelector(".workspace-pause-disclosure")).toBeNull();
     for (const label of ["Pausar", "Reanudar"]) expect(header.queryByText(label, { selector: "summary" })).not.toBeInTheDocument();
     expect(header.queryByText("Pausar expediente", { selector: "button" })).not.toBeInTheDocument();
@@ -235,9 +235,18 @@ describe("espacio de investigación factual", () => {
     await user.click(screen.getByRole("button", { name: /acercar grafo/i }));
     // Zoom remains available, but now anchors at the viewport center rather than the origin.
     expect(graph.querySelector("g[transform]")?.getAttribute("transform")).toMatch(/^translate\([\d.-]+ [\d.-]+\) scale\(1\.25\)$/u);
-    await user.click(screen.getByRole("button", { name: "Centrar nodo seleccionado" }));
+    const selection = graph.querySelector('[aria-pressed="true"]');
+    expect(selection).not.toBeNull();
+    const fit = screen.getByRole("button", { name: "Centrar grafo completo" });
+    expect(fit).toHaveTextContent(/^Centrar$/u);
+    await user.click(fit);
     expect(graph.querySelector("g[transform]")?.getAttribute("transform")).toMatch(/^translate\([\d.-]+ [\d.-]+\) scale\(1\)$/u);
-    expect(screen.getByRole("button", { name: /alejar grafo/i })).toBeDisabled();
+    expect(graph.querySelector('[aria-pressed="true"]')).toBe(selection);
+    expect(document.querySelector(".workspace-layout")).toHaveAttribute("data-detail-open", "false");
+    const zoomOut = screen.getByRole("button", { name: "Alejar grafo" });
+    expect(zoomOut).toBeEnabled();
+    await user.click(zoomOut);
+    expect(graph.querySelector("g[transform]")?.getAttribute("transform")).toMatch(/scale\(0\.8\)$/u);
     await user.click(screen.getByRole("tab", { name: "Detalle" }));
     expect(document.querySelector(".workspace-layout")).toHaveAttribute("data-mobile-panel", "detail");
 
@@ -721,6 +730,22 @@ describe("acciones GHunt", () => {
     expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
   });
 
+  it("reports unknown Google readiness when there is no local session provider", async () => {
+    const queued: GitHubCatalogAction = { id: "ghunt-1", spec: { catalogId: "ghunt.email.v1", provider: "ghunt", seed }, status: "queued", queuedByCatalog: true, proposedAt: createdAt, proposalReason: "Consulta Gmail" };
+    const current = snapshot({ advancementMode: "automatic", authorization: { granted: true, at: createdAt, reason: "Permiso", operator: "local-operator", catalogScopes: ["ghunt.email.v1"] }, actions: [queued] });
+    let available = true;
+    installFetch(async (call) => pathOf(call) === "/settings/ghunt"
+      ? json({ available, state: available ? "connected" : "requires_connection", account: null })
+      : json(current));
+    render(<WorkspacePage id="case-1" />);
+    await screen.findByText("Cola automática habilitada");
+    available = false;
+    fireEvent(window, new Event("focus"));
+    const list = document.querySelector<HTMLElement>(".graph-node-list")!;
+    await within(list).findByRole("button", { name: /Acción: ghunt-1.*Conexión de Google desconocida/u });
+    expect(document.querySelector(".workspace-state-tag")).toHaveTextContent("Conexión de Google desconocida");
+  });
+
   it("en modo manual solo permite ejecutar GHunt conectado mediante el control del expediente", async () => {
     const queued: GitHubCatalogAction = { id: "ghunt-1", spec: { catalogId: "ghunt.email.v1", provider: "ghunt", seed }, status: "queued", queuedByCatalog: true, proposedAt: createdAt, proposalReason: "Consulta Gmail" };
     const current = snapshot({ advancementMode: "manual", authorization: { granted: true, at: createdAt, reason: "Permiso", operator: "local-operator", catalogScopes: ["ghunt.email.v1"] }, actions: [queued] });
@@ -1128,7 +1153,6 @@ describe("execution queue popover", () => {
 
 describe("desplegables del encabezado", () => {
   it.each([
-    ["Usernames", "Motivo del username"],
     ["Reanudar", "Motivo para reanudar el expediente"],
   ])("cierra %s al interactuar fuera o con Escape, sin cerrarlo al usarlo", async (label, reasonLabel) => {
     installFetch(async () => json(snapshot({ paused: true })));

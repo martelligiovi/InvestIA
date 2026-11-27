@@ -10,6 +10,7 @@ import {
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
   isActionEligibleByParentValidation,
+  investigationOperationalStatus,
   isGhuntEligibleEmail,
   isScopedCatalogId,
   latestValidationStatus,
@@ -23,6 +24,7 @@ import {
   type GitHubCatalogAction,
   type Investigation,
   type InvestigationActionId,
+  type InvestigationOperationalReadiness,
   type InvestigationSummary,
   type ValidationStatus,
 } from "../domain/investigation.ts";
@@ -215,7 +217,7 @@ export class InvestigationService {
     return investigation;
   }
 
-  async listInvestigations(): Promise<readonly InvestigationSummary[]> {
+  async listInvestigations(readiness?: InvestigationOperationalReadiness): Promise<readonly InvestigationSummary[]> {
     const investigations = await this.dependencies.store.list();
     return investigations
       .map((investigation) => ({
@@ -225,6 +227,7 @@ export class InvestigationService {
         createdAt: investigation.createdAt,
         updatedAt: investigation.updatedAt,
         paused: investigation.paused,
+        status: investigationOperationalStatus(investigation, readiness),
         emailSeedCount: investigation.emailSeeds.length,
         actionCount: investigation.actions.length,
       }))

@@ -582,6 +582,32 @@ test("creates, lists, loads, and adds validated email seeds with revisions", asy
   await assert.rejects(service.addEmailSeed(created.id, "person@-.org", "Invalid domain label."), /email/i);
 });
 
+test("summaries preserve operational precedence without changing the investigation", async () => {
+  const { service } = makeHarness({ id: "offline", async execute() { return []; } }, ["ghunt.email.v1"]);
+  const automatic = await service.createInvestigation("Automatic case");
+  const manual = await service.createInvestigation("Manual case", "Offline test", "manual");
+  await service.addEmailSeed(automatic.id, "ana@gmail.com");
+  await service.authorize(manual.id, true, "Authorize tools");
+  const statuses = async (ghuntConnected?: boolean | null) => (await service.listInvestigations(
+    ghuntConnected === undefined ? undefined : { ghuntConnected },
+  )).map(({ id, status }) => [id, status]);
+  assert.deepEqual(await statuses(true), [[automatic.id, "awaiting_authorization"], [manual.id, "manual_queue"]]);
+
+  const authorized = await service.authorize(automatic.id, true, "Authorize tools");
+  for (const [readiness, status] of [
+    [undefined, "google_connection_unknown"], [null, "google_connection_unknown"],
+    [false, "awaiting_google_connection"], [true, "automatic_queue"],
+  ] as const) {
+    assert.deepEqual(await statuses(readiness), [[automatic.id, status], [manual.id, "manual_queue"]]);
+  }
+  assert.deepEqual(await service.loadInvestigation(automatic.id), authorized);
+  await service.executeNextAction(automatic.id);
+  assert.deepEqual(await statuses(), [[automatic.id, "no_executable_actions"], [manual.id, "manual_queue"]]);
+  await service.authorize(automatic.id, false, "Revoke authorization");
+  await service.pause(automatic.id, "Review notes");
+  assert.deepEqual(await statuses(), [[automatic.id, "paused"], [manual.id, "manual_queue"]]);
+});
+
 test("investigation names are trimmed and preserved through listing, loading, mutation, and reports", async () => {
   const { service } = makeHarness();
   const created = await service.createInvestigation("  Triage | **<Night>**  ");
@@ -877,6 +903,7 @@ test("completion fencing rejects a stale claim and a duplicate terminal completi
     },
   };
   assert.ok(await store.claimNextAction(claim));
+  assert.equal((await service.listInvestigations())[0]?.status, "claimed_uncertain");
   const completedAt = "2025-01-02T00:00:01.000Z";
   const completion: CompleteActionInput = {
     investigationId,
@@ -1139,6 +1166,9 @@ test("accepting FaceCheck evidence atomically queues Decodo for only its page UR
   const { service, id, before, parent, executed } = await caseWithDecodo();
   assert.equal(await service.executeNextAction(id, true), undefined, "unreviewed candidates do not queue Decodo");
   const accepted = await service.validateEvidence(id, parent.id, "accepted", "Same person.");
+  for (const [decodoConfigured, status] of [[null, "no_executable_actions"], [false, "no_executable_actions"], [true, "automatic_queue"]] as const) {
+    assert.equal((await service.listInvestigations({ decodoConfigured }))[0]?.status, status);
+  }
   assert.equal(accepted.revision, before.revision + 1);
   assert.deepEqual(accepted.evidence, before.evidence);
   assert.deepEqual(accepted.actions.slice(0, before.actions.length), before.actions);

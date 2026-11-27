@@ -266,6 +266,29 @@ function parseTransform(value: string | null): { readonly x: number; readonly y:
   return { x: Number(match![1]), y: Number(match![2]), scale: Number(match![3]) };
 }
 
+async function expectGraphFit(page: Page, nodeCount: number) {
+  const geometry = await page.locator(".graph-viewport").evaluate((viewport) => {
+    const { left, top } = viewport.getBoundingClientRect();
+    const x = left + viewport.clientLeft;
+    const y = top + viewport.clientTop;
+    const nodes = [...viewport.querySelectorAll(".graph-node-card")].map((node) => {
+      const bounds = node.getBoundingClientRect();
+      return { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom };
+    });
+    return { x, y, right: x + viewport.clientWidth, bottom: y + viewport.clientHeight, nodes,
+      scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop };
+  });
+  expect(geometry.scrollLeft).toBe(0);
+  expect(geometry.scrollTop).toBe(0);
+  expect(geometry.nodes).toHaveLength(nodeCount);
+  for (const node of geometry.nodes) {
+    expect(node.left).toBeGreaterThanOrEqual(geometry.x - 1);
+    expect(node.right).toBeLessThanOrEqual(geometry.right + 1);
+    expect(node.top).toBeGreaterThanOrEqual(geometry.y - 1);
+    expect(node.bottom).toBeLessThanOrEqual(geometry.bottom + 1);
+  }
+}
+
 test("real same-origin manual workflow, responsive acceptance, and independent case gates", async ({ page, request }) => {
   test.setTimeout(90_000);
   const suffix = randomUUID().slice(0, 10);
@@ -620,28 +643,14 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await zoomButton.click();
   const afterZoom = parseTransform(await graph.locator(":scope > g").getAttribute("transform"));
   expect(afterZoom.scale).toBeCloseTo(beforeZoom.scale * 1.25, 6);
-  await page.getByRole("button", { name: "Centrar nodo seleccionado" }).click();
+  const fitButton = page.getByRole("button", { name: "Centrar grafo completo" });
+  await fitButton.click();
   const fittedTransform = parseTransform(await graph.locator(":scope > g").getAttribute("transform"));
-  expect(fittedTransform.scale).toBe(1);
-  const fitGeometry = await page.evaluate(() => {
-    const viewport = document.querySelector<HTMLElement>(".graph-viewport")!.getBoundingClientRect();
-    const nodes = [...document.querySelectorAll<SVGGraphicsElement>(".investigation-graph .graph-node.is-selected")]
-      .map((node) => {
-        const box = node.getBoundingClientRect();
-        return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
-      });
-    const matrix = (document.querySelector(".investigation-graph") as SVGSVGElement).getScreenCTM()!;
-    return { viewport: { left: viewport.left, right: viewport.right, top: viewport.top, bottom: viewport.bottom }, nodes, matrix: { a: matrix.a, d: matrix.d } };
-  });
-  expect(fitGeometry.matrix.a).toBe(1);
-  expect(fitGeometry.matrix.d).toBe(1);
-  expect(fitGeometry.nodes).toHaveLength(1);
-  for (const node of fitGeometry.nodes) {
-    expect(node.left).toBeGreaterThanOrEqual(fitGeometry.viewport.left - 1);
-    expect(node.right).toBeLessThanOrEqual(fitGeometry.viewport.right + 1);
-    expect(node.top).toBeGreaterThanOrEqual(fitGeometry.viewport.top - 1);
-    expect(node.bottom).toBeLessThanOrEqual(fitGeometry.viewport.bottom + 1);
-  }
+  expect(fittedTransform.scale).toBeGreaterThanOrEqual(0.25);
+  expect(fittedTransform.scale).toBeLessThanOrEqual(1);
+  await expectGraphFit(page, 5);
+  await expect(evidenceListButton).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("heading", { name: "Observación de registro" })).toBeVisible();
 
   const mobileGraphTab = page.getByRole("tab", { name: "Grafo" });
   const mobileDetailTab = page.getByRole("tab", { name: "Detalle" });
@@ -713,9 +722,10 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect(touchTransforms[2]!.x - touchBefore.x).toBeCloseTo((-mobileMatrix.d * 72 + mobileMatrix.c * 72) / mobileDeterminant, 0);
   expect(touchTransforms[2]!.y - touchBefore.y).toBeCloseTo((mobileMatrix.b * 72 - mobileMatrix.a * 72) / mobileDeterminant, 0);
   expect(await page.evaluate(() => window.scrollY), "graph drag must not scroll the page").toBe(scrollBeforeTouch);
-  await page.locator(".graph-node-list button").first().click();
-  await page.getByRole("button", { name: "Centrar nodo seleccionado" }).click();
+  await fitButton.click();
+  await page.locator(".graph-viewport").scrollIntoViewIfNeeded();
   const touchNode = graph.locator(".graph-node--seed").first();
+  await expect(touchNode).toHaveAttribute("aria-pressed", "false");
   const touchNodeBox = await touchNode.boundingBox();
   expect(touchNodeBox).not.toBeNull();
   await dispatchTouch("touchStart", touchNodeBox!.x + touchNodeBox!.width / 2, touchNodeBox!.y + touchNodeBox!.height / 2);
@@ -728,21 +738,9 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   await page.keyboard.press("Enter");
   await expect(keyboardNode).toHaveAttribute("aria-pressed", "true");
   await mobileGraphTab.click();
-  await page.getByRole("button", { name: "Centrar nodo seleccionado" }).click();
-  const mobileFitGeometry = await page.evaluate(() => {
-    const viewport = document.querySelector<HTMLElement>(".graph-viewport")!.getBoundingClientRect();
-    const nodes = [...document.querySelectorAll<SVGGraphicsElement>(".investigation-graph .graph-node.is-selected")].map((node) => node.getBoundingClientRect());
-    const matrix = (document.querySelector(".investigation-graph") as SVGSVGElement).getScreenCTM()!;
-    return { viewport: { left: viewport.left, right: viewport.right, top: viewport.top, bottom: viewport.bottom }, nodes: nodes.map((node) => ({ left: node.left, right: node.right, top: node.top, bottom: node.bottom })), scale: { x: matrix.a, y: matrix.d } };
-  });
-  expect(mobileFitGeometry.scale.x).toBeGreaterThan(0);
-  expect(mobileFitGeometry.scale.y).toBeGreaterThan(0);
-  for (const node of mobileFitGeometry.nodes) {
-    expect(node.left).toBeGreaterThanOrEqual(mobileFitGeometry.viewport.left - 1);
-    expect(node.right).toBeLessThanOrEqual(mobileFitGeometry.viewport.right + 1);
-    expect(node.top).toBeGreaterThanOrEqual(mobileFitGeometry.viewport.top - 1);
-    expect(node.bottom).toBeLessThanOrEqual(mobileFitGeometry.viewport.bottom + 1);
-  }
+  await fitButton.click();
+  await expectGraphFit(page, 5);
+  await expect(keyboardNode).toHaveAttribute("aria-pressed", "true");
   await closeNodeList(page);
   expect(await findRightOrnamentIntersections(page)).toEqual([]);
   screenshotPaths.push(await screenshot(page, "workspace-mobile-graph.png"));
@@ -784,7 +782,7 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   }
 
   await page.setViewportSize(DESKTOP);
-  await page.getByRole("button", { name: "Centrar nodo seleccionado" }).click();
+  await fitButton.click();
   await expectNoHorizontalOverflow(page, "desktop factual workspace");
   await expectNoClippedLabelsOrControls(page, "desktop factual workspace");
   await closeNodeList(page);
@@ -828,7 +826,8 @@ test("real same-origin manual workflow, responsive acceptance, and independent c
   expect(count(state, "POST /investigations/:id/evidence/:evidenceId/validation")).toBe(2);
 
   await page.getByRole("link", { name: "Volver al historial" }).click();
-  await expect(page.getByRole("link", { name: new RegExp(investigationName) })).toBeVisible();
+  const historyEntry = page.getByRole("link", { name: new RegExp(investigationName) });
+  await expect(historyEntry.locator(".status-chip")).toHaveText("Esperando autorización");
   await expectNoHorizontalOverflow(page, "desktop populated home");
   await expectNoClippedLabelsOrControls(page, "desktop populated home");
   const historyWidthRatio = await page.evaluate(() => document.querySelector<HTMLElement>(".history-panel")!.getBoundingClientRect().width / window.innerWidth);

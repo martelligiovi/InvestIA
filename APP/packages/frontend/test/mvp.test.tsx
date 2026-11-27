@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Investigation, InvestigationSummary } from "@investia/core";
@@ -15,6 +15,7 @@ const sampleSummary: InvestigationSummary = {
   createdAt,
   updatedAt: createdAt,
   paused: false,
+  status: "no_executable_actions",
   emailSeedCount: 2,
   actionCount: 0,
 };
@@ -77,7 +78,7 @@ afterEach(() => {
 });
 
 describe("home e historial real", () => {
-  it("muestra la carga, datos reales, estado pausado/activo y navega al expediente", async () => {
+  it("shows operational status with a single history request and opens the case", async () => {
     let resolveList!: (response: Response) => void;
     const pendingList = new Promise<Response>((resolve) => { resolveList = resolve; });
     const { calls } = installFetch(async (call) => requestPath(call) === "/investigations" ? pendingList : json(investigation()));
@@ -87,15 +88,19 @@ describe("home e historial real", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/cargando/i);
     resolveList(json([
       sampleSummary,
-      { ...sampleSummary, id: "case-2", name: "Pausada", paused: true, createdAt: "2025-03-15T12:00:00.000Z" },
+      { ...sampleSummary, id: "case-2", name: "Cuaderno de invierno", status: "paused", paused: true, createdAt: "2025-03-15T12:00:00.000Z" },
+      { ...sampleSummary, id: "case-3", name: "Cuaderno de verano", status: "paused", paused: false },
     ]));
 
     const entry = await screen.findByRole("link", { name: /Cuaderno de otoño/i });
     expect(entry).toHaveAttribute("href", "#/investigaciones/case-1");
-    expect(screen.getByText("Activa")).toBeInTheDocument();
-    expect(screen.getAllByText("Pausada")).toHaveLength(2);
-    expect(screen.getByText(/16 de marzo de 2025/i)).toBeInTheDocument();
-    expect(calls.map(requestPath)).toEqual(["/investigations"]);
+    expect(within(entry).getByText("Sin acciones ejecutables")).not.toHaveClass("status-chip--muted");
+    for (const season of ["invierno", "verano"]) {
+      const paused = screen.getByRole("link", { name: new RegExp(`Cuaderno de ${season}`) });
+      expect(within(paused).getByText("Pausada")).toHaveClass("status-chip--muted");
+    }
+    expect(within(entry).getByText(/16 de marzo de 2025/i)).toBeInTheDocument();
+    expect(calls.map((call) => `${call.init?.method ?? "GET"} ${requestPath(call)}`)).toEqual(["GET /investigations"]);
 
     await userEvent.setup().click(entry);
     expect(window.location.hash).toBe("#/investigaciones/case-1");
