@@ -267,6 +267,67 @@ export function isActionEligibleByParentValidation(investigation: Investigation,
   return parent !== undefined && latestValidationStatus(investigation, parent.id) === "accepted";
 }
 
+export type InvestigationOperationalStatus =
+  | "paused"
+  | "awaiting_authorization"
+  | "claimed_uncertain"
+  | "awaiting_google_connection"
+  | "google_connection_unknown"
+  | "manual_queue"
+  | "automatic_queue"
+  | "no_executable_actions";
+
+export interface InvestigationOperationalReadiness {
+  readonly ghuntConnected?: boolean | null;
+  readonly decodoConfigured?: boolean | null;
+}
+
+export function hasCatalogAuthorization(investigation: Investigation): boolean {
+  return investigation.authorization?.granted === true &&
+    investigation.actions.every((action) => authorizationCovers(investigation.authorization, action.spec.catalogId));
+}
+
+export function actionOperationalState(
+  investigation: Investigation,
+  action: GitHubCatalogAction,
+  { ghuntConnected, decodoConfigured }: InvestigationOperationalReadiness = {},
+) {
+  if (action.status !== "queued") return action.status;
+  if (!authorizationCovers(investigation.authorization, action.spec.catalogId)) return "waiting_authorization";
+  if (investigation.paused) return "paused_queue";
+  if (action.spec.catalogId === "ghunt.email.v1" && ghuntConnected !== true) return ghuntConnected === false ? "waiting_google" : "unknown_google";
+  if (!action.queuedByCatalog && action.approval === undefined) return "not_executable";
+  if (action.spec.catalogId === "decodo.url.v1") {
+    if (!isActionEligibleByParentValidation(investigation, action)) return "waiting_facecheck_acceptance";
+    if (decodoConfigured !== true) return decodoConfigured === false ? "waiting_decodo_token" : "unknown_decodo_token";
+  }
+  // Historical unlinked Gravatar queues run only after their user-scanner result links them.
+  if (action.spec.catalogId === "gravatar.email.v1" && action.sourceSeedId === undefined && action.approval === undefined) {
+    return "waiting_scanner";
+  }
+  return "queued";
+}
+
+export function investigationOperationalStatus(
+  investigation: Investigation,
+  readiness?: InvestigationOperationalReadiness,
+): InvestigationOperationalStatus {
+  if (investigation.paused) return "paused";
+  if (!hasCatalogAuthorization(investigation)) return "awaiting_authorization";
+  if (investigation.actions.some((action) => action.status === "claimed")) return "claimed_uncertain";
+  let waitingGoogle = false;
+  let unknownGoogle = false;
+  for (const action of investigation.actions) {
+    const state = actionOperationalState(investigation, action, readiness);
+    if (state === "queued") return investigation.advancementMode === "automatic" ? "automatic_queue" : "manual_queue";
+    if (state === "waiting_google") waitingGoogle = true;
+    if (state === "unknown_google") unknownGoogle = true;
+  }
+  if (waitingGoogle) return "awaiting_google_connection";
+  if (unknownGoogle) return "google_connection_unknown";
+  return investigation.advancementMode === "automatic" ? "no_executable_actions" : "manual_queue";
+}
+
 export interface InvestigationSummary {
   readonly id: InvestigationId;
   readonly name: string;
@@ -274,6 +335,7 @@ export interface InvestigationSummary {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly paused: boolean;
+  readonly status: InvestigationOperationalStatus;
   readonly emailSeedCount: number;
   readonly actionCount: number;
 }

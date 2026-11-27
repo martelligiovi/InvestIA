@@ -2,6 +2,9 @@ import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from
 import { GRAPH_PAGE_SIZE, workspaceGraphPage, workspacePageEvidence, workspaceNodeSelected, type WorkspaceGraph, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 
+export const GRAPH_MIN_ZOOM = 0.25;
+export const GRAPH_MAX_ZOOM = 2.4;
+
 export interface InvestigationGraphProps {
   readonly graph: WorkspaceGraph;
   readonly selectedId: string | null;
@@ -102,7 +105,7 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
   }
 
   function changeZoom(factor: number) {
-    const next = Math.min(2.4, Math.max(1, zoom * factor));
+    const next = Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, zoom * factor));
     const center = viewportCenter();
     setPan({ x: center.x - (center.x - pan.x) * next / zoom, y: center.y - (center.y - pan.y) * next / zoom });
     setZoom(next);
@@ -160,9 +163,34 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   }
 
-  function centerSelectedNode() {
-    const node = graph.nodes.find((item) => workspaceNodeSelected(item, selectedId)) ?? graph.nodes[0];
-    if (node) selectFromList(node);
+  function fitGraphToViewport() {
+    if (graph.nodes.length === 0) return;
+    const viewport = viewportRef.current;
+    if (viewport) {
+      viewport.scrollLeft = 0;
+      viewport.scrollTop = 0;
+    }
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const node of graph.nodes) {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + node.width);
+      maxY = Math.max(maxY, node.y + node.height);
+    }
+    const vw = viewport && viewport.clientWidth > 0 ? viewport.clientWidth : graph.width;
+    const vh = viewport && viewport.clientHeight > 0 ? viewport.clientHeight : viewHeight;
+    const pad = Math.min(32, Math.floor(Math.min(vw, vh) * 0.1));
+    const availW = Math.max(1, vw - pad * 2);
+    const availH = Math.max(1, vh - pad * 2);
+    const rawScale = Math.min(availW / (maxX - minX), availH / (maxY - minY), 1);
+    const nextZoom = Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, rawScale));
+
+    setZoom(nextZoom);
+    setPan({
+      x: vw / 2 - ((minX + maxX) / 2) * nextZoom,
+      y: vh / 2 - ((minY + maxY) / 2) * nextZoom,
+    });
   }
 
   return (
@@ -172,13 +200,13 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
           <h2 id="graph-heading" className="sr-only">Grafo factual</h2>
           <details className="graph-description">
             <summary>Sobre el grafo</summary>
-            <p id="graph-description" className="graph-caption">Las líneas expresan referencias registradas, no relaciones personales. Las semillas sin acciones de una misma rama se agrupan; seleccioná la pila para consultar cada resultado. Seleccioná un nodo con Enter o espacio; arrastrá el fondo o usá las barras de desplazamiento. Centrar lleva el nodo seleccionado al centro sin achicarlo.</p>
+            <p id="graph-description" className="graph-caption">Las líneas expresan referencias registradas, no relaciones personales. Las semillas sin acciones de una misma rama se agrupan; seleccioná la pila para consultar cada resultado. Seleccioná un nodo con Enter o espacio; arrastrá el fondo o usá las barras de desplazamiento. Usá Centrar para ajustar el grafo completo a la vista, − para alejarlo y + para acercarlo.</p>
           </details>
         </div>
         <div className="graph-controls" aria-label="Controles del grafo">
-          <button type="button" aria-label="Alejar grafo" disabled={zoom <= 1} onClick={() => changeZoom(0.8)}>−</button>
-          <button type="button" aria-label="Acercar grafo" onClick={() => changeZoom(1.25)}>+</button>
-          <button type="button" aria-label="Centrar nodo seleccionado" onClick={centerSelectedNode}>Centrar</button>
+          <button type="button" aria-label="Alejar grafo" disabled={zoom <= GRAPH_MIN_ZOOM} onClick={() => changeZoom(0.8)}>−</button>
+          <button type="button" aria-label="Acercar grafo" disabled={zoom >= GRAPH_MAX_ZOOM} onClick={() => changeZoom(1.25)}>+</button>
+          <button type="button" aria-label="Centrar grafo completo" onClick={fitGraphToViewport}>Centrar</button>
         </div>
       </div>
       {pageCount > 1 && (

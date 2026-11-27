@@ -16,10 +16,13 @@ export {
   type ExecutionState,
 } from "./application/execute-seed-box.ts";
 export {
+  actionOperationalState,
   authorizationCovers,
   CATALOG_INPUT_KINDS,
   createInitialInvestigation,
   DEFAULT_INVESTIGATION_NAME,
+  hasCatalogAuthorization,
+  investigationOperationalStatus,
   isActionEligibleByParentValidation,
   isScopedCatalogId,
   latestValidationStatus,
@@ -50,6 +53,8 @@ export {
   type InvestigationActionId,
   type InvestigationActionStatus,
   type InvestigationId,
+  type InvestigationOperationalReadiness,
+  type InvestigationOperationalStatus,
   type InvestigationSummary,
   type RegistrationStatus as InvestigationRegistrationStatus,
   type ValidationDecision,

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
@@ -75,6 +75,20 @@ describe("App route scaffold", () => {
     expect(container.querySelector(".new-investigation-link")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Volver" })).toHaveAttribute("href", "#/");
   });
+  it("keeps the active and paused labels for legacy history responses without a status", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify([
+      { id: "legacy-active", name: "Caso anterior", paused: false },
+      { id: "legacy-paused", name: "Caso archivado", paused: true },
+    ]), { headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetcher);
+    render(<App />);
+    const active = await screen.findByRole("link", { name: /Caso anterior/u });
+    const paused = screen.getByRole("link", { name: /Caso archivado/u });
+    expect(within(active).getByText("Activa")).not.toHaveClass("status-chip--muted");
+    expect(within(paused).getByText("Pausada")).toHaveClass("status-chip--muted");
+    expect(fetcher.mock.calls.map(([path, init]) => `${init?.method ?? "GET"} ${String(path)}`)).toEqual(["GET /investigations"]);
+  });
+
   it("renders the Spanish create screen for its hash route", () => {
     window.history.replaceState(null, "", "/#/nueva");
     const { container } = render(<App />);

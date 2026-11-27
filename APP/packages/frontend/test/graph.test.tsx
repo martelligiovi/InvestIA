@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Investigation } from "@investia/core";
 import { buildWorkspaceGraph, workspaceGraphPage, type WorkspaceGraph, type WorkspaceNode } from "../src/pages/workspace-model";
@@ -28,6 +28,11 @@ const graph: WorkspaceGraph = {
 };
 
 afterEach(cleanup);
+
+function readGraphTransform(svg: Element) {
+  const match = svg.querySelector("g[transform]")!.getAttribute("transform")!.match(/^translate\((\S+) (\S+)\) scale\((\S+)\)$/u)!;
+  return { x: Number(match[1]), y: Number(match[2]), zoom: Number(match[3]) };
+}
 
 describe("resultados terminales", () => {
   const action = {
@@ -91,34 +96,61 @@ describe("geometría del grafo", () => {
     expect(delta.y).toBeCloseTo(expectedY, 8);
   });
 
-  it("centra el nodo seleccionado sin reducir su escala", () => {
-    render(<InvestigationGraph graph={graph} selectedId={null} onSelect={() => undefined} />);
-    const svg = screen.getByRole("group", { name: /grafo factual/i }) as unknown as SVGSVGElement;
-    const viewport = svg.closest(".graph-viewport") as HTMLDivElement;
-    Object.defineProperty(viewport, "clientWidth", { configurable: true, value: 300 });
-    Object.defineProperty(viewport, "clientHeight", { configurable: true, value: 250 });
-    Object.defineProperty(viewport, "getBoundingClientRect", {
-      configurable: true,
-      value: () => ({ left: 20, top: 30, right: 320, bottom: 280, width: 300, height: 250 }),
-    });
-    Object.defineProperty(svg, "getBoundingClientRect", {
-      configurable: true,
-      value: () => ({ left: 20, top: 30, right: 220, bottom: 430, width: 200, height: 400 }),
-    });
-    Object.defineProperty(svg, "getScreenCTM", {
-      configurable: true,
-      value: () => ({ a: 0.5, b: 0, c: 0, d: 0.5, e: 20, f: 30 }),
-    });
+  it.each([
+    { width: 300, height: 250, visibleWidth: 300, visibleHeight: 250, zoom: 1 / 3 },
+    { width: 300, height: 200, visibleWidth: 300, visibleHeight: 200, zoom: 4 / 15 },
+    { width: 100, height: 96, visibleWidth: 100, visibleHeight: 96, zoom: 0.25 },
+    { width: 0, height: 0, visibleWidth: 400, visibleHeight: 800, zoom: 1 },
+    { width: 1000, height: 1000, visibleWidth: 1000, visibleHeight: 1000, zoom: 1 },
+  ])("fits the full node bounds at $width × $height without changing selection", ({ width, height, visibleWidth, visibleHeight, zoom }) => {
+    const select = vi.fn();
+    render(<InvestigationGraph graph={graph} selectedId="two" onSelect={select} />);
+    const svg = screen.getByRole("group", { name: /grafo factual/i });
+    const viewport = svg.closest<HTMLDivElement>(".graph-viewport")!;
+    Object.defineProperties(viewport, { clientWidth: { value: width }, clientHeight: { value: height } });
+    viewport.scrollLeft = 12;
+    viewport.scrollTop = 90;
+    expect(readGraphTransform(svg)).toEqual({ x: 0, y: 0, zoom: 1 });
 
-    fireEvent.click(screen.getByRole("button", { name: "Centrar nodo seleccionado" }));
+    fireEvent.click(screen.getByRole("button", { name: "Centrar grafo completo" }));
 
-    const match = svg.querySelector("g[transform]")?.getAttribute("transform")?.match(/^translate\(([-\d.]+) ([-\d.]+)\) scale\(([-\d.]+)\)$/u);
-    expect(match).not.toBeNull();
-    expect(Number(match?.[1])).toBeCloseTo(240, 2);
-    expect(Number(match?.[2])).toBeCloseTo(100, 2);
-    expect(Number(match?.[3])).toBe(1);
-    expect(svg.style.width).toBe("400px");
-    expect(svg.style.height).toBe("800px");
+    const actual = readGraphTransform(svg);
+    expect(actual.zoom).toBeCloseTo(zoom, 8);
+    expect(actual.x + 110 * actual.zoom).toBeCloseTo(visibleWidth / 2, 8);
+    expect(actual.y + 400 * actual.zoom).toBeCloseTo(visibleHeight / 2, 8);
+    expect(viewport.scrollLeft).toBe(0);
+    expect(viewport.scrollTop).toBe(0);
+    expect(within(svg).getByRole("button", { name: "Semilla: two" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(svg).getByRole("button", { name: "Semilla: one" })).toHaveAttribute("aria-pressed", "false");
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when fitting an empty graph", () => {
+    const select = vi.fn();
+    render(<InvestigationGraph graph={{ ...graph, nodes: [] }} selectedId={null} onSelect={select} />);
+    fireEvent.click(screen.getByRole("button", { name: "Centrar grafo completo" }));
+    expect(screen.getByText("Todavía no hay semillas, acciones ni observaciones registradas.")).toBeVisible();
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("clamps zoom controls to 0.25 and 2.4", () => {
+    render(<InvestigationGraph graph={graph} selectedId={null} onSelect={vi.fn()} />);
+    const svg = screen.getByRole("group", { name: /grafo factual/i });
+    const zoomOut = screen.getByRole("button", { name: "Alejar grafo" });
+    const zoomIn = screen.getByRole("button", { name: "Acercar grafo" });
+    for (let i = 0; i < 7; i++) {
+      expect(zoomOut).toBeEnabled();
+      fireEvent.click(zoomOut);
+    }
+    expect(readGraphTransform(svg).zoom).toBe(0.25);
+    expect(zoomOut).toBeDisabled();
+    for (let i = 0; i < 11; i++) {
+      expect(zoomIn).toBeEnabled();
+      fireEvent.click(zoomIn);
+    }
+    expect(readGraphTransform(svg).zoom).toBe(2.4);
+    expect(zoomIn).toBeDisabled();
+    expect(zoomOut).toBeEnabled();
   });
 });
 
@@ -143,8 +175,9 @@ it("pages evidence without losing records, references or changing the input grap
   expect(workspaceGraphPage(graph, 0)).toBe(graph);
 });
 
-it("centers using the SVG screen origin and preserves readable zoom", () => {
-  render(<InvestigationGraph graph={graph} selectedId={null} onSelect={() => undefined} />);
+it("keeps zoom centered using the SVG screen origin and resets to readable scale from the accessible list", () => {
+  const select = vi.fn();
+  render(<InvestigationGraph graph={graph} selectedId={null} onSelect={select} />);
   const svg = screen.getByRole("group", { name: /grafo factual/i }) as unknown as SVGSVGElement;
   const viewport = svg.closest(".graph-viewport") as HTMLDivElement;
   Object.defineProperties(viewport, {
@@ -155,17 +188,20 @@ it("centers using the SVG screen origin and preserves readable zoom", () => {
     getBoundingClientRect: { value: () => ({ left: 20, top: 30, width: 300, height: 250 }) },
     getScreenCTM: { value: () => ({ a: 0.5, b: 0, c: 0, d: 0.5, e: 70, f: 30 }) },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Centrar nodo seleccionado" }));
-  const transform = () => svg.querySelector("g[transform]")!.getAttribute("transform")!.match(/translate\(([-\d.]+) ([-\d.]+)\) scale\(([-\d.]+)\)/)!;
-  let t = transform();
-  expect(Number(t[1])).toBeCloseTo(140, 2);
-  expect(Number(t[2])).toBeCloseTo(100, 2);
-  expect(Number(t[3])).toBe(1);
-  const before = { x: (200 - Number(t[1])) / Number(t[3]), y: (250 - Number(t[2])) / Number(t[3]) };
-  fireEvent.click(screen.getByRole("button", { name: "Acercar grafo" }));
-  t = transform();
-  expect((200 - Number(t[1])) / Number(t[3])).toBeCloseTo(before.x);
-  expect((250 - Number(t[2])) / Number(t[3])).toBeCloseTo(before.y);
+  const zoomIn = screen.getByRole("button", { name: "Acercar grafo" });
+  const zoomOut = screen.getByRole("button", { name: "Alejar grafo" });
+  for (const button of [zoomOut, zoomIn, zoomIn]) {
+    fireEvent.click(button);
+    const { x, y, zoom } = readGraphTransform(svg);
+    expect((200 - x) / zoom).toBeCloseTo(200);
+    expect((250 - y) / zoom).toBeCloseTo(250);
+  }
+  expect(readGraphTransform(svg).zoom).toBe(1.25);
+  fireEvent.click(screen.getByText(/^Lista accesible de nodos/u));
+  fireEvent.click(screen.getAllByRole("button", { name: "Semilla: one" }).find((button) => button.tagName === "BUTTON")!);
+  expect(readGraphTransform(svg)).toEqual({ x: 140, y: 100, zoom: 1 });
+  expect(select).toHaveBeenCalledTimes(1);
+  expect(select).toHaveBeenCalledWith(graph.nodes[0]);
 });
 
 describe("desplazamiento del lienzo", () => {

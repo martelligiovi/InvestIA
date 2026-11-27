@@ -26,7 +26,10 @@ function investigation(overrides: Partial<Investigation> = {}): Investigation {
   };
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("UsernameSeedsPanel", () => {
   it("lists each derived proposal once with the tool that found it", () => {
@@ -86,20 +89,17 @@ describe("UsernameSeedsPanel", () => {
 });
 
 describe("workspace username controls", () => {
-  it("opens the Usernames disclosure with the proposal count and posts a decision", async () => {
+  it("does not render a Usernames disclosure or panel even when proposals exist", async () => {
     const { WorkspacePage } = await import("../src/pages/WorkspacePage");
-    const calls: { url: string; body: unknown }[] = [];
-    const current = investigation();
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      calls.push({ url: String(input), body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
-      return new Response(JSON.stringify(current), { status: init?.method === "POST" ? 201 : 200, headers: { "content-type": "application/json" } });
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify(investigation()), {
+      headers: { "content-type": "application/json" },
     }));
-    const user = userEvent.setup();
-    render(<WorkspacePage id="case-1" />);
-    await user.click(await screen.findByText("Usernames (2)"));
-    await user.type(screen.getByLabelText("Motivo de la decisión"), "Misma persona");
-    await user.click(screen.getByRole("button", { name: "Aceptar anaexample" }));
-    expect(calls.find((call) => call.url.endsWith("/usernames/decisions"))?.body).toEqual({ username: "anaexample", decision: "accepted", reason: "Misma persona" });
-    vi.unstubAllGlobals();
+    vi.stubGlobal("fetch", fetcher);
+    const { container } = render(<WorkspacePage id="case-1" />);
+    await screen.findByRole("heading", { name: "Caso" });
+    const header = container.querySelector<HTMLElement>(".workspace-header")!;
+    expect(within(header).queryByText(/^Usernames(?: \(\d+\))?$/u, { selector: "summary" })).not.toBeInTheDocument();
+    expect(container.querySelector(".workspace-usernames-disclosure, .username-seeds-panel")).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.map(([input, init]) => `${init?.method ?? "GET"} ${String(input)}`)).toEqual(["GET /investigations/case-1"]);
   });
 });

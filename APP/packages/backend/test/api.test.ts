@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   authorizationCovers,
   createCatalogExecutor,
+  createInitialInvestigation,
   createInvestigationService,
   findingSeedNodeId,
   isActionEligibleByParentValidation,
@@ -13,6 +14,7 @@ import {
   type Investigation,
   type InvestigationExecutor,
   type InvestigationStore,
+  type InvestigationSummary,
   type InvestigationTransaction,
 } from "@investia/core";
 import { MemorySaver } from "@langchain/langgraph";
@@ -222,6 +224,89 @@ test("HTTP creation accepts intention and mode without executing work", async (t
     assert.equal((await harness.app.inject({ method: "POST", url: "/investigations", payload })).statusCode, 400);
   }
   assert.equal(harness.executions, 0);
+});
+
+test("HTTP history reports readiness from local settings and tolerates independent read failures", async (t) => {
+  const store = new MemoryStore();
+  const service = createInvestigationService({
+    store, clock: () => "2025-02-01T00:00:00.000Z", createId: () => "unused",
+    executor: { id: "unused", async execute() { assert.fail("history must not execute actions"); } },
+  });
+  const at = "2025-02-01T00:00:00.000Z";
+  const granted = { granted: true, at, reason: "Offline fixture", operator: "local-operator", catalogScopes: ["ghunt.email.v1", "decodo.url.v1"] } as const;
+  const queued = { id: "action", status: "queued", queuedByCatalog: true, proposedAt: at, proposalReason: "Offline fixture" } as const;
+  const cases: Investigation[] = [
+    { ...createInitialInvestigation("1-empty", at), authorization: granted },
+    { ...createInitialInvestigation("2-paused", at), paused: true },
+    { ...createInitialInvestigation("3-ghunt", at), authorization: granted, actions: [{ ...queued,
+      spec: { catalogId: "ghunt.email.v1", provider: "ghunt", seed: { kind: "email", value: "case@gmail.com" } },
+    }] },
+    { ...createInitialInvestigation("4-decodo", at), authorization: granted, actions: [{ ...queued,
+      spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: "https://example.org/profile" } },
+    }] },
+  ];
+  for (const snapshot of cases) await store.create(snapshot);
+  let ghunt: "connected" | "requires_connection" | "invalid_session" | "error" = "requires_connection";
+  let decodo: "configured" | "unconfigured" | "error" = "unconfigured";
+  let ghuntReads = 0;
+  let decodoReads = 0;
+  const adapters = {
+    actionRunner: { async run() { assert.fail("history must not dispatch actions"); } },
+    projector: { async project() { assert.fail("history must not project records"); } },
+  };
+  const app = createBackendApp(service, {
+    ...adapters,
+    ghunt: { session: {
+      async status() {
+        ghuntReads++;
+        if (ghunt === "error") throw new Error("Offline GHunt read failure");
+        return { state: ghunt, account: "local-account@example.test" };
+      },
+      async connect() { assert.fail("history must not connect Google"); },
+      async disconnect() { assert.fail("history must not disconnect Google"); },
+      async exclusive() { assert.fail("history must not run a Google operation"); },
+      async markInvalid() { assert.fail("history must not change the Google session"); },
+    } },
+    decodo: {
+      async load() {
+        decodoReads++;
+        if (decodo === "error") throw new Error("Offline Decodo read failure");
+        return { token: decodo === "configured" ? "offline-fixture" : undefined, apiMode: "web_data" };
+      },
+      async update() { assert.fail("history must not change Decodo settings"); },
+      async clearToken() { assert.fail("history must not clear Decodo settings"); },
+    },
+  });
+  const withoutAdapters = createBackendApp(service, adapters);
+  t.after(async () => { await app.close(); await withoutAdapters.close(); });
+
+  async function checkHistory(target: typeof app, statuses: readonly InvestigationSummary["status"][]) {
+    const response = await target.inject({ method: "GET", url: "/investigations" });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(response.json(), cases.map((snapshot, index) => ({
+      id: snapshot.id, name: snapshot.name, revision: 0, createdAt: at, updatedAt: at, paused: snapshot.paused,
+      status: statuses[index], emailSeedCount: 0, actionCount: snapshot.actions.length,
+    })));
+  }
+  for (const [google, scraping, googleStatus, scrapingStatus] of [
+    ["requires_connection", "unconfigured", "awaiting_google_connection", "no_executable_actions"],
+    ["connected", "configured", "automatic_queue", "automatic_queue"],
+    ["invalid_session", "configured", "awaiting_google_connection", "automatic_queue"],
+    ["error", "configured", "google_connection_unknown", "automatic_queue"],
+    ["connected", "error", "automatic_queue", "no_executable_actions"],
+  ] as const) {
+    ghunt = google;
+    decodo = scraping;
+    await checkHistory(app, ["no_executable_actions", "paused", googleStatus, scrapingStatus]);
+  }
+  await checkHistory(withoutAdapters, ["no_executable_actions", "paused", "google_connection_unknown", "no_executable_actions"]);
+  assert.equal(ghuntReads, 5);
+  assert.equal(decodoReads, 5);
+  for (const snapshot of cases) {
+    const response = await app.inject({ method: "GET", url: `/investigations/${snapshot.id}` });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), snapshot, "listing must not mutate the snapshot or add a status field to it");
+  }
 });
 
 test("HTTP workflow persists operator decisions and only runs the approved action on request", async (t) => {

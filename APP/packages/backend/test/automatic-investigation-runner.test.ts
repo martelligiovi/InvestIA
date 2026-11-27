@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createInitialInvestigation, type Investigation } from "@investia/core";
+import { createInitialInvestigation, investigationOperationalStatus, type Investigation } from "@investia/core";
 import { AutomaticInvestigationRunner } from "../src/automatic-investigation-runner.ts";
 
 function harness() {
@@ -10,7 +10,9 @@ function harness() {
   let release: (() => void) | undefined;
   let fail = false;
   const service = {
-    async listInvestigations() { return [...cases.values()].map((item) => ({ ...item, name: item.name!, emailSeedCount: 0, actionCount: 0 })); },
+    async listInvestigations() {
+      return [...cases.values()].map((item) => ({ ...item, name: item.name!, status: investigationOperationalStatus(item), emailSeedCount: 0, actionCount: 0 }));
+    },
     async loadInvestigation(id: string) { return cases.get(id); },
     async executeNextAction(id: string, automaticOnly?: boolean) {
       assert.equal(automaticOnly, true, "worker must request an atomic automatic-mode claim");

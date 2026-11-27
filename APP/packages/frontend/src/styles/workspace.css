@@ -43,7 +43,7 @@
 .workspace-button--report { padding-inline: 18px; }
 .workspace-button--quiet { min-height: 34px; padding: 6px 10px; font-size: 12px; }
 
-/* The username and pause/resume disclosures open as anchored popovers. */
+/* Header disclosures open as anchored popovers. */
 .workspace-disclosure { position: relative; }
 .workspace-disclosure summary {
   display: inline-flex;
@@ -83,7 +83,6 @@
   font-size: 15px;
   animation: popover-in 220ms var(--ease) both;
 }
-.workspace-usernames-panel { width: min(420px, calc(100vw - 32px)); }
 .username-seeds-panel { display: grid; gap: var(--space-3); }
 .username-seeds-panel h3 { margin: 0; font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
 .username-seeds-panel ul { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }

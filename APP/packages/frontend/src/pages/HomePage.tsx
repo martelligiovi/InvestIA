@@ -3,6 +3,7 @@ import type { InvestigationSummary } from "@investia/core";
 import { InvestigationApiClient } from "../api/client";
 import { investigationHash } from "../routing";
 import { AsciiArt } from "../components/AsciiArt";
+import { investigationOperationalStatusLabel } from "./workspace-status";
 
 const PRINCIPLES = [
   { index: "01", title: "Semillas", text: "Partís de los datos que ya tenés." },
@@ -113,7 +114,11 @@ export function HomePage() {
                 <a className="history-entry" href={investigationHash(investigation.id)}>
                   <span className="history-entry-name">{investigation.name}</span>
                   <span className="history-entry-date">{formatCreatedAt(investigation.createdAt)}</span>
-                  <span className={`history-entry-state status-chip${investigation.paused ? " history-entry-state--paused status-chip--muted" : ""}`}>{investigation.paused ? "Pausada" : "Activa"}</span>
+                  <span className={`history-entry-state status-chip${investigation.paused || investigation.status === "paused" ? " history-entry-state--paused status-chip--muted" : ""}`}>
+                    {investigation.status !== undefined
+                      ? investigationOperationalStatusLabel(investigation.status)
+                      : (investigation.paused ? "Pausada" : "Activa")}
+                  </span>
                   <span className="history-entry-arrow" aria-hidden="true">→</span>
                 </a>
               </li>
