@@ -214,6 +214,38 @@ test("a provider failure or a changed previous branch never discards prior resul
   }
 });
 
+test("a legacy failed action survives a rerun error at the Unicode storage boundary", async () => {
+  const { store, service, created, run, claimRequest } = await rerunFixture();
+  const legacy = await store.transact(created.id, (current) => {
+    const next: Investigation = {
+      ...current,
+      revision: current.revision + 1,
+      actions: current.actions.map((action) => action.id === run.id
+        ? { ...action, status: "failed", failure: "Prior failure", lastRerunFailed: true }
+        : action),
+    };
+    return { next, result: next };
+  });
+  assert.deepEqual(await store.get(created.id), legacy);
+  const queued = await service.requestActionRerun(created.id, run.id, legacy.revision);
+  const queuedAction = queued.actions.find(({ id }) => id === run.id)!;
+  assert.equal(queuedAction.lastRerunFailed, undefined);
+  assert.equal(queuedAction.lastRerunFailure, undefined);
+  assert.equal((await store.claimNextAction(claimRequest))?.action.id, run.id);
+
+  const result = await store.completeAction({
+    investigationId: created.id, actionId: run.id, claimId: claimRequest.claimId,
+    completedAt: claimRequest.claimedAt, auditEvent: auditEvent("unicode", "action_failed"),
+    result: { kind: "failure", error: "bad\u0000" + "x".repeat(996) + "🚀" },
+  });
+  const restored = result.actions.find(({ id }) => id === run.id)!;
+  assert.equal(restored.status, "failed");
+  assert.equal(restored.failure, "Prior failure");
+  assert.deepEqual(result.evidence, legacy.evidence);
+  assert.ok(restored.lastRerunFailure);
+  assert.doesNotMatch(restored.lastRerunFailure, /\u0000|[\uD800-\uDBFF]$/);
+});
+
 test("prevents a rerun from overlapping an already-claimed child and leaves the snapshot unchanged", async () => {
   const { store, service, created, run } = await rerunFixture("claimed");
   const before = await store.get(created.id);

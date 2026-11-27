@@ -221,7 +221,7 @@ function isStoredAction(value: unknown): boolean {
   if (value.sourceSeedId !== undefined && !isNonEmptyString(value.sourceSeedId)) return false;
   if (value.sourceActionId !== undefined && (!isNonEmptyString(value.sourceActionId) || value.sourceActionId === value.id || value.sourceSeedId !== undefined)) return false;
   if (value.lastRerunFailed !== undefined && (value.lastRerunFailed !== true || !["failed", "succeeded"].includes(String(value.status)))) return false;
-  if (value.lastRerunFailure !== undefined && (value.lastRerunFailed !== true || !isNonEmptyString(value.lastRerunFailure) || value.lastRerunFailure.length > 1_000)) return false;
+  if (value.lastRerunFailure !== undefined && (value.lastRerunFailed !== true || !isNonEmptyString(value.lastRerunFailure) || value.lastRerunFailure.length > 1_000 || /\u0000|[\uD800-\uDBFF]$/.test(value.lastRerunFailure))) return false;
   if (value.rerun !== undefined && (!isRecord(value.rerun) || !["queued", "claimed"].includes(String(value.status)) ||
     !["failed", "succeeded"].includes(String(value.rerun.previousStatus)) || typeof value.rerun.fingerprint !== "string" ||
     !/^[a-f0-9]{64}$/.test(value.rerun.fingerprint))) return false;
@@ -441,7 +441,7 @@ export class PostgresInvestigationStore implements InvestigationStore {
       if (rerun !== undefined && (input.result.kind === "failure" || !canReplaceActionResults(current, action))) {
         const { claim: _replacementClaim, ...prior } = active;
         const rerunFailure = input.result.kind === "failure"
-          ? (input.result.error.trim().slice(0, 1_000) || "Execution failed.")
+          ? (input.result.error.replace(/\u0000/g, "").trim().slice(0, 1_000).replace(/[\uD800-\uDBFF]$/, "") || "Execution failed.")
           : "Prior results changed during execution; the replacement was not applied.";
         const restored = { ...prior, status: rerun.previousStatus, lastRerunFailed: true as const, lastRerunFailure: rerunFailure };
         const next = revise(current, input.completedAt, {
