@@ -11,6 +11,7 @@ import {
   type AiChatMessage,
   type AiReportSettings,
   type EvidenceAiNormalization,
+  type EvidenceNormalizationJob,
   type EvidenceRecord,
   type Investigation,
   type InvestigationService,
@@ -18,7 +19,10 @@ import {
 } from "@investia/core";
 import {
   createBackendApp,
+  EvidenceNormalizationRunner,
+  PostgresEvidenceNormalizationJobStore,
   PostgresEvidenceNormalizationStore,
+  type EvidenceNormalizationJobStore,
   type EvidenceNormalizationStore,
   type PgClientLike,
   type PgPoolLike,
@@ -267,6 +271,7 @@ class FakeGateway implements NvidiaBuildGateway {
   readonly calls: { apiKey: string; settings: AiReportSettings; messages: readonly AiChatMessage[] }[] = [];
   failure: NvidiaProviderErrorKind | undefined;
   nextCompletion = JSON.stringify(makeNormalizedData());
+  onComplete?: () => string | Promise<string>;
 
   async listFreeChatModels() {
     return { models: [], source: "fallback" as const };
@@ -275,13 +280,15 @@ class FakeGateway implements NvidiaBuildGateway {
   async complete(apiKey: string, settings: AiReportSettings, messages: readonly AiChatMessage[]) {
     this.calls.push({ apiKey, settings, messages });
     if (this.failure !== undefined) throw new NvidiaProviderError(this.failure);
-    return this.nextCompletion;
+    return this.onComplete?.() ?? this.nextCompletion;
   }
 }
 
 function createHarness(options?: {
   investigation?: Investigation;
   withNormalizationStore?: boolean;
+  jobs?: EvidenceNormalizationJobStore;
+  wakeNormalizations?: () => void;
 }) {
   let storedInvestigation = structuredClone(options?.investigation ?? makeFixture());
   const settings = new MemoryAiSettings();
@@ -300,10 +307,13 @@ function createHarness(options?: {
       gateway,
       clock: () => NOW,
       ...(normalizations === undefined ? {} : { normalizations }),
+      ...(options?.jobs === undefined ? {} : { normalizationJobs: options.jobs }),
+      ...(options?.wakeNormalizations === undefined ? {} : { wakeNormalizations: options.wakeNormalizations }),
     },
   }, { frontendDistPath: "missing-frontend-dist" });
   return {
     app,
+    service,
     settings,
     gateway,
     normalizations,
@@ -420,13 +430,13 @@ test("GET /investigations/:id/normalizations enforces 404 and filters out stale,
 
   const response = await app.inject({ method: "GET", url: "/investigations/investigation-1/normalizations" });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json(), { normalizations: [matching] });
+  assert.deepEqual(response.json(), { normalizations: [matching], jobs: [] });
 
   const withoutStore = createHarness({ withNormalizationStore: false });
   t.after(() => withoutStore.app.close());
   const emptyResponse = await withoutStore.app.inject({ method: "GET", url: "/investigations/investigation-1/normalizations" });
   assert.equal(emptyResponse.statusCode, 200);
-  assert.deepEqual(emptyResponse.json(), { normalizations: [] });
+  assert.deepEqual(emptyResponse.json(), { normalizations: [], jobs: [] });
 });
 
 test("POST /investigations/:id/evidence/:evidenceId/normalize enforces body validation and strict lookup precedence before AI key check", async (t) => {
@@ -562,7 +572,7 @@ test("POST /investigations/:id/evidence/:evidenceId/normalize propagates provide
 
   const listed = await app.inject({ method: "GET", url: "/investigations/investigation-1/normalizations" });
   assert.equal(listed.statusCode, 200);
-  assert.deepEqual(listed.json(), { normalizations: [expectedRecord] });
+  assert.deepEqual(listed.json(), { normalizations: [expectedRecord], jobs: [] });
 });
 
 test("POST /investigations/:id/report/ai sends compact aiNormalizedPage when fresh, falls back to raw metadata when stale or absent, updates budget count, and omits raw factual appendix", async (t) => {
@@ -649,6 +659,472 @@ test("POST /investigations/:id/report/ai sends compact aiNormalizedPage when fre
   assert.match(stalePrompt, /Contenido modificado después de la normalización\./);
   assert.doesNotMatch(stalePrompt, /Resumen compacto de decodo-heavy-1\./);
   assert.match(stalePrompt, /Resumen compacto de decodo-heavy-2\./);
+});
+
+interface StoredJobRow {
+  id: string;
+  investigation_id: string;
+  evidence_id: string;
+  attempt_number: number;
+  status: string;
+  error_code: unknown;
+  created_at: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
+}
+
+class FakeJobPool extends FakeNormalizationPool {
+  private readonly jobRows: StoredJobRow[] = [];
+  extraListRows: readonly Record<string, unknown>[] = [];
+  recoveryCalls = 0;
+  recoveryError?: Error;
+  completionError?: Error;
+  failureWriteError?: Error;
+
+  override async query<T extends Record<string, unknown>>(sql: string, values: unknown[] = []): Promise<PgQueryResult<T>> {
+    const statement = sql.trim().replace(/\s+/g, " ");
+    if (!/^(?:SELECT \* FROM|INSERT INTO|UPDATE) evidence_normalization_jobs\b/.test(statement)) {
+      return super.query<T>(sql, values);
+    }
+    this.statements.push(sql);
+    const result = (rows: readonly object[] = [], rowCount = rows.length): PgQueryResult<T> => ({
+      rows: rows.map((row) => ({ ...(row as T) })), rowCount,
+    });
+    const ordered = [...this.jobRows].sort((a, b) => a.created_at.getTime() - b.created_at.getTime() || a.id.localeCompare(b.id));
+    const [id, otherId] = values;
+    if (statement.startsWith("SELECT")) {
+      if (statement.includes("status IN ('queued', 'running')")) {
+        return result(ordered.filter((row) => row.investigation_id === id && row.evidence_id === otherId &&
+          (row.status === "queued" || row.status === "running")));
+      }
+      assert.match(statement, /ORDER BY created_at ASC, id ASC/);
+      if (statement.includes("FOR UPDATE SKIP LOCKED")) {
+        assert.match(statement, /WHERE status = 'queued'.*LIMIT 1/);
+        return result(ordered.filter((row) => row.status === "queued").slice(0, 1));
+      }
+      assert.match(statement, /WHERE investigation_id = \$1/);
+      return result([...ordered.filter((row) => row.investigation_id === id), ...this.extraListRows]);
+    }
+    if (statement.startsWith("INSERT")) {
+      assert.match(statement, /GREATEST\(\s*COALESCE\(\(SELECT MAX\(attempt_number\)/);
+      assert.match(statement, /CASE WHEN EXISTS \(SELECT 1 FROM evidence_ai_normalizations/);
+      const [investigationId, evidenceId, jobId] = values as [string, string, string];
+      const maxAttempt = Math.max(this.rows.has(`${investigationId}::${evidenceId}`) ? 1 : 0,
+        ...ordered.filter((row) => row.investigation_id === investigationId && row.evidence_id === evidenceId)
+          .map((row) => row.attempt_number));
+      const row: StoredJobRow = {
+        id: jobId, investigation_id: investigationId, evidence_id: evidenceId,
+        attempt_number: maxAttempt + 1, status: "queued", error_code: null,
+        created_at: new Date(Date.parse(NOW) + this.jobRows.length), started_at: null, completed_at: null,
+      };
+      this.jobRows.push(row);
+      return result([row]);
+    }
+    if (statement.includes("'JOB_INTERRUPTED'")) {
+      this.recoveryCalls++;
+      if (this.recoveryError !== undefined) {
+        const error = this.recoveryError;
+        this.recoveryError = undefined;
+        throw error;
+      }
+      assert.match(statement, /WHERE status = 'running'$/);
+      const running = ordered.filter((row) => row.status === "running");
+      for (const row of running) Object.assign(row, { status: "failed", error_code: "JOB_INTERRUPTED", completed_at: new Date(NOW) });
+      return result([], running.length);
+    }
+    const row = ordered.find((candidate) => candidate.id === id);
+    if (statement.includes("SET status = 'running'")) {
+      assert.equal(row?.status, "queued");
+      Object.assign(row!, { status: "running", started_at: new Date(NOW) });
+      return result([row!]);
+    }
+    assert.match(statement, /WHERE id = \$1 AND status = 'running'$/);
+    if (row?.status !== "running") return result();
+    const succeeded = statement.includes("SET status = 'succeeded'");
+    const error = succeeded ? this.completionError : this.failureWriteError;
+    if (error !== undefined) {
+      if (succeeded) this.completionError = undefined;
+      else this.failureWriteError = undefined;
+      throw error;
+    }
+    Object.assign(row, { status: succeeded ? "succeeded" : "failed", error_code: succeeded ? null : otherId, completed_at: new Date(NOW) });
+    return result([], 1);
+  }
+}
+
+const CASE_ID = "investigation-1";
+const FIRST = "5-pago";
+const SECOND = "evidence-decodo-2";
+const configuration = { apiKey: API_KEY, settings: DEFAULT_AI_REPORT_SETTINGS };
+const clock = () => NOW;
+
+function makeJobStore() {
+  const pool = new FakeJobPool();
+  return { pool, jobs: new PostgresEvidenceNormalizationJobStore(pool) };
+}
+
+function normalizationRecord(evidence: EvidenceRecord): EvidenceAiNormalization {
+  return { evidenceId: evidence.id, model: configuration.settings.model, generatedAt: NOW,
+    sourceContentHash: decodoSourceContentHash(evidence), data: makeNormalizedData() };
+}
+
+function running(job: EvidenceNormalizationJob): EvidenceNormalizationJob {
+  return { ...job, status: "running", startedAt: NOW };
+}
+
+function terminal(job: EvidenceNormalizationJob, errorCode?: EvidenceNormalizationJob["errorCode"]): EvidenceNormalizationJob {
+  return { ...running(job), completedAt: NOW,
+    ...(errorCode === undefined ? { status: "succeeded" } : { status: "failed", errorCode }) };
+}
+
+test("job store migrates v6, assigns attempts, preserves FIFO and terminal history, and recovers only running jobs", async () => {
+  const { pool, jobs } = makeJobStore();
+  await jobs.migrate();
+  const ddl = pool.statements.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS evidence_normalization_jobs"));
+  assert.ok(ddl);
+  assert.match(ddl, /CREATE UNIQUE INDEX IF NOT EXISTS evidence_normalization_jobs_active_idx[\s\S]*WHERE status IN \('queued', 'running'\)/);
+  assert.match(ddl, /CREATE INDEX IF NOT EXISTS evidence_normalization_jobs_investigation_idx[\s\S]*\(investigation_id, created_at ASC, id ASC\)/);
+  assert.match(ddl, /CREATE INDEX IF NOT EXISTS evidence_normalization_jobs_queued_idx[\s\S]*WHERE status = 'queued'/);
+  assert.deepEqual(pool.migrationVersions, [6]);
+  await new PostgresEvidenceNormalizationStore(pool).save(CASE_ID, normalizationRecord(makeDecodoEvidence(SECOND)));
+
+  const start = pool.statements.length;
+  for (const [id, evidenceId] of [["", FIRST], [CASE_ID, "   "], [` ${CASE_ID}`, FIRST]] as const) {
+    await assert.rejects(jobs.enqueue(id, evidenceId), /Invalid normalization job IDs/);
+  }
+  assert.equal(pool.statements.length, start);
+  const first = await jobs.enqueue(CASE_ID, FIRST);
+  assert.deepEqual(first, { created: true, job: { id: first.job.id, investigationId: CASE_ID,
+    evidenceId: FIRST, attemptNumber: 1, status: "queued", createdAt: NOW } });
+  assert.match(first.job.id, /^normjob-[a-f0-9-]{36}$/);
+  const enqueueQueries = pool.statements.slice(start);
+  assert.equal(enqueueQueries[0], "BEGIN");
+  assert.match(enqueueQueries[1]!, /pg_advisory_xact_lock\(hashtext\(\$1\), hashtext\(\$2\)\)/);
+  assert.equal(enqueueQueries.at(-1), "COMMIT");
+  assert.deepEqual(await jobs.enqueue(CASE_ID, FIRST), { job: first.job, created: false });
+  const second = (await jobs.enqueue(CASE_ID, SECOND)).job;
+  assert.equal(second.attemptNumber, 2);
+  const other = (await jobs.enqueue("investigation-2", FIRST)).job;
+  assert.equal(await jobs.complete(first.job.id), false);
+  assert.equal(await jobs.fail(first.job.id, "AI_NOT_CONFIGURED"), false);
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [first.job, second]);
+  assert.deepEqual(await jobs.claimNext(), running(first.job));
+  assert.deepEqual(await jobs.enqueue(CASE_ID, FIRST), { job: running(first.job), created: false });
+  assert.equal(await jobs.complete(first.job.id), true);
+  assert.equal(await jobs.complete(first.job.id), false);
+  assert.deepEqual(await jobs.claimNext(), running(second));
+  assert.equal(await jobs.fail(second.id, "untrusted provider details"), true);
+  const retry = (await jobs.enqueue(CASE_ID, SECOND)).job;
+  assert.equal(retry.attemptNumber, 3);
+  assert.deepEqual(await jobs.claimNext(), running(other));
+  assert.equal(await jobs.failOrphanedRunning(), 1);
+  assert.equal(await jobs.failOrphanedRunning(), 0);
+  assert.deepEqual(await jobs.listByInvestigation("investigation-2"), [terminal(other, "JOB_INTERRUPTED")]);
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [terminal(first.job), terminal(second, "INTERNAL_ERROR"), retry]);
+  assert.deepEqual(await jobs.claimNext(), running(retry));
+  assert.equal(await jobs.fail(retry.id, "AI_PROVIDER_TIMEOUT"), true);
+  assert.equal(await jobs.claimNext(), undefined);
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [
+    terminal(first.job), terminal(second, "INTERNAL_ERROR"), terminal(retry, "AI_PROVIDER_TIMEOUT"),
+  ]);
+});
+
+test("job listing skips malformed rows and never exposes unrecognized failure details", async () => {
+  const { pool, jobs } = makeJobStore();
+  const failed = { id: "legacy-job", investigation_id: CASE_ID, evidence_id: FIRST,
+    attempt_number: 1, status: "failed", error_code: "raw error text",
+    created_at: NOW, started_at: new Date(NOW), completed_at: NOW };
+  pool.extraListRows = [
+    { ...failed, id: "malformed-status", status: "unknown" },
+    { ...failed, id: "malformed-date", created_at: new Date(NaN) },
+    { ...failed, id: "malformed-attempt", attempt_number: 0 },
+    { ...failed, id: "malformed-start", started_at: "not a date" },
+    failed,
+  ];
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [terminal({ id: "legacy-job", investigationId: CASE_ID,
+    evidenceId: FIRST, attemptNumber: 1, status: "queued", createdAt: NOW }, "INTERNAL_ERROR")]);
+});
+
+test("enqueue rolls back on a dedicated client and evicts it when rollback fails", async () => {
+  for (const rollbackError of [undefined, new Error("Rollback unavailable")]) {
+    const failure = new Error("Lock unavailable");
+    const commands: string[] = [];
+    const releases: (Error | undefined)[] = [];
+    const client: PgClientLike = {
+      async query(sql) {
+        commands.push(sql);
+        if (sql.startsWith("SELECT")) throw failure;
+        if (sql === "ROLLBACK" && rollbackError !== undefined) throw rollbackError;
+        return { rows: [], rowCount: null };
+      },
+      release(error) { releases.push(error); },
+    };
+    const jobs = new PostgresEvidenceNormalizationJobStore({
+      async connect() { return client; },
+      async query() { throw new Error("Expected a dedicated client"); },
+    });
+    await assert.rejects(jobs.enqueue(CASE_ID, FIRST), (error) => error === failure);
+    assert.deepEqual(commands, ["BEGIN", "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", "ROLLBACK"]);
+    assert.deepEqual(releases, [rollbackError]);
+  }
+});
+
+test("runner recovers before an early wake and single-flights bounded FIFO sweeps", async (t) => {
+  const { pool, jobs } = makeJobStore();
+  const base = makeFixture();
+  const extra = makeDecodoEvidence("evidence-decodo-3");
+  const harness = createHarness({ investigation: { ...base, evidence: [...base.evidence, extra] } });
+  t.after(() => harness.app.close());
+  const { service, settings, gateway, normalizations } = harness;
+  await settings.save(configuration);
+  const orphan = (await jobs.enqueue(CASE_ID, FIRST)).job;
+  await jobs.claimNext();
+  const first = (await jobs.enqueue(CASE_ID, SECOND)).job;
+  const second = (await jobs.enqueue(CASE_ID, extra.id)).job;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let entered!: () => void;
+  const firstCall = new Promise<void>((resolve) => { entered = resolve; });
+  gateway.onComplete = async () => {
+    if (gateway.calls.length === 1) { entered(); await gate; }
+    return gateway.nextCompletion;
+  };
+  const runner = new EvidenceNormalizationRunner({ service, jobs, settings, gateway, normalizations: normalizations!, clock }, {
+    maxJobsPerSweep: 2, intervalMs: 60_000,
+  });
+  t.after(async () => { release(); await runner.stop(); });
+  const sweep = runner.drain();
+  runner.start();
+  assert.equal(runner.drain(), sweep);
+  await Promise.race([firstCall, sweep]);
+  assert.equal(gateway.calls.length, 1);
+  const third = (await jobs.enqueue(CASE_ID, FIRST)).job;
+  const interrupted = terminal(orphan, "JOB_INTERRUPTED");
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [interrupted, running(first), second, third]);
+  assert.deepEqual(await normalizations!.listByInvestigation(CASE_ID), []);
+  release();
+  await sweep;
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [interrupted, terminal(first), terminal(second), third]);
+  await runner.drain();
+  assert.equal(pool.recoveryCalls, 1);
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [interrupted, terminal(first), terminal(second), terminal(third)]);
+  const expected = [base.evidence.find((item) => item.id === SECOND)!, extra, base.evidence.find((item) => item.id === FIRST)!];
+  assert.deepEqual(gateway.calls.map((call) => call.messages), expected.map(buildEvidenceNormalizationMessages));
+  assert.deepEqual(await normalizations!.listByInvestigation(CASE_ID), expected.map(normalizationRecord));
+});
+
+test("runner retries recovery before claiming and cleans up save and completion errors", async (t) => {
+  const { pool, jobs } = makeJobStore();
+  const { app, service, settings, gateway, normalizations } = createHarness();
+  t.after(() => app.close());
+  await settings.save(configuration);
+  const recoveryError = new Error("Recovery temporarily unavailable");
+  const saveError = new Error("Save temporarily unavailable");
+  const completionError = new Error("Completion temporarily unavailable");
+  const failureWriteError = new Error("Failure write temporarily unavailable");
+  const errors: unknown[] = [];
+  const runner = new EvidenceNormalizationRunner({ service, jobs, settings, gateway, clock, normalizations: {
+    listByInvestigation: (id) => normalizations!.listByInvestigation(id),
+    async save(id, record) {
+      if (record.evidenceId === FIRST) throw saveError;
+      await normalizations!.save(id, record);
+    },
+  } }, { onError: (error) => errors.push(error) });
+  t.after(() => runner.stop());
+  const first = (await jobs.enqueue(CASE_ID, FIRST)).job;
+  const second = (await jobs.enqueue(CASE_ID, SECOND)).job;
+  pool.recoveryError = recoveryError;
+  pool.completionError = completionError;
+  pool.failureWriteError = failureWriteError;
+  await runner.drain();
+  assert.equal(gateway.calls.length, 0);
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [first, second]);
+  await runner.drain();
+  assert.equal(gateway.calls.length, 1);
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [running(first), second]);
+  assert.deepEqual(await normalizations!.listByInvestigation(CASE_ID), []);
+  await runner.drain();
+  assert.equal(gateway.calls.length, 2);
+  assert.equal(pool.recoveryCalls, 2);
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [terminal(first, "INTERNAL_ERROR"), terminal(second, "INTERNAL_ERROR")]);
+  assert.deepEqual(errors, [recoveryError, saveError, failureWriteError, completionError]);
+  assert.equal(normalizations!.writes, 1);
+});
+
+test("runner records only symbolic errors for missing settings, ineligible and stale evidence, and provider failures", async (t) => {
+  const { jobs } = makeJobStore();
+  const { app, service, settings, gateway, normalizations, getInvestigation, setInvestigation } = createHarness();
+  t.after(() => app.close());
+  const runner = new EvidenceNormalizationRunner({ service, jobs, settings, gateway, normalizations: normalizations!, clock });
+  t.after(() => runner.stop());
+  const before = getInvestigation();
+  const history: EvidenceNormalizationJob[] = [];
+  async function expectFailure(id: string, code: NonNullable<EvidenceNormalizationJob["errorCode"]>, providerCalls: number) {
+    const callCount = gateway.calls.length;
+    const { job } = await jobs.enqueue(CASE_ID, id);
+    await runner.drain();
+    history.push(terminal(job, code));
+    assert.deepEqual(await jobs.listByInvestigation(CASE_ID), history);
+    assert.deepEqual(await normalizations!.listByInvestigation(CASE_ID), []);
+    assert.equal(normalizations!.writes, 0);
+    assert.equal(gateway.calls.length - callCount, providerCalls);
+  }
+  await expectFailure(FIRST, "AI_NOT_CONFIGURED", 0);
+  await settings.save(configuration);
+  for (const id of ["removed", "evidence-facecheck-1", "evidence-decodo-empty"]) await expectFailure(id, "EVIDENCE_UNAVAILABLE", 0);
+  for (const [kind, code] of [
+    ["unauthorized", "AI_PROVIDER_UNAUTHORIZED"], ["rate_limited", "AI_PROVIDER_RATE_LIMITED"],
+    ["rejected", "AI_PROVIDER_REJECTED"], ["timeout", "AI_PROVIDER_TIMEOUT"], ["truncated", "AI_PROVIDER_TRUNCATED"],
+    ["unavailable", "AI_PROVIDER_UNAVAILABLE"], ["invalid_response", "AI_PROVIDER_UNAVAILABLE"],
+  ] as const) {
+    gateway.failure = kind;
+    await expectFailure(FIRST, code, 1);
+  }
+  gateway.failure = undefined;
+  gateway.onComplete = () => "not JSON";
+  await expectFailure(FIRST, "AI_PROVIDER_INVALID_RESPONSE", 1);
+  gateway.onComplete = () => { throw new Error("Unexpected provider detail"); };
+  await expectFailure(FIRST, "INTERNAL_ERROR", 1);
+  for (const replacement of [undefined, makeDecodoEvidence(FIRST, { content: "Updated page text" })]) {
+    setInvestigation(before);
+    gateway.onComplete = () => {
+      const evidence = before.evidence.filter((item) => item.id !== FIRST);
+      setInvestigation({ ...before, evidence: replacement === undefined ? evidence : [...evidence, replacement] });
+      return gateway.nextCompletion;
+    };
+    await expectFailure(FIRST, "EVIDENCE_UNAVAILABLE", 1);
+  }
+});
+
+const queueRoute = (evidenceId: string, id = CASE_ID) => `/investigations/${id}/evidence/${evidenceId}/normalize/queue`;
+const localHeaders = { host: "localhost:4317", origin: "http://localhost:4317" };
+
+test("queue API validates local origin, body, investigation, evidence, key, and queue before enqueueing", async (t) => {
+  const { jobs } = makeJobStore();
+  let wakes = 0;
+  const { app, gateway, normalizations, getInvestigation } = createHarness({ jobs, wakeNormalizations: () => { wakes++; } });
+  t.after(() => app.close());
+  const before = getInvestigation();
+  const url = queueRoute(FIRST);
+  const cases = [
+    [{ url, headers: { ...localHeaders, origin: "https://example.org" }, payload: { extra: true } }, 403, "FORBIDDEN", "Evidence normalization can only be queued from this computer's InvestIA page"],
+    [{ url, payload: { extra: true } }, 400, "INVALID_REQUEST", "Invalid request"],
+    ...["null", "[]"].map((payload) => [
+      { url, payload, headers: { ...localHeaders, "content-type": "application/json" } }, 400, "INVALID_REQUEST", "Invalid request",
+    ] as const),
+    [{ url: queueRoute(FIRST, "missing") }, 404, "NOT_FOUND", "Investigation not found"],
+    [{ url: queueRoute("removed") }, 404, "NOT_FOUND", "Record not found"],
+    ...["evidence-spotify", "evidence-facecheck-1", "evidence-decodo-empty"].map((id) => [
+      { url: queueRoute(id) }, 409, "CONFLICT", "Only Decodo page evidence can be normalized",
+    ] as const),
+    [{ url }, 409, "AI_NOT_CONFIGURED", "Configure an NVIDIA Build API key first"],
+  ] as const;
+  for (const [request, status, error, message] of cases) {
+    const response = await app.inject({ method: "POST", headers: localHeaders, ...request });
+    assert.equal(response.statusCode, status);
+    assert.deepEqual(response.json(), { error, message });
+  }
+  assert.equal(wakes, 0);
+  assert.equal(gateway.calls.length, 0);
+  assert.equal(normalizations!.writes, 0);
+  assert.deepEqual(getInvestigation(), before);
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), []);
+  const noQueue = createHarness();
+  t.after(() => noQueue.app.close());
+  await noQueue.settings.save(configuration);
+  const unavailable = await noQueue.app.inject({ method: "POST", url, headers: localHeaders });
+  assert.equal(unavailable.statusCode, 503);
+  assert.deepEqual(unavailable.json(), { error: "NORMALIZATION_QUEUE_UNAVAILABLE", message: "Evidence normalization queue is unavailable" });
+  assert.equal(noQueue.gateway.calls.length, 0);
+  assert.equal(noQueue.normalizations!.writes, 0);
+});
+
+test("queue API responds immediately, wakes on idempotent requests, and lists jobs alongside current normalizations", async (t) => {
+  const { jobs } = makeJobStore();
+  let wakes = 0;
+  const { app, settings, gateway, normalizations, getInvestigation } = createHarness({ jobs, wakeNormalizations: () => { wakes++; } });
+  t.after(() => app.close());
+  const before = getInvestigation();
+  const record = normalizationRecord(before.evidence.find((item) => item.id === FIRST)!);
+  await normalizations!.save(CASE_ID, record);
+  await settings.save(configuration);
+  const first = await app.inject({ method: "POST", url: queueRoute(FIRST), headers: localHeaders });
+  const second = await app.inject({ method: "POST", url: queueRoute(SECOND), headers: localHeaders, payload: {} });
+  const duplicate = await app.inject({ method: "POST", url: queueRoute(FIRST), headers: localHeaders, payload: {} });
+  for (const response of [first, second, duplicate]) assert.equal(response.statusCode, 202);
+  const firstJob = first.json<{ job: EvidenceNormalizationJob }>().job;
+  const secondJob = second.json<{ job: EvidenceNormalizationJob }>().job;
+  assert.deepEqual(first.json(), { created: true, job: { id: firstJob.id, evidenceId: FIRST,
+    investigationId: CASE_ID, attemptNumber: 1, status: "queued", createdAt: NOW } });
+  assert.deepEqual(second.json(), { created: true, job: { id: secondJob.id, evidenceId: SECOND,
+    investigationId: CASE_ID, attemptNumber: 1, status: "queued", createdAt: new Date(Date.parse(NOW) + 1).toISOString() } });
+  assert.notEqual(firstJob.id, secondJob.id);
+  assert.deepEqual(duplicate.json(), { created: false, job: firstJob });
+  assert.equal(wakes, 3);
+  assert.equal(gateway.calls.length, 0);
+  assert.equal(normalizations!.writes, 1);
+  assert.deepEqual(getInvestigation(), before);
+  const listed = await app.inject({ method: "GET", url: `/investigations/${CASE_ID}/normalizations` });
+  assert.equal(listed.statusCode, 200);
+  assert.deepEqual(listed.json(), { normalizations: [record], jobs: [firstJob, secondJob] });
+});
+
+test("a claim whose COMMIT response is lost is recovered on the next sweep without stranding the queue", async (t) => {
+  const { pool, jobs } = makeJobStore();
+  const h = createHarness();
+  t.after(() => h.app.close());
+  await h.settings.save(configuration);
+  await jobs.enqueue(CASE_ID, FIRST);
+  await jobs.enqueue(CASE_ID, SECOND);
+  const connect = pool.connect.bind(pool);
+  let injectFault = true;
+  pool.connect = async () => {
+    const client = await connect();
+    let claiming = false;
+    return {
+      release: client.release,
+      async query<T extends Record<string, unknown>>(sql: string, values?: unknown[]) {
+        const result = await client.query<T>(sql, values);
+        claiming ||= sql.includes("SET status = 'running'");
+        if (sql === "COMMIT" && claiming && injectFault) {
+          injectFault = false;
+          throw new Error("COMMIT applied; connection lost before acknowledgement");
+        }
+        return result;
+      },
+    };
+  };
+  const runner = new EvidenceNormalizationRunner({
+    service: h.service, jobs, settings: h.settings, gateway: h.gateway, normalizations: h.normalizations!, clock,
+  });
+  t.after(() => runner.stop());
+  await runner.drain();
+  await runner.drain();
+  const history = await jobs.listByInvestigation(CASE_ID);
+  assert.equal(history.length, 2);
+  assert.equal(history[0]?.status, "failed");
+  assert.equal(history[0]?.errorCode, "JOB_INTERRUPTED");
+  assert.equal(history[1]?.status, "succeeded");
+});
+
+test("pruning evidence at the clock boundary before final recheck skips saving a stale normalization", async (t) => {
+  const { jobs } = makeJobStore();
+  const h = createHarness();
+  t.after(() => h.app.close());
+  await h.settings.save(configuration);
+  const { job } = await jobs.enqueue(CASE_ID, FIRST);
+  const runner = new EvidenceNormalizationRunner({
+    service: h.service, jobs, settings: h.settings, gateway: h.gateway, normalizations: h.normalizations!,
+    clock: () => {
+      const current = h.getInvestigation();
+      h.setInvestigation({ ...current, evidence: current.evidence.filter(({ id }) => id !== FIRST) });
+      return NOW;
+    },
+  });
+  t.after(() => runner.stop());
+  await runner.drain();
+  assert.deepEqual(await h.normalizations!.listByInvestigation(CASE_ID), []);
+  assert.deepEqual(await jobs.listByInvestigation(CASE_ID), [terminal(job, "EVIDENCE_UNAVAILABLE")]);
 });
 
 test("AI report does not serve a model-written source appendix or change the factual report", async (t) => {

@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { authorizationCovers, isScopedCatalogId, usernameProposals, type ValidationStatus } from "@investia/core";
 import { InvestigationApiClient } from "../api/client";
 import { AsciiArt } from "../components/AsciiArt";
+import { ExecutionQueuePopover } from "../components/ExecutionQueuePopover";
 import { InvestigationGraph } from "../components/InvestigationGraph";
 import { UsernameSeedsPanel } from "../components/UsernameSeedsPanel";
-import { WorkspaceDetails } from "../components/WorkspaceDetails";
+import { WorkspaceDetails, type NormalizationStatus } from "../components/WorkspaceDetails";
 import { FacecheckReview } from "../components/FacecheckReview";
 import { buildWorkspaceGraph, findWorkspaceNode, type WorkspaceNode } from "./workspace-model";
 import { useWorkspaceController } from "./useWorkspaceController";
@@ -64,6 +65,11 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const reportRef = useRef<HTMLDetailsElement>(null);
   const reportErrorRef = useRef<HTMLParagraphElement>(null);
   const revealedReport = useRef<string | null>(null);
+  const drawerScrollTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (drawerScrollTimerRef.current !== null) window.clearTimeout(drawerScrollTimerRef.current);
+  }, []);
 
   // Reports and their errors render below the full-height workspace; bring each new one into view.
   useEffect(() => {
@@ -82,23 +88,29 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
 
   useEffect(() => {
     // Header disclosures behave as popovers: interacting elsewhere or pressing Escape dismisses them.
-    function dismissDisclosures(keep: EventTarget | null) {
+    function dismissDisclosures(keep: EventTarget | null): boolean {
+      let dismissed = false;
       for (const disclosure of document.querySelectorAll<HTMLDetailsElement>(".workspace-disclosure[open]")) {
         if (keep instanceof Node && disclosure.contains(keep)) continue;
         const hadFocus = disclosure.contains(document.activeElement);
         disclosure.open = false;
+        dismissed = true;
         if (hadFocus) disclosure.querySelector("summary")?.focus();
       }
+      return dismissed;
     }
-    const onPointerDown = (event: PointerEvent) => dismissDisclosures(event.target);
+    const onPointerDown = (event: PointerEvent) => { dismissDisclosures(event.target); };
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") dismissDisclosures(null);
+      if (event.key === "Escape" && dismissDisclosures(null)) {
+        // Close the open header popover first before nested panels (like the detail drawer) handle Escape.
+        event.stopPropagation();
+      }
     };
     document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
     };
   }, []);
 
@@ -134,6 +146,11 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   if (investigation === null || graph === null) return <LoadingWorkspace />;
   const selectedNode: WorkspaceNode | null = findWorkspaceNode(graph, selectedId) ?? graph.nodes[0] ?? null;
   const selectedNodeId = selectedNode?.id ?? null;
+  const selectedEvidenceId = selectedNode?.evidence?.id;
+  const activeNormalization = controller.normalizationJobs.find((job) => job.evidenceId === selectedEvidenceId &&
+    (job.status === "queued" || job.status === "running"));
+  const normalizationStatus: NormalizationStatus = selectedEvidenceId !== undefined && controller.enqueueingNormalizationIds.has(selectedEvidenceId)
+    ? "enqueueing" : activeNormalization?.status === "running" ? "running" : activeNormalization?.status === "queued" ? "queued" : "idle";
   const automatic = investigation.advancementMode === "automatic";
   const queuedActions = investigation.actions.filter((action) => action.status === "queued" && (action.queuedByCatalog === true || action.approval !== undefined));
   const coveredQueue = queuedActions.filter((action) => authorizationCovers(investigation.authorization, action.spec.catalogId));
@@ -162,11 +179,20 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     setDetailOpen(true);
     // The opening drawer narrows the canvas; once it settles, bring the chosen node back into view.
     const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    window.setTimeout(() => {
+    if (drawerScrollTimerRef.current !== null) window.clearTimeout(drawerScrollTimerRef.current);
+    drawerScrollTimerRef.current = window.setTimeout(() => {
+      drawerScrollTimerRef.current = null;
       document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(node.groupId ?? node.relatedParentId ?? node.id)}"]`)
         ?.scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: reducedMotion ? "auto" : "smooth" });
     }, reducedMotion ? 0 : DRAWER_SETTLE_MS);
   }
+
+  const selectQueueNode = (nodeId: string) => {
+    const node = findWorkspaceNode(graph, nodeId);
+    if (node === undefined) return;
+    selectNode(node);
+    setMobilePanel("detail");
+  };
 
   function closeDetail() {
     setDetailOpen(false);
@@ -269,6 +295,16 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
           <button className="workspace-button workspace-button--ai-report" type="button" disabled={controller.busy || controller.stale} onClick={() => void controller.loadAiReport()}>
             {controller.reportLoadingKind === "ai" ? "Generando informe con IA…" : "Generar informe con IA"}
           </button>
+          <ExecutionQueuePopover
+            investigation={investigation}
+            ghuntConnected={ghuntConnected}
+            facecheckConfigured={facecheckConfigured}
+            decodoConfigured={decodoConfigured}
+            normalizationJobs={controller.normalizationJobs}
+            normalizations={controller.normalizations}
+            onSelectAction={(actionId) => selectQueueNode(`action:${actionId}`)}
+            onSelectEvidence={(evidenceId) => selectQueueNode(`evidence:${evidenceId}`)}
+          />
         </div>
       </header>
       {controller.reportLoadingKind === "ai" && (
@@ -370,9 +406,10 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
             ghuntConnected={ghuntConnected}
             facecheckConfigured={facecheckConfigured}
             decodoConfigured={decodoConfigured}
-            normalization={selectedNode?.evidence ? controller.normalizations[selectedNode.evidence.id] : undefined}
-            normalizing={selectedNode?.evidence !== undefined && controller.normalizingEvidenceId === selectedNode.evidence.id}
-            normalizationError={selectedNode?.evidence ? controller.normalizationErrors[selectedNode.evidence.id] ?? "" : ""}
+            normalization={selectedEvidenceId === undefined ? undefined : controller.normalizations[selectedEvidenceId]}
+            normalizationStatus={normalizationStatus}
+            normalizeDisabled={controller.stale}
+            normalizationError={selectedEvidenceId === undefined ? undefined : controller.normalizationErrors[selectedEvidenceId]}
             onValidate={validate}
             onQueueDecodo={controller.queueDecodo}
             onRerun={controller.rerunAction}

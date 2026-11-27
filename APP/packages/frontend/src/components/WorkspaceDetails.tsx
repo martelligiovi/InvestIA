@@ -4,6 +4,8 @@ import { actionTitle, decodoPageTitle, evidenceHeading, GRAPH_PAGE_SIZE, type Wo
 import { workspaceStatusLabel } from "../pages/workspace-status";
 import { facecheckReviewState } from "./FacecheckReview";
 
+export type NormalizationStatus = "idle" | "enqueueing" | "queued" | "running";
+
 export interface WorkspaceDetailsProps {
   readonly investigation: Investigation;
   readonly node: WorkspaceNode | null;
@@ -12,7 +14,8 @@ export interface WorkspaceDetailsProps {
   readonly facecheckConfigured?: boolean | null;
   readonly decodoConfigured?: boolean | null;
   readonly normalization?: EvidenceAiNormalization;
-  readonly normalizing?: boolean;
+  readonly normalizationStatus?: NormalizationStatus;
+  readonly normalizeDisabled?: boolean;
   readonly normalizationError?: string;
   readonly onSelectNode?: (nodeId: string) => void;
   readonly onValidate: (evidenceId: string, status: ValidationStatus, reason: string) => Promise<boolean>;
@@ -132,36 +135,30 @@ function NormalizationAlert({ error }: { readonly error: string }) {
       </p>
     );
   }
-  if (error.includes("AI_NOT_CONFIGURED")) {
-    return (
-      <p className="workspace-alert" role="alert">
-        {error} <a href="#/ajustes">{settingsLabel}</a>
-      </p>
-    );
-  }
   return <p className="workspace-alert" role="alert">{error}</p>;
 }
 
 function DecodoAiNormalizationSection({
   evidenceId,
-  disabled,
+  normalizeDisabled = false,
   normalization,
-  normalizing = false,
+  normalizationStatus = "idle",
   normalizationError = "",
   onNormalize,
 }: {
   readonly evidenceId: string;
-  readonly disabled: boolean;
+  readonly normalizeDisabled?: boolean;
   readonly normalization?: EvidenceAiNormalization;
-  readonly normalizing?: boolean;
+  readonly normalizationStatus?: NormalizationStatus;
   readonly normalizationError?: string;
   readonly onNormalize?: (evidenceId: string) => Promise<boolean>;
 }) {
-  const buttonLabel = normalizing
-    ? "Normalizando con IA…"
-    : normalization !== undefined
-      ? "Volver a normalizar con IA"
-      : "Normalizar con IA";
+  const buttonLabels: Record<NormalizationStatus, string> = {
+    enqueueing: "Encolando normalización…",
+    queued: "En cola para normalizar con IA",
+    running: "Normalizando con IA…",
+    idle: normalization === undefined ? "Normalizar con IA" : "Volver a normalizar con IA",
+  };
   const data = normalization?.data;
   return (
     <section className="detail-fact decodo-ai-normalization" aria-labelledby="decodo-ai-normalization-heading">
@@ -173,10 +170,10 @@ function DecodoAiNormalizationSection({
         <button
           type="button"
           className="workspace-button"
-          disabled={disabled || normalizing || onNormalize === undefined}
+          disabled={normalizeDisabled || normalizationStatus !== "idle" || onNormalize === undefined}
           onClick={() => { if (onNormalize !== undefined) void onNormalize(evidenceId); }}
         >
-          {buttonLabel}
+          {buttonLabels[normalizationStatus]}
         </button>
       </div>
       {normalizationError !== "" && <NormalizationAlert error={normalizationError} />}
@@ -378,7 +375,9 @@ function ActionRerunControl({ action, investigation, disabled, onRerun }: {
   </section>;
 }
 
-export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, facecheckConfigured, decodoConfigured, normalization, normalizing, normalizationError, onValidate, onSelectNode, onQueueDecodo, onRerun, onNormalizeEvidence, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
+export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected, facecheckConfigured, decodoConfigured,
+  normalization, normalizationStatus, normalizeDisabled, normalizationError, onValidate, onSelectNode, onQueueDecodo,
+  onRerun, onNormalizeEvidence, onApproveGravatar, onReviewFacecheck }: WorkspaceDetailsProps) {
   const [validationReason, setValidationReason] = useState("");
   const [approvalReason, setApprovalReason] = useState("");
   const [formError, setFormError] = useState("");
@@ -528,9 +527,9 @@ export function WorkspaceDetails({ investigation, node, disabled, ghuntConnected
               {node.evidence.sourceId === "decodo:url" && (
                 <DecodoAiNormalizationSection
                   evidenceId={node.evidence.id}
-                  disabled={disabled}
+                  normalizeDisabled={normalizeDisabled}
                   normalization={normalization}
-                  normalizing={normalizing}
+                  normalizationStatus={normalizationStatus}
                   normalizationError={normalizationError}
                   onNormalize={onNormalizeEvidence}
                 />

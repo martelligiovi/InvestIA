@@ -86,9 +86,15 @@ export {
   buildEvidenceNormalizationMessages,
   decodoSourceContentHash,
   EVIDENCE_NORMALIZATION_SYSTEM_PROMPT,
+  isValidNormalizationJobErrorCode,
   isValidNormalizedPageData,
+  NORMALIZATION_JOB_ERROR_CODES,
+  NORMALIZATION_JOB_STATUSES,
   parseEvidenceNormalization,
   type EvidenceAiNormalization,
+  type EvidenceNormalizationJob,
+  type EvidenceNormalizationJobStatus,
+  type NormalizationJobErrorCode,
   type NormalizedPageData,
 } from "./domain/evidence-normalization.ts";
 export {

@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { EvidenceRecord, GitHubCatalogAction, Investigation, ValidationDecision } from "@investia/core";
+import type { EvidenceNormalizationJob, EvidenceRecord, GitHubCatalogAction, Investigation, ValidationDecision } from "@investia/core";
 import App from "../src/App";
+import { ExecutionQueuePopover } from "../src/components/ExecutionQueuePopover";
 import { WorkspacePage } from "../src/pages/WorkspacePage";
 
 type CapturedCall = { input: RequestInfo | URL; init?: RequestInit };
@@ -172,7 +173,9 @@ describe("espacio de investigación factual", () => {
     for (const name of ["Autorizar expediente", "Actualizar expediente", "Ejecutar siguiente acción en cola"]) {
       expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
     }
-    expect(calls).toHaveLength(1);
+    await waitFor(() => {
+      expect(calls.map(pathOf)).toEqual(["/investigations/case-1", "/investigations/case-1/normalizations"]);
+    });
   });
   it("carga, permite reintentar errores y distingue un expediente inexistente", async () => {
     let attempts = 0;
@@ -235,7 +238,9 @@ describe("espacio de investigación factual", () => {
     await user.click(screen.getByRole("tab", { name: "Detalle" }));
     expect(document.querySelector(".workspace-layout")).toHaveAttribute("data-mobile-panel", "detail");
 
-    expect(calls.map(pathOf)).toEqual(["/investigations/case-1"]);
+    await waitFor(() => {
+      expect(calls.map(pathOf)).toEqual(["/investigations/case-1", "/investigations/case-1/normalizations"]);
+    });
     expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
   });
 
@@ -639,7 +644,9 @@ describe("espacio de investigación factual", () => {
     expect(authorize).toBeEnabled();
     expect(refresh).not.toBeInTheDocument();
     expect(calls.map((call) => `${call.init?.method ?? "GET"} ${pathOf(call)}`)).toEqual([
-      "GET /investigations/case-1", "POST /investigations/case-1/authorization", "GET /investigations/case-1", "GET /investigations/case-1",
+      "GET /investigations/case-1", "GET /investigations/case-1/normalizations",
+      "POST /investigations/case-1/authorization", "GET /investigations/case-1", "GET /investigations/case-1",
+      "GET /investigations/case-1/normalizations",
     ]);
   });
 
@@ -860,6 +867,241 @@ describe("informe con IA", () => {
     expect(screen.getByRole("heading", { name: "Informe Markdown" })).toBeInTheDocument();
     expect(screen.getByText("Informe Markdown · vista previa y descarga")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /descargar markdown/i })).toHaveAttribute("download", "investigacion-case-1.md");
+  });
+});
+
+describe("execution queue popover", () => {
+  it("shows a spinning ring without percentages, orders recorded stages, and opens action detail", async () => {
+    const { calls } = installFetch(async () => json(snapshot({
+      authorization: { granted: true, at: createdAt, reason: "Fixture", operator: "local-operator" },
+      actions: [
+        { ...action("failed"), id: "failed", failure: "Decodo target requires login", spec: {
+          catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: "https://example.test/profile" },
+        } },
+        { ...action("queued"), id: "queued-z" }, { ...action("succeeded"), id: "done" },
+        { ...action("queued"), id: "queued-a" }, { ...action("claimed"), id: "running" },
+      ],
+    })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    const disclosure = summary.closest("details")!;
+    const ring = summary.querySelector("svg")!;
+    expect(ring).toHaveAttribute("width", "22");
+    expect(ring).toHaveAttribute("height", "22");
+    expect(ring).toHaveAttribute("data-mode", "spinning");
+    expect(ring.querySelector(".queue-ring-sweep")).toBeInTheDocument();
+    expect(ring.querySelector(".queue-ring-progress")).not.toBeInTheDocument();
+    expect(ring.querySelector(".queue-ring-alert")).toBeInTheDocument();
+    expect(summary).not.toHaveTextContent("%");
+    expect(disclosure).not.toHaveAttribute("open");
+
+    await user.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    expect(panel).not.toHaveTextContent("%");
+    expect(within(panel).getByText("1 en ejecución · 2 en cola · 1 completa · 1 fallida")).toBeInTheDocument();
+    expect(within(panel).getByText("Las etapas siguientes se suman al desbloquearse nuevos hallazgos.")).toBeInTheDocument();
+
+    // Active (running + queued) stay expanded; completed and errors start collapsed with errors last.
+    const initialRows = within(panel).getAllByRole("listitem");
+    expect(initialRows.map((row) => row.getAttribute("data-kind"))).toEqual(["running", "queued", "queued"]);
+    expect(within(initialRows[0]!).getByRole("progressbar")).not.toHaveAttribute("aria-valuenow");
+    expect(within(initialRows[1]!).getByText("Siguiente")).toBeInTheDocument();
+    const second = within(initialRows[2]!).getByRole("button", { name: /En cola · #2/u });
+
+    const completedToggle = within(panel).getByRole("button", { name: /Completadas/u });
+    const errorsToggle = within(panel).getByRole("button", { name: /Errores/u });
+    expect(completedToggle).toHaveAttribute("aria-expanded", "false");
+    expect(errorsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(Boolean(completedToggle.compareDocumentPosition(errorsToggle) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(within(panel).getByText("Completo")).not.toBeVisible();
+    expect(within(panel).getByText("La página requiere iniciar sesión para ver su contenido.")).not.toBeVisible();
+
+    await user.click(completedToggle);
+    expect(completedToggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(panel).getByText("Completo")).toBeInTheDocument();
+
+    await user.click(errorsToggle);
+    expect(errorsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(panel).getByRole("button", { name: /Falló/u }))
+      .toHaveAccessibleDescription("La página requiere iniciar sesión para ver su contenido.");
+    const expandedRows = within(panel).getAllByRole("listitem");
+    expect(expandedRows.map((row) => row.getAttribute("data-kind"))).toEqual(["running", "queued", "queued", "completed", "failed"]);
+
+    await user.click(second);
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(summary).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Detalle" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "Detalle" }).closest(".workspace-layout")).toHaveAttribute("data-detail-open", "true");
+    expect(within(screen.getByRole("tabpanel", { name: "Detalle" })).getByRole("heading", { name: "Comprobación de registro en GitHub" }))
+      .toBeInTheDocument();
+    const graph = screen.getByRole("group", { name: "Grafo factual de semillas, acciones y observaciones" });
+    expect(within(graph).getByRole("button", { name: /^Acción: queued-a\./u })).toHaveAttribute("aria-pressed", "true");
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => ["/investigations/case-1", "/investigations/case-1/normalizations"].includes(pathOf(call)) &&
+      (call.init?.method ?? "GET") === "GET")).toBe(true);
+
+    // Reopening starts with completed and errors cleanly collapsed again.
+    await user.click(summary);
+    expect(within(panel).getByRole("button", { name: /Completadas/u })).toHaveAttribute("aria-expanded", "false");
+    expect(within(panel).getByRole("button", { name: /Errores/u })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("dismisses an empty queue with Escape or an outside click", async () => {
+    installFetch(async () => json(snapshot()));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    const disclosure = summary.closest("details")!;
+    expect(summary.querySelector("svg")).toHaveAttribute("data-mode", "empty");
+
+    await user.click(summary);
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    await user.click(within(panel).getByText("Todavía no hay acciones en cola."));
+    expect(disclosure).toHaveAttribute("open");
+    await user.keyboard("{Escape}");
+    expect(disclosure).not.toHaveAttribute("open");
+
+    await user.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+    await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
+    expect(disclosure).not.toHaveAttribute("open");
+  });
+
+  it("dismisses the queue with Escape after keyboard focus moves to the detail", async () => {
+    installFetch(async () => json(snapshot({ actions: [action("succeeded")] })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    await user.click(summary);
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    await user.click(within(panel).getByRole("button", { name: /Completadas/u }));
+    await user.click(within(panel).getByRole("button", { name: /Completo/u }));
+    await user.click(summary);
+    const detail = screen.getByRole("tabpanel", { name: "Detalle" });
+    detail.focus();
+    expect(detail).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("keeps retry history collapsed with distinct descriptions for attempts of the same action", async () => {
+    const completedRetry = { ...action("claimed"), id: "completed-retry", rerun: { previousStatus: "succeeded", fingerprint: "0".repeat(64) } } as const;
+    const failedRetry = { ...action("claimed"), id: "failed-retry", rerun: { previousStatus: "failed", fingerprint: "0".repeat(64) } } as const;
+    const failed = { ...action("failed"), id: "failed-twice", lastRerunFailed: true,
+      lastRerunFailure: "The replacement returned no confirmed results." } as const;
+    const audit = [
+      { id: "success", actionId: completedRetry.id, actor: "system", at: createdAt, kind: "action_succeeded", reason: "Completed" },
+      { id: "failure", actionId: failedRetry.id, actor: "system", at: createdAt, kind: "action_failed", reason: "Failed" },
+    ] as const;
+    installFetch(async () => json(snapshot({ actions: [completedRetry, failedRetry, failed], audit })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    await user.click(summary);
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    const rows = within(panel).getAllByRole("listitem");
+    expect(rows.map((row) => row.dataset.kind)).toEqual(["running", "running"]);
+    for (const row of rows) expect(within(row).getByRole("button", { name: /^Reintento 2 de /u })).toBeVisible();
+
+    const toggles = [/Completadas/u, /Errores/u].map((name) => within(panel).getByRole("button", { name }));
+    for (const toggle of toggles) {
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      const target = document.getElementById(toggle.getAttribute("aria-controls")!);
+      expect(target).toBeInTheDocument();
+      expect(target).not.toBeVisible();
+      await user.click(toggle);
+      expect(summary.closest("details")).toHaveAttribute("open");
+      expect(target).toBeVisible();
+    }
+    expect(within(panel).getByRole("button", { name: /Completo/u })).toBeVisible();
+    const failures = within(panel).getAllByRole("button", { name: /Falló|Reintento fallido/u });
+    expect(failures).toHaveLength(3);
+    expect(new Set(failures.map((button) => button.getAttribute("aria-describedby"))).size).toBe(3);
+    expect(failures[0]).toHaveAccessibleDescription(/La acción no pudo completarse/u);
+    expect(failures[1]).toHaveAccessibleDescription(/La acción no pudo completarse/u);
+    expect(failures[2]).toHaveAccessibleDescription("La reejecución no devolvió resultados confirmados.");
+
+    await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    await user.click(summary);
+    for (const toggle of toggles) expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("shows replaced action attempts as read-only history, newest first with local times", async () => {
+    const now = new Date(2026, 10, 27, 18);
+    const today = new Date(2026, 10, 27, 14, 50).toISOString();
+    const yesterday = new Date(2026, 10, 26, 12, 14).toISOString();
+    const current = snapshot({
+      actions: [
+        { ...action("succeeded"), completedAt: yesterday },
+        { ...action("claimed"), id: "running" },
+        { ...action("failed"), id: "failed", completedAt: yesterday },
+      ],
+      audit: [
+        { id: "queued", actionId: "old", at: yesterday, actor: "system", kind: "action_queued", reason: "Catalog queued a Maigret search" },
+        { id: "success", actionId: "old", at: today, actor: "system", kind: "action_succeeded", reason: "Completed" },
+        { id: "failure", actionId: "old", at: today, actor: "system", kind: "action_failed", reason: "The replacement returned no confirmed results." },
+      ],
+    });
+    const onSelectAction = vi.fn();
+    const user = userEvent.setup();
+    render(<ExecutionQueuePopover investigation={current} ghuntConnected={true} facecheckConfigured={true} decodoConfigured={true}
+      now={now} onSelectAction={onSelectAction} />);
+    const summary = screen.getByText("Cola", { exact: true }).closest("summary")!;
+    await user.click(summary);
+    const panel = within(screen.getByRole("region", { name: "Cola de ejecución" }));
+    await user.click(panel.getByRole("button", { name: /Completadas 2/u }));
+    await user.click(panel.getByRole("button", { name: /Errores 2/u }));
+    const rows = panel.getAllByRole("listitem");
+    expect(rows.map((row) => row.dataset.kind)).toEqual(["running", "completed", "completed", "failed", "failed"]);
+    expect(rows.map((row) => {
+      const time = row.querySelector("time");
+      return time && [time.textContent, time.getAttribute("datetime")];
+    })).toEqual([null, ["14:50", today], ["26/11 12:14", yesterday], ["14:50", today], ["26/11 12:14", yesterday]]);
+    expect(within(rows[2]!).getByRole("button")).toBeVisible();
+    expect(within(rows[4]!).getByRole("button")).toBeVisible();
+    expect(within(rows[3]!).getByText("La reejecución no devolvió resultados confirmados.")).toBeVisible();
+    for (const [row, title] of [[rows[1]!, "Búsqueda de usuario · Maigret"], [rows[3]!, "Reintento 2 de Búsqueda de usuario · Maigret"]] as const) {
+      expect(within(row).getByText(title)).toBeVisible();
+      expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+      await user.click(within(row).getByText("Acción reemplazada"));
+    }
+    expect(onSelectAction).not.toHaveBeenCalled();
+    expect(summary.closest("details")).toHaveAttribute("open");
+  });
+
+  it("opens Decodo evidence from a normalization row and keeps pruned history non-interactive", async () => {
+    const pageSeed = { kind: "url", value: "https://example.test/profile" } as const;
+    const scrape: GitHubCatalogAction = { ...action("succeeded"), id: "scrape",
+      spec: { catalogId: "decodo.url.v1", provider: "decodo", seed: pageSeed } };
+    const page: EvidenceRecord = { ...evidence("page", scrape.id), provider: "Decodo", sourceId: "decodo:url", seed: pageSeed,
+      finding: { target: pageSeed, url: pageSeed.value, upstreamStatus: "Found", category: "Web page", reason: "Fixture", media: {}, extra: {} } };
+    const queued: EvidenceNormalizationJob = { id: "queued", investigationId: "case-1", evidenceId: page.id,
+      attemptNumber: 1, status: "queued", createdAt };
+    const pruned: EvidenceNormalizationJob = { ...queued, id: "pruned", evidenceId: "old-page", status: "failed", errorCode: "EVIDENCE_UNAVAILABLE" };
+    const { calls } = installFetch(async (call) => pathOf(call).endsWith("/normalizations")
+      ? json({ normalizations: [], jobs: [pruned, queued] })
+      : json(snapshot({ actions: [scrape], evidence: [page] })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    await user.click(summary);
+    const panel = within(screen.getByRole("region", { name: "Cola de ejecución" }));
+    const row = await panel.findByRole("button", { name: /Normalización con IA · example\.test.*\/profile/u });
+    expect(summary.querySelector("svg")).toHaveAttribute("data-mode", "pending");
+    await user.click(panel.getByRole("button", { name: /Errores/u }));
+    const prunedRow = panel.getByText("Página reemplazada").closest("li")!;
+    expect(within(prunedRow).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(prunedRow).getByText("La página guardada ya no está disponible para normalizar.")).toBeVisible();
+    await user.click(row);
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("tab", { name: "Detalle" })).toHaveAttribute("aria-selected", "true");
+    const detail = within(screen.getByRole("tabpanel", { name: "Detalle" }));
+    expect(detail.getByRole("heading", { name: "Página recopilada por Decodo" })).toBeVisible();
+    expect(detail.getByRole("button", { name: "En cola para normalizar con IA" })).toBeDisabled();
+    expect(calls.every((call) => call.init?.method === undefined)).toBe(true);
   });
 });
 

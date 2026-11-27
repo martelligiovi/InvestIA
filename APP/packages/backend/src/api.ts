@@ -27,6 +27,8 @@ import {
   InvestigationNotFoundError,
 } from "./postgres-investigation-store.ts";
 import type { AiSettingsRecord, AiSettingsStore } from "./ai-settings-store.ts";
+import type { EvidenceNormalizationJobStore } from "./evidence-normalization-job-store.ts";
+import { isDecodoNormalizationEvidence, NVIDIA_PROVIDER_ERROR_CODES } from "./evidence-normalization-runner.ts";
 import type { EvidenceNormalizationStore } from "./evidence-normalization-store.ts";
 import type { InvestigationActionRunner } from "./investigation-run-graph.ts";
 import { NvidiaProviderError, type NvidiaBuildGateway } from "./nvidia-build.ts";
@@ -94,13 +96,13 @@ const DecodoSettingsBody = z.object({
 }).strict().refine(({ token, apiMode }) => token === undefined ? apiMode !== undefined : isValidDecodoToken(token, apiMode));
 
 const PROVIDER_ERRORS = {
-  unauthorized: new HttpError(502, "AI_PROVIDER_UNAUTHORIZED", "NVIDIA Build rejected the API key"),
-  rate_limited: new HttpError(502, "AI_PROVIDER_RATE_LIMITED", "NVIDIA Build rate limit reached; try again later"),
-  rejected: new HttpError(502, "AI_PROVIDER_REJECTED", "NVIDIA Build rejected the model or parameters"),
-  unavailable: new HttpError(502, "AI_PROVIDER_UNAVAILABLE", "NVIDIA Build is unavailable or returned no report"),
-  invalid_response: new HttpError(502, "AI_PROVIDER_UNAVAILABLE", "NVIDIA Build is unavailable or returned no report"),
-  timeout: new HttpError(502, "AI_PROVIDER_TIMEOUT", "The NVIDIA Build model did not answer in time; its free endpoint may be saturated"),
-  truncated: new HttpError(502, "AI_PROVIDER_TRUNCATED", "The model used its whole token budget before writing the report"),
+  unauthorized: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.unauthorized, "NVIDIA Build rejected the API key"),
+  rate_limited: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.rate_limited, "NVIDIA Build rate limit reached; try again later"),
+  rejected: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.rejected, "NVIDIA Build rejected the model or parameters"),
+  unavailable: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.unavailable, "NVIDIA Build is unavailable or returned no report"),
+  invalid_response: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.invalid_response, "NVIDIA Build is unavailable or returned no report"),
+  timeout: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.timeout, "The NVIDIA Build model did not answer in time; its free endpoint may be saturated"),
+  truncated: new HttpError(502, NVIDIA_PROVIDER_ERROR_CODES.truncated, "The model used its whole token budget before writing the report"),
 } as const;
 
 /** Shows enough to recognize the stored key without disclosing it. */
@@ -233,6 +235,8 @@ export interface AiReportAdapters {
   readonly gateway: NvidiaBuildGateway;
   readonly clock: () => string;
   readonly normalizations?: EvidenceNormalizationStore;
+  readonly normalizationJobs?: EvidenceNormalizationJobStore;
+  readonly wakeNormalizations?: () => void;
 }
 
 export interface BackendAppAdapters {
@@ -456,8 +460,10 @@ export function createBackendApp(
     const { id } = input(InvestigationParams, request.params);
     const investigation = await serviceCall(() => service.loadInvestigation(id));
     if (investigation === undefined) throw new HttpError(404, "NOT_FOUND", "Investigation not found");
+    // Read jobs before normalizations so any completed job observes the summary written prior to completion.
+    const jobs = ai?.normalizationJobs === undefined ? [] : await ai.normalizationJobs.listByInvestigation(id);
     const stored = ai?.normalizations === undefined ? [] : await ai.normalizations.listByInvestigation(id);
-    return { normalizations: filterValidNormalizations(investigation, stored) };
+    return { normalizations: filterValidNormalizations(investigation, stored), jobs };
   });
 
   if (ai !== undefined) registerAiRoutes(app, service, ai);
@@ -589,6 +595,36 @@ function registerAiRoutes(app: FastifyInstance, service: InvestigationService, a
       };
       await ai.normalizations?.save(id, record);
       return record;
+    },
+  );
+
+  app.post<{ Params: { id: string; evidenceId: string } }>(
+    "/investigations/:id/evidence/:evidenceId/normalize/queue",
+    { onRequest: async (request) => {
+      if (!isLocalSameOriginRequest(request.headers)) {
+        throw new HttpError(403, "FORBIDDEN", "Evidence normalization can only be queued from this computer's InvestIA page");
+      }
+    } },
+    async (request, reply) => {
+      const { id, evidenceId } = input(EvidenceParams, request.params);
+      input(EmptyBody, request.body);
+      const investigation = await serviceCall(() => service.loadInvestigation(id));
+      if (investigation === undefined) throw new HttpError(404, "NOT_FOUND", "Investigation not found");
+      const evidence = investigation.evidence.find((item) => item.id === evidenceId);
+      if (evidence === undefined) throw new HttpError(404, "NOT_FOUND", "Record not found");
+      if (!isDecodoNormalizationEvidence(evidence)) {
+        throw new HttpError(409, "CONFLICT", "Only Decodo page evidence can be normalized");
+      }
+      const configuration = await ai.settings.load();
+      if (configuration?.apiKey == null) {
+        throw new HttpError(409, "AI_NOT_CONFIGURED", "Configure an NVIDIA Build API key first");
+      }
+      if (ai.normalizationJobs === undefined) {
+        throw new HttpError(503, "NORMALIZATION_QUEUE_UNAVAILABLE", "Evidence normalization queue is unavailable");
+      }
+      const result = await ai.normalizationJobs.enqueue(id, evidenceId);
+      ai.wakeNormalizations?.();
+      return reply.code(202).send(result);
     },
   );
 

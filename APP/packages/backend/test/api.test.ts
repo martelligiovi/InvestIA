@@ -813,5 +813,5 @@ test("preserves factual report output and empty normalizations when AI adapters 
 
   const normalizations = await app.inject({ method: "GET", url: `/investigations/${created.id}/normalizations` });
   assert.equal(normalizations.statusCode, 200);
-  assert.deepEqual(normalizations.json(), { normalizations: [] });
+  assert.deepEqual(normalizations.json(), { normalizations: [], jobs: [] });
 });
