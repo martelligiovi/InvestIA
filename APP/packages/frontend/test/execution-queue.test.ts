@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { findingSeedNodeId, SCOPED_CATALOG_IDS, type EvidenceAiNormalization, type EvidenceNormalizationJob, type EvidenceRecord, type Investigation } from "@investia/core";
-import { buildExecutionQueue, explainActionFailure, type QueueAction } from "../src/pages/execution-queue";
+import { buildExecutionQueue, explainActionFailure, formatQueueTimestamp, type QueueAction } from "../src/pages/execution-queue";
 
 const at = "2025-03-16T12:00:00.000Z";
 const email = { kind: "email", value: "ana@example.test" } as const;
@@ -41,14 +41,14 @@ describe("execution queue", () => {
     ]), ready);
     expect(queue.items.map(({ targetId, kind, label }) => [targetId, kind, label])).toEqual([
       ["scanner", "running", "En ejecución"], ["queued-z", "queued", "Siguiente"], ["queued-a", "queued", "En cola · #2"],
-      ["queued-m", "queued", "En cola · #3"], ["proposal", "waiting", "Espera tu aprobación"], ["done", "completed", "Completo"],
-      ["rerun-failed", "completed", "Completo"], ["failed", "failed", "Falló"], ["rerun-failed", "failed", "Reintento fallido"],
+      ["queued-m", "queued", "En cola · #3"], ["proposal", "waiting", "Espera tu aprobación"], ["rerun-failed", "completed", "Completo"],
+      ["done", "completed", "Completo"], ["rerun-failed", "failed", "Reintento fallido"], ["failed", "failed", "Falló"],
     ]);
     expect(queue.items[0]).toMatchObject({ title: "Escaneo de correo · user-scanner", target: email.value });
     expect(queue.items[1]).toMatchObject({ title: "Perfil de Google · GHunt", target: email.value });
     expect(queue.items[2]).toMatchObject({ title: "Decodo · example.test", target: "/profile" });
     expect(queue.items.slice(-2).map(({ failureExplanation }) => failureExplanation)).toEqual([
-      "La página requiere iniciar sesión para ver su contenido.", "La reejecución no devolvió resultados confirmados.",
+      "La reejecución no devolvió resultados confirmados.", "La página requiere iniciar sesión para ver su contenido.",
     ]);
     expect(queue).toMatchObject({ total: 9, ringMode: "spinning", counts: {
       running: 1, queued: 3, waiting: 1, completed: 2, failed: 2,
@@ -102,18 +102,19 @@ describe("execution queue", () => {
     const entry = action("old-failure", "failed", { spec: decodo, failure, lastRerunFailed: true,
       lastRerunFailure: "Prior results changed during execution; the replacement was not applied." });
     expect(buildExecutionQueue(snapshot([entry]), ready)).toMatchObject({ ringMode: "complete_with_errors", items: [
-      { attemptNumber: 1, kind: "failed", label: "Falló", failureExplanation: "La página requiere iniciar sesión para ver su contenido." },
       { attemptNumber: 2, kind: "failed", label: "Reintento fallido", title: "Reintento 2 de Decodo · example.test",
         failureExplanation: "Los resultados anteriores cambiaron durante la reejecución y no se reemplazaron." },
+      { attemptNumber: 1, kind: "failed", label: "Falló", failureExplanation: "La página requiere iniciar sesión para ver su contenido." },
     ] });
-    const claimed = action(entry.id, "claimed", { spec: decodo, failure, rerun: { previousStatus: "failed", fingerprint: "0".repeat(64) } });
+    const claimed = action(entry.id, "claimed", { spec: decodo, failure, completedAt: at,
+      rerun: { previousStatus: "failed", fingerprint: "0".repeat(64) } });
     expect(buildExecutionQueue(snapshot([claimed]), ready).items).toMatchObject([
       { attemptNumber: 2, kind: "running", title: "Reintento 2 de Decodo · example.test" },
-      { attemptNumber: 1, kind: "failed", failureExplanation: "La página requiere iniciar sesión para ver su contenido." },
+      { attemptNumber: 1, kind: "failed", executedAt: at, failureExplanation: "La página requiere iniciar sesión para ver su contenido." },
     ]);
   });
 
-  it("keeps all terminal audit attempts in order with distinct failures while another retry waits", () => {
+  it("keeps all terminal audit attempts newest first with distinct failures while another retry waits", () => {
     const entry = action("scrape", "queued", { spec: decodo, rerun, lastRerunFailed: true, lastRerunFailure: "Decodo request timed out" });
     const terminal = { at, actor: "system" as const, actionId: entry.id };
     const audit = [
@@ -127,11 +128,11 @@ describe("execution queue", () => {
     const queue = buildExecutionQueue(snapshot([entry], { audit: audit as unknown as Investigation["audit"], paused: true }), ready);
     expect(queue.items).toMatchObject([
       { attemptNumber: 6, kind: "waiting", title: "Reintento 6 de Decodo · example.test", label: "En cola · pausada" },
-      { attemptNumber: 1, kind: "completed", title: "Decodo · example.test", label: "Completo" },
-      { attemptNumber: 3, kind: "completed", title: "Reintento 3 de Decodo · example.test", label: "Completo · intento 3" },
-      { attemptNumber: 2, kind: "failed", label: "Reintento fallido", failureExplanation: "La página requiere iniciar sesión para ver su contenido." },
-      { attemptNumber: 4, kind: "failed", label: "Reintento fallido", failureExplanation: "La reejecución no devolvió resultados confirmados." },
-      { attemptNumber: 5, kind: "failed", label: "Reintento fallido", failureExplanation: "Decodo no encontró contenido para mostrar en la página." },
+      { attemptNumber: 3, kind: "completed", title: "Reintento 3 de Decodo · example.test", label: "Completo · intento 3", executedAt: at },
+      { attemptNumber: 1, kind: "completed", title: "Decodo · example.test", label: "Completo", executedAt: at },
+      { attemptNumber: 5, kind: "failed", label: "Reintento fallido", failureExplanation: "Decodo no encontró contenido para mostrar en la página.", executedAt: at },
+      { attemptNumber: 4, kind: "failed", label: "Reintento fallido", failureExplanation: "La reejecución no devolvió resultados confirmados.", executedAt: at },
+      { attemptNumber: 2, kind: "failed", label: "Reintento fallido", failureExplanation: "La página requiere iniciar sesión para ver su contenido.", executedAt: at },
     ]);
     expect(queue.items.every((item) => item.targetKind === "action" && item.targetId === entry.id && item.selectable)).toBe(true);
     expect(new Set(queue.items.map(({ id }) => id)).size).toBe(6);
@@ -143,10 +144,105 @@ describe("execution queue", () => {
     const audit = [1, 2, 3].map((attempt) => ({ id: String(attempt), actionId: entry.id, at,
       actor: "system" as const, kind: "action_failed" as const, reason: "Unrecognized provider response" }));
     expect(buildExecutionQueue(snapshot([entry], { audit }), ready).items.map(({ failureExplanation }) => failureExplanation)).toEqual([
-      "La página requiere iniciar sesión para ver su contenido.",
-      "Decodo no pudo completar la consulta y no hay un motivo específico registrado.",
       "Decodo tardó demasiado en responder y se agotó el tiempo de espera.",
+      "Decodo no pudo completar la consulta y no hay un motivo específico registrado.",
+      "La página requiere iniciar sesión para ver su contenido.",
     ]);
+  });
+
+  it.each([
+    ["action_proposed", "User Scanner found a GRAVATAR profile", "Perfil de Gravatar"],
+    ["action_queued", "Catalog queued a FACECHECK search for the photo GHunt found", "Búsqueda facial · FaceCheck"],
+    ["action_queued", "Catalog queued a DECODO scrape for the accepted FaceCheck result URL", "Decodo"],
+    ["action_queued", "Catalog queued a MAIGRET search", "Búsqueda de usuario · Maigret"],
+    ["action_queued", "Catalog queued a GHUNT lookup", "Perfil de Google · GHunt"],
+    ["action_queued", "Catalog queued a USER-SCANNER check", "Escaneo de correo · user-scanner"],
+    ["action_queued", "Catalog queued a USER SCANNER check", "Escaneo de correo · user-scanner"],
+    ["action_proposed", "Unrecognized tool", "Acción histórica"],
+  ] as const)("retains pruned attempts with the historical title inferred from %s: %s", (kind, reason, title) => {
+    const event = { at, actor: "system", actionId: "pruned" } as const;
+    const audit = [
+      { ...event, id: "source", kind, reason },
+      { ...event, id: "first", kind: "action_succeeded", reason: "Finished" },
+      { ...event, id: "second", kind: "action_failed", reason: "Prior results changed during execution; the replacement was not applied." },
+      { ...event, id: "third", kind: "action_rerun_succeeded", reason: "Finished" },
+      { ...event, id: "fourth", kind: "action_failed", reason: "The replacement returned no confirmed results." },
+      { ...event, id: "fifth", kind: "action_failed", reason: "Decodo request timed out", failure: "Unknown provider detail" },
+      { ...event, id: "sixth", kind: "action_failed", reason: "Failed", failure: "Decodo target requires login" },
+    ] as unknown as Investigation["audit"];
+    const before = buildExecutionQueue(snapshot([action(event.actionId, "failed")], { audit }), ready);
+    const after = buildExecutionQueue(snapshot([], { audit }), ready);
+    expect(after.counts).toEqual(before.counts);
+    expect(after).toMatchObject({ total: 6, counts: { completed: 2, failed: 4, running: 0, queued: 0, waiting: 0 }, items: [
+      { attemptNumber: 3, kind: "completed", title: `Reintento 3 de ${title}`, label: "Completo · intento 3" },
+      { attemptNumber: 1, kind: "completed", title, label: "Completo" },
+      { attemptNumber: 6, kind: "failed", title: `Reintento 6 de ${title}`, label: "Reintento fallido",
+        failureExplanation: "La página requiere iniciar sesión para ver su contenido." },
+      { attemptNumber: 5, kind: "failed", title: `Reintento 5 de ${title}`, label: "Reintento fallido",
+        failureExplanation: title === "Decodo" ? "Decodo no pudo completar la consulta y no hay un motivo específico registrado."
+          : "La acción no pudo completarse y no hay un motivo específico registrado." },
+      { attemptNumber: 4, kind: "failed", title: `Reintento 4 de ${title}`, label: "Reintento fallido",
+        failureExplanation: "La reejecución no devolvió resultados confirmados." },
+      { attemptNumber: 2, kind: "failed", title: `Reintento 2 de ${title}`, label: "Reintento fallido",
+        failureExplanation: "Los resultados anteriores cambiaron durante la reejecución y no se reemplazaron." },
+    ] });
+    for (const item of after.items) expect(item).toMatchObject({
+      id: `action-pruned:pruned:attempt:${item.attemptNumber}`, targetKind: "action", targetId: "pruned",
+      selectable: false, target: "Acción reemplazada", executedAt: at,
+    });
+  });
+
+  it.each([["succeeded", "action_succeeded", "completed"], ["failed", "action_failed", "failed"]] as const)(
+    "sorts mixed %s history by execution time, then reverse insertion order", (status, eventKind, kind) => {
+      const earlier = "2025-03-16T11:00:00.000Z";
+      const later = "2025-03-16T13:00:00.000Z";
+      const actions = [action("current", status, { completedAt: earlier }), action("legacy", status, { completedAt: earlier }),
+        action("invalid", status, { completedAt: "invalid" }), action("missing", status)];
+      const recordedOrder = [["current", at], ["old-a", earlier], ["old-b", earlier], ["old-a", earlier], ["current", at]] as const;
+      const audit: Investigation["audit"] = recordedOrder.map(([actionId, executedAt], index) => ({
+        id: String(index), actionId, at: executedAt, actor: "system", kind: eventKind, reason: "Finished",
+      }));
+      const job = (id: string, timestamps: Partial<EvidenceNormalizationJob> = {}): EvidenceNormalizationJob => ({
+        id, evidenceId: id, status, attemptNumber: 1, createdAt: earlier, investigationId: "case-1", ...timestamps,
+      });
+      const queue = buildExecutionQueue(snapshot(actions, { audit }), { ...ready,
+        normalizationJobs: [job("finished", { completedAt: later, startedAt: earlier }), job("started", { startedAt: at }), job("created")],
+      });
+      expect(queue.counts[kind]).toBe(11);
+      expect(queue.items.filter((item) => item.kind === kind).map(({ id, executedAt }) => [id, executedAt])).toEqual([
+        ["norm:finished", later], ["norm:started", at], ["action:current:attempt:2", at], ["action:current:attempt:1", at],
+        ["norm:created", earlier], ["action-pruned:old-a:attempt:2", earlier], ["action-pruned:old-b:attempt:1", earlier],
+        ["action-pruned:old-a:attempt:1", earlier], ["action:legacy:attempt:1", earlier],
+        ["action:missing:attempt:1", undefined], ["action:invalid:attempt:1", "invalid"],
+      ]);
+    },
+  );
+
+  it("identifies a pruned manual Decodo request from its audit provenance", () => {
+    const audit: Investigation["audit"] = [
+      { id: "queued", actionId: "scrape", evidenceId: "match", at, actor: "operator",
+        kind: "action_queued", reason: "Verified FaceCheck match; fetch the linked page" },
+      { id: "done", actionId: "scrape", at, actor: "system",
+        kind: "action_succeeded", reason: "Completed" },
+    ];
+    expect(buildExecutionQueue(snapshot([], { audit }), ready).items).toMatchObject([
+      { title: "Decodo", target: "Acción reemplazada", selectable: false, kind: "completed" },
+    ]);
+  });
+
+  it.each([["succeeded", "action_succeeded"], ["failed", "action_failed"]] as const)(
+    "breaks %s ties by reverse audit order across actions", (status, kind) => {
+      const audit: Investigation["audit"] = ["b", "a"].map((actionId) => ({
+        id: `event-${actionId}`, actionId, at, actor: "system", kind, reason: "Finished",
+      }));
+      const queue = buildExecutionQueue(snapshot([action("a", status), action("b", status)], { audit }), ready);
+      expect(queue.items.map(({ targetId }) => targetId)).toEqual(["a", "b"]);
+    },
+  );
+
+  it("omits impossible ISO calendar dates in formatQueueTimestamp", () => {
+    expect(formatQueueTimestamp("2026-02-30T12:00:00.000Z", new Date(2026, 2, 2))).toBeUndefined();
+    expect(formatQueueTimestamp("2026-04-31T08:00:00.000Z", new Date(2026, 4, 1))).toBeUndefined();
   });
 
   it("groups normalization jobs in FIFO order with separate attempts, including legacy and pruned evidence", () => {
@@ -170,8 +266,8 @@ describe("execution queue", () => {
       { targetKind: "action", kind: "queued", label: "Siguiente" },
       { targetId: metadataPage.id, target: "/about", title: "Reintento 2 de Normalización con IA · other.example.test", kind: "queued", label: "Siguiente" },
       { targetId: "old-page", kind: "queued", label: "En cola · #2", selectable: false },
-      { id: "norm-legacy:page:attempt:1", attemptNumber: 1, kind: "completed", title: "Normalización con IA · example.test", label: "Completo", selectable: true },
-      { targetId: metadataPage.id, attemptNumber: 1, kind: "completed", label: "Completo" },
+      { targetId: metadataPage.id, attemptNumber: 1, kind: "completed", label: "Completo", executedAt: at },
+      { id: "norm-legacy:page:attempt:1", attemptNumber: 1, kind: "completed", title: "Normalización con IA · example.test", label: "Completo", selectable: true, executedAt: normalized.generatedAt },
       { targetId: "old-page", kind: "failed", title: "Normalización con IA", target: "Página reemplazada", selectable: false,
         label: "Falló", failureExplanation: "La página guardada ya no está disponible para normalizar." },
     ] });
@@ -270,6 +366,22 @@ describe("execution queue", () => {
       { attemptNumber: 1, kind: "completed", target: "Página reemplazada", selectable: false },
       { attemptNumber: 2, kind: "failed", target: "Página reemplazada", selectable: false },
     ]);
+  });
+});
+
+describe("local queue timestamps", () => {
+  const now = new Date(2026, 10, 27, 18);
+
+  it.each([
+    [new Date(2026, 10, 27, 4, 5), "04:05"],
+    [new Date(2026, 10, 26, 12, 14), "26/11 12:14"],
+    [new Date(2025, 2, 6, 12, 14), "06/03/2025 12:14"],
+  ] as const)("formats the execution date %s by its local calendar day and year", (date, label) => {
+    expect(formatQueueTimestamp(date.toISOString(), now)).toBe(label);
+  });
+
+  it.each([undefined, "", "invalid"])("omits a missing or invalid timestamp (%s)", (timestamp) => {
+    expect(formatQueueTimestamp(timestamp, now)).toBeUndefined();
   });
 });
 

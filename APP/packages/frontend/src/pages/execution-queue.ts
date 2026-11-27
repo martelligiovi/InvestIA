@@ -1,5 +1,5 @@
 import { findingSeedNodeId, gravatarFindingTargetsEmail, type EvidenceAiNormalization, type EvidenceNormalizationJob,
-  type EvidenceRecord, type GitHubCatalogAction, type Investigation } from "@investia/core";
+  type EvidenceRecord, type GitHubCatalogAction, type Investigation, type ScopedCatalogId } from "@investia/core";
 import { explainNormalizationError } from "./useWorkspaceController";
 import { actionTitle } from "./workspace-model";
 import { actionDisplayState, workspaceStatusLabel } from "./workspace-status";
@@ -33,6 +33,7 @@ interface QueueItem {
   readonly target: string;
   readonly kind: QueueItemKind;
   readonly label: string;
+  readonly executedAt?: string;
   readonly failureExplanation?: string;
 }
 
@@ -45,10 +46,22 @@ interface ExecutionQueue {
 
 type QueueGroups = Record<QueueItemKind, QueueItem[]>;
 type QueueItemDescription = Pick<QueueItem, "title" | "target">;
+type QueueAttempt = Omit<QueueItem, "kind" | "label" | "failureExplanation">;
+type HistoricalActionTool = { readonly pattern: RegExp; readonly title: string; readonly catalogId: ScopedCatalogId };
 
 const TERMINAL_AUDIT_KINDS = new Set<string>(["action_succeeded", "action_rerun_succeeded", "action_failed"]);
 const RERUN_UNCONFIRMED = "The replacement returned no confirmed results.";
 const RERUN_CONFLICT = "Prior results changed during execution; the replacement was not applied.";
+
+// The provenance reason can also name an upstream tool (e.g. Decodo for a FaceCheck result).
+const HISTORICAL_ACTION_TOOLS: readonly HistoricalActionTool[] = [
+  { pattern: /decodo/iu, title: "Decodo", catalogId: "decodo.url.v1" },
+  { pattern: /gravatar/iu, title: "Perfil de Gravatar", catalogId: "gravatar.email.v1" },
+  { pattern: /facecheck/iu, title: "Búsqueda facial · FaceCheck", catalogId: "facecheck.photo.v1" },
+  { pattern: /maigret/iu, title: "Búsqueda de usuario · Maigret", catalogId: "maigret.username.v1" },
+  { pattern: /ghunt/iu, title: "Perfil de Google · GHunt", catalogId: "ghunt.email.v1" },
+  { pattern: /user[ -]scanner/iu, title: "Escaneo de correo · user-scanner", catalogId: "user-scanner.email.v1" },
+];
 
 const FAILURE_EXPLANATIONS = new Map<string, string>([
   ["A valid public HTTP URL seed is required", "Decodo necesita una URL pública y válida para consultar la página."],
@@ -179,61 +192,155 @@ function failedLabel(attemptNumber: number): string {
   return attemptNumber === 1 ? "Falló" : "Reintento fallido";
 }
 
+const ISO_DATE_PREFIX = /^(\d{4})-(\d{2})-(\d{2})(?:[T ]|$)/u;
+
+function parseValidTimestamp(iso: string | undefined): Date | undefined {
+  if (!iso) return undefined;
+  const match = ISO_DATE_PREFIX.exec(iso.trim());
+  if (match !== null) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const calendar = new Date(Date.UTC(year, month - 1, day));
+    if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) {
+      return undefined;
+    }
+  }
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+export function formatQueueTimestamp(iso: string | undefined, now = new Date()): string | undefined {
+  const date = parseValidTimestamp(iso);
+  if (date === undefined) return undefined;
+
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const day = date.getDate();
+  const sameYear = year === now.getFullYear();
+  if (sameYear && month === now.getMonth() && day === now.getDate()) return time;
+
+  const dayAndMonth = `${pad(day)}/${pad(month + 1)}`;
+  return sameYear ? `${dayAndMonth} ${time}` : `${dayAndMonth}/${String(year).padStart(4, "0")} ${time}`;
+}
+
 function queuedLabel(position: number): string {
   return position === 1 ? "Siguiente" : `En cola · #${position}`;
 }
 
-function terminalEventsByAction(audit: readonly QueueAuditEvent[]): ReadonlyMap<string, readonly QueueAuditEvent[]> {
-  const eventsByAction = new Map<string, QueueAuditEvent[]>();
-  for (const event of audit) {
-    if (event.actionId === undefined || !TERMINAL_AUDIT_KINDS.has(event.kind)) continue;
+type IndexedAuditEvent = { readonly event: QueueAuditEvent; readonly auditIndex: number };
+
+function terminalEventsByAction(audit: readonly QueueAuditEvent[]): ReadonlyMap<string, readonly IndexedAuditEvent[]> {
+  const eventsByAction = new Map<string, IndexedAuditEvent[]>();
+  audit.forEach((event, auditIndex) => {
+    if (event.actionId === undefined || !TERMINAL_AUDIT_KINDS.has(event.kind)) return;
+    const entry = { event, auditIndex };
     const events = eventsByAction.get(event.actionId);
-    if (events === undefined) eventsByAction.set(event.actionId, [event]);
-    else events.push(event);
-  }
+    if (events === undefined) eventsByAction.set(event.actionId, [entry]);
+    else events.push(entry);
+  });
   return eventsByAction;
 }
 
-function appendActionAttempts(groups: QueueGroups, investigation: Investigation, options: ExecutionQueueOptions): void {
+function rerunAuditFailure(reason: string): string | undefined {
+  return reason === RERUN_CONFLICT || reason === RERUN_UNCONFIRMED ? reason : undefined;
+}
+
+function appendTerminalActionAttempt(
+  groups: QueueGroups,
+  orderById: Map<string, number>,
+  item: QueueAttempt,
+  orderKey: number,
+  status: "succeeded" | "failed",
+  failure?: string,
+  catalogId?: string,
+): void {
+  orderById.set(item.id, orderKey);
+  if (status === "succeeded") groups.completed.push({ ...item, kind: "completed", label: completedLabel(item.attemptNumber) });
+  else groups.failed.push({ ...item, kind: "failed", label: failedLabel(item.attemptNumber),
+    failureExplanation: explainActionFailure(failure, catalogId) });
+}
+
+function appendPrunedActionAttempts(
+  groups: QueueGroups,
+  orderById: Map<string, number>,
+  audit: readonly QueueAuditEvent[],
+  currentActionIds: ReadonlySet<string>,
+): void {
+  const toolsByAction = new Map<string, HistoricalActionTool>();
+  for (const { actionId, actor, evidenceId, kind, reason } of audit) {
+    if (actionId === undefined || currentActionIds.has(actionId) || toolsByAction.has(actionId)) continue;
+    if (kind !== "action_queued" && kind !== "action_proposed") continue;
+    // Manual Decodo requests are the only operator action_queued events linked to an evidenceId.
+    const tool = kind === "action_queued" && actor === "operator" && evidenceId !== undefined
+      ? HISTORICAL_ACTION_TOOLS[0]
+      : HISTORICAL_ACTION_TOOLS.find(({ pattern }) => pattern.test(reason));
+    if (tool !== undefined) toolsByAction.set(actionId, tool);
+  }
+
+  const attemptsByAction = new Map<string, number>();
+  audit.forEach((event, auditIndex) => {
+    const { actionId } = event;
+    if (actionId === undefined || currentActionIds.has(actionId) || !TERMINAL_AUDIT_KINDS.has(event.kind)) return;
+    const attempt = (attemptsByAction.get(actionId) ?? 0) + 1;
+    attemptsByAction.set(actionId, attempt);
+    const tool = toolsByAction.get(actionId);
+    const item: QueueAttempt = {
+      id: `action-pruned:${actionId}:attempt:${attempt}`, targetKind: "action", targetId: actionId, selectable: false,
+      attemptNumber: attempt, title: formatAttemptTitle(tool?.title ?? "Acción histórica", attempt),
+      target: "Acción reemplazada", executedAt: event.at,
+    };
+    if (event.kind === "action_failed") {
+      appendTerminalActionAttempt(groups, orderById, item, auditIndex, "failed", event.failure ?? rerunAuditFailure(event.reason), tool?.catalogId);
+    } else appendTerminalActionAttempt(groups, orderById, item, auditIndex, "succeeded");
+  });
+}
+
+function appendActionAttempts(
+  groups: QueueGroups,
+  orderById: Map<string, number>,
+  investigation: Investigation,
+  options: ExecutionQueueOptions,
+): void {
   const actions: readonly QueueProvenanceAction[] = investigation.actions;
   const blocked = pendingRerunDescendants(actions, investigation.evidence);
   const eventsByAction = terminalEventsByAction(investigation.audit);
+  let legacyOrder = -1_000_000;
   for (const action of actions) {
     const base = describeAction(action);
     const itemFor = (attemptNumber: number) => ({
       id: `action:${action.id}:attempt:${attemptNumber}`, targetKind: "action" as const, targetId: action.id,
       selectable: true, attemptNumber, title: formatAttemptTitle(base.title, attemptNumber), target: base.target,
     });
-    const addTerminal = (attemptNumber: number, status: "succeeded" | "failed", failure?: string) => {
-      const item = itemFor(attemptNumber);
-      if (status === "succeeded") groups.completed.push({ ...item, kind: "completed", label: completedLabel(attemptNumber) });
-      else groups.failed.push({ ...item, kind: "failed", label: failedLabel(attemptNumber),
-        failureExplanation: explainActionFailure(failure, action.spec.catalogId) });
+    const addTerminal = (attemptNumber: number, orderKey: number, status: "succeeded" | "failed", failure?: string, executedAt?: string) => {
+      appendTerminalActionAttempt(groups, orderById, { ...itemFor(attemptNumber), executedAt }, orderKey, status, failure, action.spec.catalogId);
     };
     const events = eventsByAction.get(action.id) ?? [];
     let nextAttempt = events.length + 1;
     if (events.length > 0) {
       let lastFailedIndex = events.length - 1;
       for (; lastFailedIndex >= 0; lastFailedIndex -= 1) {
-        if (events[lastFailedIndex]?.kind === "action_failed") break;
+        if (events[lastFailedIndex]?.event.kind === "action_failed") break;
       }
-      events.forEach((event, index) => {
+      events.forEach(({ event, auditIndex }, index) => {
         const attempt = index + 1;
         if (event.kind !== "action_failed") {
-          addTerminal(attempt, "succeeded");
+          addTerminal(attempt, auditIndex, "succeeded", undefined, event.at);
           return;
         }
         const failure = event.failure
           ?? (attempt === 1 && (action.status === "failed" || action.rerun?.previousStatus === "failed") ? action.failure : undefined)
           ?? (index === lastFailedIndex && action.lastRerunFailed ? action.lastRerunFailure : undefined)
-          ?? (event.reason === RERUN_CONFLICT || event.reason === RERUN_UNCONFIRMED ? event.reason : undefined);
-        addTerminal(attempt, "failed", failure);
+          ?? rerunAuditFailure(event.reason);
+        addTerminal(attempt, auditIndex, "failed", failure, event.at);
       });
     } else if (action.status === "succeeded" || action.status === "failed") {
-      addTerminal(1, action.status, action.failure);
-      if (action.lastRerunFailed) addTerminal(2, "failed", action.lastRerunFailure);
+      addTerminal(1, legacyOrder++, action.status, action.failure, action.completedAt);
+      if (action.lastRerunFailed) addTerminal(2, legacyOrder++, "failed", action.lastRerunFailure);
     } else if (action.rerun !== undefined) {
-      addTerminal(1, action.rerun.previousStatus, action.failure);
+      addTerminal(1, legacyOrder++, action.rerun.previousStatus, action.failure, action.completedAt);
       nextAttempt = 2;
     }
 
@@ -246,6 +353,7 @@ function appendActionAttempts(groups: QueueGroups, investigation: Investigation,
       else groups.queued.push({ ...item, kind: "queued", label: queuedLabel(groups.queued.length + 1) });
     }
   }
+  appendPrunedActionAttempts(groups, orderById, investigation.audit, new Set(actions.map(({ id }) => id)));
 }
 
 function describeNormalization(evidence: (EvidenceRecord & { readonly metadata?: { readonly pageUrl?: string } }) | undefined): QueueItemDescription {
@@ -278,13 +386,14 @@ function appendNormalizationAttempts(groups: QueueGroups, investigation: Investi
   for (const evidenceId of legacyCompletedIds) {
     if (recordedFirstAttempts.has(evidenceId)) continue;
     const item = itemFor(`norm-legacy:${evidenceId}:attempt:1`, evidenceId, 1);
-    groups.completed.push({ ...item, kind: "completed", label: completedLabel(1) });
+    groups.completed.push({ ...item, kind: "completed", label: completedLabel(1), executedAt: options.normalizations?.[evidenceId]?.generatedAt });
   }
 
   let queuePosition = 0;
   for (const job of jobs) {
     const { evidenceId, attemptNumber } = job;
     const item = itemFor(`norm:${job.id}`, evidenceId, attemptNumber);
+    const executedAt = job.completedAt ?? job.startedAt ?? job.createdAt;
     switch (job.status) {
       case "running":
         groups.running.push({ ...item, kind: "running", label: attemptNumber === 1 ? "En ejecución" : "Reintentando" });
@@ -293,20 +402,38 @@ function appendNormalizationAttempts(groups: QueueGroups, investigation: Investi
         groups.queued.push({ ...item, kind: "queued", label: queuedLabel(++queuePosition) });
         break;
       case "succeeded":
-        groups.completed.push({ ...item, kind: "completed", label: completedLabel(attemptNumber) });
+        groups.completed.push({ ...item, kind: "completed", label: completedLabel(attemptNumber), executedAt });
         break;
       case "failed":
-        groups.failed.push({ ...item, kind: "failed", label: failedLabel(attemptNumber), failureExplanation: explainNormalizationError(job.errorCode) });
+        groups.failed.push({ ...item, kind: "failed", label: failedLabel(attemptNumber), executedAt,
+          failureExplanation: explainNormalizationError(job.errorCode) });
         break;
     }
   }
 }
 
+function newestFirst(items: readonly QueueItem[], orderById: ReadonlyMap<string, number>, normOffset: number): QueueItem[] {
+  return items.map((item, index) => {
+    const parsed = parseValidTimestamp(item.executedAt);
+    const orderKey = orderById.get(item.id) ?? (normOffset + index);
+    return { item, orderKey, timestamp: parsed === undefined ? -Infinity : parsed.getTime() };
+  }).sort((a, b) => a.timestamp === b.timestamp ? b.orderKey - a.orderKey : b.timestamp - a.timestamp)
+    .map(({ item }) => item);
+}
+
 export function buildExecutionQueue(investigation: Investigation, options: ExecutionQueueOptions): ExecutionQueue {
   const groups: QueueGroups = { running: [], queued: [], waiting: [], completed: [], failed: [] };
-  appendActionAttempts(groups, investigation, options);
+  const orderById = new Map<string, number>();
+  appendActionAttempts(groups, orderById, investigation, options);
   appendNormalizationAttempts(groups, investigation, options);
-  const items = [...groups.running, ...groups.queued, ...groups.waiting, ...groups.completed, ...groups.failed];
+  const normOffset = investigation.audit.length + 1_000_000;
+  const items = [
+    ...groups.running,
+    ...groups.queued,
+    ...groups.waiting,
+    ...newestFirst(groups.completed, orderById, normOffset),
+    ...newestFirst(groups.failed, orderById, normOffset),
+  ];
   const counts = { running: groups.running.length, queued: groups.queued.length, waiting: groups.waiting.length,
     completed: groups.completed.length, failed: groups.failed.length };
   const total = items.length;

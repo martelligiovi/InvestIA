@@ -1,9 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Investigation } from "@investia/core";
-import { buildExecutionQueue, type ExecutionQueueOptions } from "../pages/execution-queue";
+import { buildExecutionQueue, formatQueueTimestamp, type ExecutionQueueOptions } from "../pages/execution-queue";
 
 interface ExecutionQueuePopoverProps extends ExecutionQueueOptions {
   readonly investigation: Investigation;
+  readonly now?: Date;
   readonly onSelectAction: (actionId: string) => void;
   readonly onSelectEvidence?: (evidenceId: string) => void;
 }
@@ -32,14 +33,17 @@ function countSummary({ running, queued, waiting, completed, failed }: Queue["co
 function QueueItemRow({
   item,
   errorIdPrefix,
+  now,
   onSelect,
 }: {
   readonly item: QueueItem;
   readonly errorIdPrefix: string;
+  readonly now: Date;
   readonly onSelect?: (item: QueueItem) => void;
 }) {
   const errorId = item.failureExplanation === undefined ? undefined : `${errorIdPrefix}-error-${encodeURIComponent(item.id)}`;
   const selectable = item.selectable && onSelect !== undefined;
+  const timeLabel = item.kind === "completed" || item.kind === "failed" ? formatQueueTimestamp(item.executedAt, now) : undefined;
   const content = <>
     <span className="queue-item-heading">
       <span className="queue-item-title">{item.title}</span>
@@ -47,7 +51,10 @@ function QueueItemRow({
         {item.kind === "completed" && <span className="queue-item-check" aria-hidden="true">✓ </span>}{item.label}
       </span>
     </span>
-    <span className="queue-item-target">{item.target}</span>
+    <span className="queue-item-meta">
+      <span className="queue-item-target">{item.target}</span>
+      {timeLabel !== undefined && <time className="queue-item-time" dateTime={item.executedAt}>{timeLabel}</time>}
+    </span>
   </>;
   return (
     <li className="queue-item" data-kind={item.kind} data-selectable={selectable}>
@@ -61,7 +68,7 @@ function QueueItemRow({
 }
 
 export function ExecutionQueuePopover({ investigation, ghuntConnected, facecheckConfigured, decodoConfigured,
-  normalizationJobs, normalizations, onSelectAction, onSelectEvidence }: ExecutionQueuePopoverProps) {
+  normalizationJobs, normalizations, now = new Date(), onSelectAction, onSelectEvidence }: ExecutionQueuePopoverProps) {
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const triggerRef = useRef<HTMLElement>(null);
   const errorIdPrefix = useId();
@@ -101,7 +108,7 @@ export function ExecutionQueuePopover({ investigation, ghuntConnected, facecheck
   }
 
   function renderItem(item: QueueItem) {
-    return <QueueItemRow key={item.id} item={item} errorIdPrefix={errorIdPrefix}
+    return <QueueItemRow key={item.id} item={item} errorIdPrefix={errorIdPrefix} now={now}
       onSelect={item.targetKind === "action" || onSelectEvidence !== undefined ? selectItem : undefined} />;
   }
 

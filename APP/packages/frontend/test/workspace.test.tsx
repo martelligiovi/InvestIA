@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EvidenceNormalizationJob, EvidenceRecord, GitHubCatalogAction, Investigation, ValidationDecision } from "@investia/core";
 import App from "../src/App";
+import { ExecutionQueuePopover } from "../src/components/ExecutionQueuePopover";
 import { WorkspacePage } from "../src/pages/WorkspacePage";
 
 type CapturedCall = { input: RequestInfo | URL; init?: RequestInit };
@@ -928,6 +929,49 @@ describe("execution queue popover", () => {
     expect(summary.closest("details")).not.toHaveAttribute("open");
     await user.click(summary);
     for (const toggle of toggles) expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("shows replaced action attempts as read-only history, newest first with local times", async () => {
+    const now = new Date(2026, 10, 27, 18);
+    const today = new Date(2026, 10, 27, 14, 50).toISOString();
+    const yesterday = new Date(2026, 10, 26, 12, 14).toISOString();
+    const current = snapshot({
+      actions: [
+        { ...action("succeeded"), completedAt: yesterday },
+        { ...action("claimed"), id: "running" },
+        { ...action("failed"), id: "failed", completedAt: yesterday },
+      ],
+      audit: [
+        { id: "queued", actionId: "old", at: yesterday, actor: "system", kind: "action_queued", reason: "Catalog queued a Maigret search" },
+        { id: "success", actionId: "old", at: today, actor: "system", kind: "action_succeeded", reason: "Completed" },
+        { id: "failure", actionId: "old", at: today, actor: "system", kind: "action_failed", reason: "The replacement returned no confirmed results." },
+      ],
+    });
+    const onSelectAction = vi.fn();
+    const user = userEvent.setup();
+    render(<ExecutionQueuePopover investigation={current} ghuntConnected={true} facecheckConfigured={true} decodoConfigured={true}
+      now={now} onSelectAction={onSelectAction} />);
+    const summary = screen.getByText("Cola", { exact: true }).closest("summary")!;
+    await user.click(summary);
+    const panel = within(screen.getByRole("region", { name: "Cola de ejecución" }));
+    await user.click(panel.getByRole("button", { name: /Completadas 2/u }));
+    await user.click(panel.getByRole("button", { name: /Errores 2/u }));
+    const rows = panel.getAllByRole("listitem");
+    expect(rows.map((row) => row.dataset.kind)).toEqual(["running", "completed", "completed", "failed", "failed"]);
+    expect(rows.map((row) => {
+      const time = row.querySelector("time");
+      return time && [time.textContent, time.getAttribute("datetime")];
+    })).toEqual([null, ["14:50", today], ["26/11 12:14", yesterday], ["14:50", today], ["26/11 12:14", yesterday]]);
+    expect(within(rows[2]!).getByRole("button")).toBeVisible();
+    expect(within(rows[4]!).getByRole("button")).toBeVisible();
+    expect(within(rows[3]!).getByText("La reejecución no devolvió resultados confirmados.")).toBeVisible();
+    for (const [row, title] of [[rows[1]!, "Búsqueda de usuario · Maigret"], [rows[3]!, "Reintento 2 de Búsqueda de usuario · Maigret"]] as const) {
+      expect(within(row).getByText(title)).toBeVisible();
+      expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+      await user.click(within(row).getByText("Acción reemplazada"));
+    }
+    expect(onSelectAction).not.toHaveBeenCalled();
+    expect(summary.closest("details")).toHaveAttribute("open");
   });
 
   it("opens Decodo evidence from a normalization row and keeps pruned history non-interactive", async () => {
