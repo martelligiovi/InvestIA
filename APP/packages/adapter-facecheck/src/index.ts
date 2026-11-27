@@ -204,7 +204,9 @@ export function createFacecheckBox(options: FacecheckBoxOptions): SeedBox<PhotoS
       }
       if (output === undefined) throw new Error("FaceCheck search did not finish in time");
 
-      const candidates = (Array.isArray(output.items) ? output.items : []).flatMap((value) => {
+      if (output.items !== null && !Array.isArray(output.items)) throw new Error("Invalid FaceCheck search response");
+
+      const candidates = (output.items ?? []).flatMap((value) => {
         const item = record(value);
         const url = itemUrl(item?.url);
         const image = thumbnail(item?.base64);

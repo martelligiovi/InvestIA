@@ -169,6 +169,31 @@ test("projects factual records through parameterized Cypher and ignores stale re
   );
 });
 
+test("only a completed replacement requests fenced removal of obsolete graph nodes", async () => {
+  const driver = new FakeNeo4jDriver();
+  const projector = new Neo4jInvestigationProjector(driver, "neo4j");
+  const initial = snapshot(1, false);
+  const at = initial.updatedAt;
+  const audit = [...initial.audit, { id: "request", at, actor: "operator", kind: "action_rerun_requested", reason: "Fixture rerun" } as const];
+  await projector.project({ ...initial, revision: 2, audit });
+  await projector.project({ ...initial, revision: 3, audit: [...audit, { id: "failure", at, actor: "system", kind: "action_failed", reason: "Prior branch kept" }] });
+  assert.ok(!driver.calls.some(({ query }) => /DETACH DELETE/.test(query)));
+
+  const replacement = { ...initial, revision: 4, evidence: [{ ...initial.evidence[0]!, id: "new-result" }], validations: [],
+    audit: [...audit, { id: "success", at, actor: "system", kind: "action_rerun_succeeded", reason: "Replaced prior branch" } as const],
+  };
+  assert.deepEqual(await projector.project(replacement), { revision: 4, status: "applied" });
+  const cleanup = driver.calls.find(({ parameters }) => Array.isArray(parameters.activeEvidenceIds));
+  assert.ok(cleanup, "projection must prune the removed branch after replacement");
+  assert.deepEqual(cleanup.parameters, { investigationId: initial.id, revision: 4,
+    activeActionIds: initial.actions.map(({ id }) => id), activeEvidenceIds: ["new-result"], activeValidationIds: [] });
+  assert.match(cleanup.query, /WHERE i\.revision = \$revision[\s\S]*DETACH DELETE/);
+  assert.doesNotMatch(cleanup.query, /AuditEvent/);
+  const beforeStale = driver.calls.length;
+  assert.deepEqual(await projector.project({ ...replacement, revision: 3 }), { revision: 3, status: "stale" });
+  assert.equal(driver.calls.length, beforeStale + 1);
+});
+
 test("username seeds, Maigret actions and username evidence project as UsernameSeed nodes", async () => {
   const driver = new FakeNeo4jDriver();
   const projector = new Neo4jInvestigationProjector(driver, "neo4j");
