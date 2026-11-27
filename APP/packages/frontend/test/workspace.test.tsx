@@ -765,6 +765,95 @@ describe("informe con IA", () => {
   });
 });
 
+describe("execution queue popover", () => {
+  it("renders settled progress, orders recorded stages, and opens the selected action detail", async () => {
+    const { calls } = installFetch(async () => json(snapshot({
+      authorization: { granted: true, at: createdAt, reason: "Fixture", operator: "local-operator" },
+      actions: [
+        { ...action("failed"), id: "failed", failure: "Decodo target requires login", spec: {
+          catalogId: "decodo.url.v1", provider: "decodo", seed: { kind: "url", value: "https://example.test/profile" },
+        } },
+        { ...action("queued"), id: "queued-z" }, { ...action("succeeded"), id: "done" },
+        { ...action("queued"), id: "queued-a" }, { ...action("claimed"), id: "running" },
+      ],
+    })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    const disclosure = summary.closest("details")!;
+    const ring = summary.querySelector("svg")!;
+    expect(ring).toHaveAttribute("width", "22");
+    expect(ring).toHaveAttribute("height", "22");
+    expect(ring).toHaveAttribute("data-mode", "progress_active");
+    expect(ring.querySelector("circle[stroke-dashoffset='60']")).toBeInTheDocument();
+    expect(summary).toHaveTextContent("40%");
+    expect(disclosure).not.toHaveAttribute("open");
+
+    await user.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    expect(within(panel).getByText("1 en ejecución · 2 en cola · 1 completa · 1 fallida")).toBeInTheDocument();
+    expect(within(panel).getByText("Las etapas siguientes se suman al desbloquearse nuevos hallazgos.")).toBeInTheDocument();
+    const rows = within(panel).getAllByRole("listitem");
+    expect(rows.map((row) => row.getAttribute("data-kind"))).toEqual(["running", "queued", "queued", "completed", "failed"]);
+    expect(within(rows[0]!).getByRole("progressbar")).not.toHaveAttribute("aria-valuenow");
+    expect(within(rows[1]!).getByText("Siguiente")).toBeInTheDocument();
+    const second = within(rows[2]!).getByRole("button", { name: /En cola · #2/u });
+    expect(within(rows[3]!).getByText("Completo")).toBeInTheDocument();
+    expect(within(rows[4]!).getByRole("button", { name: /Falló/u }))
+      .toHaveAccessibleDescription("La página requiere iniciar sesión para ver su contenido.");
+
+    await user.click(second);
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(summary).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Detalle" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "Detalle" }).closest(".workspace-layout")).toHaveAttribute("data-detail-open", "true");
+    expect(within(screen.getByRole("tabpanel", { name: "Detalle" })).getByRole("heading", { name: "Comprobación de registro en GitHub" }))
+      .toBeInTheDocument();
+    const graph = screen.getByRole("group", { name: "Grafo factual de semillas, acciones y observaciones" });
+    expect(within(graph).getByRole("button", { name: /^Acción: queued-a\./u })).toHaveAttribute("aria-pressed", "true");
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => pathOf(call) === "/investigations/case-1" && (call.init?.method ?? "GET") === "GET")).toBe(true);
+  });
+
+  it("dismisses an empty queue with Escape or an outside click", async () => {
+    installFetch(async () => json(snapshot()));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    const disclosure = summary.closest("details")!;
+    expect(summary.querySelector("svg")).toHaveAttribute("data-mode", "empty");
+
+    await user.click(summary);
+    const panel = screen.getByRole("region", { name: "Cola de ejecución" });
+    await user.click(within(panel).getByText("Todavía no hay acciones en cola."));
+    expect(disclosure).toHaveAttribute("open");
+    await user.keyboard("{Escape}");
+    expect(disclosure).not.toHaveAttribute("open");
+
+    await user.click(summary);
+    expect(disclosure).toHaveAttribute("open");
+    await user.click(screen.getByRole("heading", { name: "Caso de prueba" }));
+    expect(disclosure).not.toHaveAttribute("open");
+  });
+
+  it("dismisses the queue with Escape after keyboard focus moves to the detail", async () => {
+    installFetch(async () => json(snapshot({ actions: [action("succeeded")] })));
+    const user = userEvent.setup();
+    render(<WorkspacePage id="case-1" />);
+    const summary = (await screen.findByText("Cola", { exact: true })).closest("summary")!;
+    await user.click(summary);
+    await user.click(within(screen.getByRole("region", { name: "Cola de ejecución" }))
+      .getByRole("button", { name: /Completo/u }));
+    await user.click(summary);
+    const detail = screen.getByRole("tabpanel", { name: "Detalle" });
+    detail.focus();
+    expect(detail).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+  });
+});
+
 describe("desplegables del encabezado", () => {
   it("se cierran al interactuar fuera de ellos o con Escape, sin cerrarse al usarlos", async () => {
     installFetch(async () => json(snapshot()));

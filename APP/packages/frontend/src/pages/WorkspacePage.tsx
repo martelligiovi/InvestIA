@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { authorizationCovers, usernameProposals, type ValidationStatus } from "@investia/core";
 import { InvestigationApiClient } from "../api/client";
 import { AsciiArt } from "../components/AsciiArt";
+import { ExecutionQueuePopover } from "../components/ExecutionQueuePopover";
 import { InvestigationGraph } from "../components/InvestigationGraph";
 import { UsernameSeedsPanel } from "../components/UsernameSeedsPanel";
 import { WorkspaceDetails } from "../components/WorkspaceDetails";
@@ -64,6 +65,11 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const reportRef = useRef<HTMLDetailsElement>(null);
   const reportErrorRef = useRef<HTMLParagraphElement>(null);
   const revealedReport = useRef<string | null>(null);
+  const drawerScrollTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (drawerScrollTimerRef.current !== null) window.clearTimeout(drawerScrollTimerRef.current);
+  }, []);
 
   // Reports and their errors render below the full-height workspace; bring each new one into view.
   useEffect(() => {
@@ -82,23 +88,29 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
 
   useEffect(() => {
     // Header disclosures behave as popovers: interacting elsewhere or pressing Escape dismisses them.
-    function dismissDisclosures(keep: EventTarget | null) {
+    function dismissDisclosures(keep: EventTarget | null): boolean {
+      let dismissed = false;
       for (const disclosure of document.querySelectorAll<HTMLDetailsElement>(".workspace-disclosure[open]")) {
         if (keep instanceof Node && disclosure.contains(keep)) continue;
         const hadFocus = disclosure.contains(document.activeElement);
         disclosure.open = false;
+        dismissed = true;
         if (hadFocus) disclosure.querySelector("summary")?.focus();
       }
+      return dismissed;
     }
-    const onPointerDown = (event: PointerEvent) => dismissDisclosures(event.target);
+    const onPointerDown = (event: PointerEvent) => { dismissDisclosures(event.target); };
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") dismissDisclosures(null);
+      if (event.key === "Escape" && dismissDisclosures(null)) {
+        // Close the open header popover first before nested panels (like the detail drawer) handle Escape.
+        event.stopPropagation();
+      }
     };
     document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("keydown", onKeyDown, true);
     };
   }, []);
 
@@ -157,7 +169,9 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     setDetailOpen(true);
     // The opening drawer narrows the canvas; once it settles, bring the chosen node back into view.
     const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    window.setTimeout(() => {
+    if (drawerScrollTimerRef.current !== null) window.clearTimeout(drawerScrollTimerRef.current);
+    drawerScrollTimerRef.current = window.setTimeout(() => {
+      drawerScrollTimerRef.current = null;
       document.querySelector<SVGGElement>(`.graph-node[data-node-id="${CSS.escape(node.groupId ?? node.relatedParentId ?? node.id)}"]`)
         ?.scrollIntoView?.({ block: "nearest", inline: "nearest", behavior: reducedMotion ? "auto" : "smooth" });
     }, reducedMotion ? 0 : DRAWER_SETTLE_MS);
@@ -264,6 +278,18 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
           <button className="workspace-button workspace-button--ai-report" type="button" disabled={controller.busy || controller.stale} onClick={() => void controller.loadAiReport()}>
             {controller.reportLoadingKind === "ai" ? "Generando informe con IA…" : "Generar informe con IA"}
           </button>
+          <ExecutionQueuePopover
+            investigation={investigation}
+            ghuntConnected={ghuntConnected}
+            facecheckConfigured={facecheckConfigured}
+            decodoConfigured={decodoConfigured}
+            onSelectAction={(actionId) => {
+              const node = findWorkspaceNode(graph, `action:${actionId}`);
+              if (node === undefined) return;
+              selectNode(node);
+              setMobilePanel("detail");
+            }}
+          />
         </div>
       </header>
       {controller.reportLoadingKind === "ai" && (
