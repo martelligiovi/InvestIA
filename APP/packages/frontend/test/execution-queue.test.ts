@@ -106,7 +106,7 @@ describe("execution queue", () => {
       { attemptNumber: 2, kind: "failed", label: "Reintento fallido", title: "Reintento 2 de Decodo · example.test",
         failureExplanation: "Los resultados anteriores cambiaron durante la reejecución y no se reemplazaron." },
     ] });
-    const claimed = action(entry.id, "claimed", { spec: decodo, failure, rerun: { previousStatus: "failed" } });
+    const claimed = action(entry.id, "claimed", { spec: decodo, failure, rerun: { previousStatus: "failed", fingerprint: "0".repeat(64) } });
     expect(buildExecutionQueue(snapshot([claimed]), ready).items).toMatchObject([
       { attemptNumber: 2, kind: "running", title: "Reintento 2 de Decodo · example.test" },
       { attemptNumber: 1, kind: "failed", failureExplanation: "La página requiere iniciar sesión para ver su contenido." },
@@ -241,7 +241,7 @@ describe("execution queue", () => {
     const entry = action("scrape", "claimed", {
       spec: decodo,
       failure: "Decodo target requires login",
-      rerun: { previousStatus: "failed" },
+      rerun: { previousStatus: "failed", fingerprint: "0".repeat(64) },
     });
     const queue = buildExecutionQueue(snapshot([entry], {
       audit: [{

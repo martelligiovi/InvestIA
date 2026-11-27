@@ -888,8 +888,8 @@ describe("execution queue popover", () => {
   });
 
   it("keeps retry history collapsed with distinct descriptions for attempts of the same action", async () => {
-    const completedRetry = { ...action("claimed"), id: "completed-retry", rerun: { previousStatus: "succeeded" } } as const;
-    const failedRetry = { ...action("claimed"), id: "failed-retry", rerun: { previousStatus: "failed" } } as const;
+    const completedRetry = { ...action("claimed"), id: "completed-retry", rerun: { previousStatus: "succeeded", fingerprint: "0".repeat(64) } } as const;
+    const failedRetry = { ...action("claimed"), id: "failed-retry", rerun: { previousStatus: "failed", fingerprint: "0".repeat(64) } } as const;
     const failed = { ...action("failed"), id: "failed-twice", lastRerunFailed: true,
       lastRerunFailure: "The replacement returned no confirmed results." } as const;
     const audit = [

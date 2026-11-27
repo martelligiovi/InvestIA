@@ -5,7 +5,7 @@ import { actionTitle } from "./workspace-model";
 import { actionDisplayState, workspaceStatusLabel } from "./workspace-status";
 
 export type QueueAction = GitHubCatalogAction & {
-  readonly rerun?: { readonly previousStatus: "succeeded" | "failed" };
+  readonly rerun?: { readonly previousStatus: "succeeded" | "failed"; readonly fingerprint?: string };
   readonly lastRerunFailed?: true;
   readonly lastRerunFailure?: string;
 };
