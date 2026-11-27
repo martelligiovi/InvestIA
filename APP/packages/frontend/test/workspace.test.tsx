@@ -658,7 +658,7 @@ describe("detalle del nodo como panel desplegable", () => {
 
 describe("informe con IA", () => {
   it("genera el informe con IA por POST y lo presenta rotulado como IA", async () => {
-    const markdown = "# Informe hipotético\n\n## Datos utilizados";
+    const markdown = "# Informe de perfil\n\n## Perfil general";
     const { calls } = installFetch(async (call) => {
       if (pathOf(call) === "/investigations/case-1") return json(snapshot());
       if (pathOf(call) === "/investigations/case-1/report/ai") return reportResponse(markdown);
@@ -674,7 +674,9 @@ describe("informe con IA", () => {
     const preview = await screen.findByLabelText("Vista previa del informe con IA");
     expect(preview.tagName).toBe("PRE");
     expect(preview.textContent).toBe(markdown);
-    expect(screen.getByRole("heading", { name: "Informe con IA (hipotético)" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Informe con IA" })).toBeInTheDocument();
+    expect(screen.getByText("SÍNTESIS ASISTIDA POR IA")).toBeInTheDocument();
+    expect(screen.queryByText(/hipotétic/i)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /descargar markdown/i })).toHaveAttribute("download", "informe-ia-case-1.md");
     const aiCalls = calls.filter((call) => pathOf(call) === "/investigations/case-1/report/ai");
     expect(aiCalls).toHaveLength(1);

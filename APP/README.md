@@ -90,7 +90,7 @@ The build is optional for API-only startup; a missing build prints a notice and 
 
 ## NVIDIA Build AI reports
 
-Open **Ajustes de IA** (`#/ajustes`) and paste a free API key from [build.nvidia.com/models](https://build.nvidia.com/models); saving only the key is enough. The key is stored in PostgreSQL, never returned to the browser, and shown only as a masked hint. In the workspace, **Generar informe con IA** sends the case data to NVIDIA Build (reusing hash-verified `decodo:url` AI normalizations when present, marked AI-derived, to conserve prompt budget) and returns a hypothetical Markdown narrative with a **Datos utilizados** appendix; **Obtener informe** keeps producing the purely factual report. See the [frontend guide](packages/frontend/README.md#nvidia-build-ai-reports) for defaults, on-demand **Normalizar con IA**, and model selection.
+Open **Ajustes de IA** (`#/ajustes`) and paste a free API key from [build.nvidia.com/models](https://build.nvidia.com/models); saving only the key is enough. The key is stored in PostgreSQL, never returned to the browser, and shown only as a masked hint. In the workspace, **Generar informe con IA** sends the case data to NVIDIA Build (reusing hash-verified `decodo:url` AI normalizations when present, marked AI-derived, to conserve prompt budget) and returns a concise Spanish Markdown profile report without citing sources/tools/IDs or appending raw factual tables; **Obtener informe** keeps producing the purely factual report. See the [frontend guide](packages/frontend/README.md#nvidia-build-ai-reports) for defaults, on-demand **Normalizar con IA**, and model selection.
 
 ## Workspace checks and test status
 
