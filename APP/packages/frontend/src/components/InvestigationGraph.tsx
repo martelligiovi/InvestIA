@@ -1,9 +1,22 @@
-import { useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { GRAPH_PAGE_SIZE, workspaceGraphPage, workspacePageEvidence, workspaceNodeSelected, type WorkspaceGraph, type WorkspaceNode } from "../pages/workspace-model";
 import { workspaceStatusLabel } from "../pages/workspace-status";
 
 export const GRAPH_MIN_ZOOM = 0.25;
 export const GRAPH_MAX_ZOOM = 2.4;
+export const GRAPH_BUTTON_ZOOM_OUT = 0.8;
+export const GRAPH_BUTTON_ZOOM_IN = 1.25;
+export const GRAPH_WHEEL_ZOOM_SENSITIVITY = 0.0008;
+export const GRAPH_WHEEL_MAX_DELTA = 200;
+
+export function wheelZoomFactor(deltaY: number, deltaMode = 0, pageHeight = 400): number {
+  if (!Number.isFinite(deltaY) || deltaY === 0) return 1;
+  let pixels = deltaY;
+  if (deltaMode === 1) pixels *= 32;
+  if (deltaMode === 2) pixels *= Number.isFinite(pageHeight) && pageHeight > 0 ? pageHeight : 400;
+  const clamped = Math.min(GRAPH_WHEEL_MAX_DELTA, Math.max(-GRAPH_WHEEL_MAX_DELTA, pixels));
+  return Math.exp(-clamped * GRAPH_WHEEL_ZOOM_SENSITIVITY);
+}
 
 export interface InvestigationGraphProps {
   readonly graph: WorkspaceGraph;
@@ -71,10 +84,15 @@ export function clientDeltaToSvgUnits(
   };
 }
 
-function fallbackClientDeltaToSvgUnits(deltaX: number, deltaY: number, svg: SVGSVGElement, graph: WorkspaceGraph): SvgPoint {
-  const rect = svg.getBoundingClientRect();
-  const scaleX = rect.width / graph.width;
-  const scaleY = rect.height / graph.height;
+function fallbackClientDeltaToSvgUnits(
+  deltaX: number,
+  deltaY: number,
+  rect: Pick<DOMRectReadOnly, "width" | "height">,
+  viewWidth: number,
+  viewHeight: number,
+): SvgPoint {
+  const scaleX = rect.width / viewWidth;
+  const scaleY = rect.height / viewHeight;
   return {
     x: scaleX > 0 ? deltaX / scaleX : deltaX,
     y: scaleY > 0 ? deltaY / scaleY : deltaY,
@@ -88,8 +106,8 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
   const currentPage = Math.min(page, pageCount - 1);
   const graph = useMemo(() => workspaceGraphPage(fullGraph, currentPage), [fullGraph, currentPage]);
   const viewHeight = Math.max(graph.height, 700);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [view, setView] = useState<{ zoom: number; pan: SvgPoint }>({ zoom: 1, pan: { x: 0, y: 0 } });
+  const { zoom, pan } = view;
   const viewportRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const drag = useRef<{ pointerId: number; x: number; y: number; startX: number; startY: number } | null>(null);
@@ -104,25 +122,66 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
     return { x: graph.width / 2, y: viewHeight / 2 };
   }
 
-  function changeZoom(factor: number) {
-    const next = Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, zoom * factor));
-    const center = viewportCenter();
-    setPan({ x: center.x - (center.x - pan.x) * next / zoom, y: center.y - (center.y - pan.y) * next / zoom });
-    setZoom(next);
+  function clientPointToSvg(clientX: number, clientY: number): SvgPoint {
+    const svg = svgRef.current;
+    if (svg) {
+      const matrix = svg.getScreenCTM?.();
+      if (matrix) return clientDeltaToSvgUnits(clientX - matrix.e, clientY - matrix.f, matrix);
+      const rect = svg.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        return fallbackClientDeltaToSvgUnits(clientX - rect.left, clientY - rect.top, rect, graph.width, viewHeight);
+      }
+    }
+    return viewportCenter();
   }
+
+  function applyZoom(factor: number, anchor: SvgPoint) {
+    setView((current) => {
+      const nextZoom = Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, current.zoom * factor));
+      if (nextZoom === current.zoom) return current;
+      return {
+        zoom: nextZoom,
+        pan: {
+          x: anchor.x - (anchor.x - current.pan.x) * nextZoom / current.zoom,
+          y: anchor.y - (anchor.y - current.pan.y) * nextZoom / current.zoom,
+        },
+      };
+    });
+  }
+
+  function changeZoom(factor: number) {
+    applyZoom(factor, viewportCenter());
+  }
+
+  useEffect(() => {
+    if (empty) drag.current = null;
+  }, [empty]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (empty || !viewport) return;
+    function onWheel(event: WheelEvent) {
+      if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+      event.preventDefault();
+      if (drag.current !== null) return;
+      const factor = wheelZoomFactor(event.deltaY, event.deltaMode, viewport!.clientHeight);
+      const anchor = clientPointToSvg(event.clientX, event.clientY);
+      applyZoom(factor, anchor);
+    }
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", onWheel);
+  }, [empty, graph.width, viewHeight]);
 
   function selectFromList(node: WorkspaceNode) {
     const center = viewportCenter();
-    setZoom(1);
-    setPan({ x: center.x - node.x - node.width / 2, y: center.y - node.y - node.height / 2 });
+    setView({ zoom: 1, pan: { x: center.x - node.x - node.width / 2, y: center.y - node.y - node.height / 2 } });
     onSelect(node);
   }
 
   function changePage(next: number) {
     const bounded = Math.max(0, Math.min(pageCount - 1, next));
     setPage(bounded);
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
+    setView({ zoom: 1, pan: { x: 0, y: 0 } });
     const projected = workspaceGraphPage(fullGraph, bounded);
     const pageable = new Set(workspacePageEvidence(fullGraph).map((node) => node.id));
     const first = projected.nodes.find((node) => pageable.has(node.id));
@@ -152,9 +211,9 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
     const deltaY = event.clientY - active.y;
     const matrix = svg.getScreenCTM?.() ?? null;
     const delta = matrix === null
-      ? fallbackClientDeltaToSvgUnits(deltaX, deltaY, svg, { ...graph, height: viewHeight })
+      ? fallbackClientDeltaToSvgUnits(deltaX, deltaY, svg.getBoundingClientRect(), graph.width, viewHeight)
       : clientDeltaToSvgUnits(deltaX, deltaY, matrix);
-    setPan({ x: active.startX + delta.x, y: active.startY + delta.y });
+    setView((current) => ({ ...current, pan: { x: active.startX + delta.x, y: active.startY + delta.y } }));
   }
 
   function finishPan(event: PointerEvent<HTMLDivElement>) {
@@ -186,10 +245,12 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
     const rawScale = Math.min(availW / (maxX - minX), availH / (maxY - minY), 1);
     const nextZoom = Math.min(GRAPH_MAX_ZOOM, Math.max(GRAPH_MIN_ZOOM, rawScale));
 
-    setZoom(nextZoom);
-    setPan({
-      x: vw / 2 - ((minX + maxX) / 2) * nextZoom,
-      y: vh / 2 - ((minY + maxY) / 2) * nextZoom,
+    setView({
+      zoom: nextZoom,
+      pan: {
+        x: vw / 2 - ((minX + maxX) / 2) * nextZoom,
+        y: vh / 2 - ((minY + maxY) / 2) * nextZoom,
+      },
     });
   }
 
@@ -200,12 +261,12 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
           <h2 id="graph-heading" className="sr-only">Grafo factual</h2>
           <details className="graph-description">
             <summary>Sobre el grafo</summary>
-            <p id="graph-description" className="graph-caption">Las líneas expresan referencias registradas, no relaciones personales. Las semillas sin acciones de una misma rama se agrupan; seleccioná la pila para consultar cada resultado. Seleccioná un nodo con Enter o espacio; arrastrá el fondo o usá las barras de desplazamiento. Usá Centrar para ajustar el grafo completo a la vista, − para alejarlo y + para acercarlo.</p>
+            <p id="graph-description" className="graph-caption">Las líneas expresan referencias registradas, no relaciones personales. Las semillas sin acciones de una misma rama se agrupan; seleccioná la pila para consultar cada resultado. Seleccioná un nodo con Enter o espacio; arrastrá el fondo o usá las barras de desplazamiento. Usá Centrar para ajustar el grafo completo a la vista, la rueda del mouse para hacer zoom progresivo, − para alejarlo y + para acercarlo.</p>
           </details>
         </div>
         <div className="graph-controls" aria-label="Controles del grafo">
-          <button type="button" aria-label="Alejar grafo" disabled={zoom <= GRAPH_MIN_ZOOM} onClick={() => changeZoom(0.8)}>−</button>
-          <button type="button" aria-label="Acercar grafo" disabled={zoom >= GRAPH_MAX_ZOOM} onClick={() => changeZoom(1.25)}>+</button>
+          <button type="button" aria-label="Alejar grafo" disabled={zoom <= GRAPH_MIN_ZOOM} onClick={() => changeZoom(GRAPH_BUTTON_ZOOM_OUT)}>−</button>
+          <button type="button" aria-label="Acercar grafo" disabled={zoom >= GRAPH_MAX_ZOOM} onClick={() => changeZoom(GRAPH_BUTTON_ZOOM_IN)}>+</button>
           <button type="button" aria-label="Centrar grafo completo" onClick={fitGraphToViewport}>Centrar</button>
         </div>
       </div>
@@ -232,7 +293,10 @@ export function InvestigationGraph({ graph: fullGraph, selectedId, onSelect }: I
             onPointerMove={movePan}
             onPointerUp={finishPan}
             onPointerCancel={finishPan}
-            aria-label="Área del grafo; arrastrá el fondo para desplazarlo"
+            onLostPointerCapture={(event) => {
+              if (drag.current?.pointerId === event.pointerId) drag.current = null;
+            }}
+            aria-label="Área del grafo; arrastrá el fondo para desplazarlo o usá la rueda del mouse para hacer zoom"
           >
             <svg
               ref={svgRef}

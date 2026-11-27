@@ -51,6 +51,24 @@ for (const viewport of [{ width: 1672, height: 941 }, { width: 390, height: 844 
       expect(centered.y + centered.height).toBeLessThanOrEqual(bounds.y + bounds.height + 2);
     }
     await canvas.screenshot({ path: `test-results/redesign/large-graph-fitted-${viewport.width}.png`, animations: "disabled" });
+    if (viewport.width >= 1000) {
+      const readScale = () => canvas.locator("svg > g").evaluate((group) =>
+        (group as SVGGElement).transform.baseVal.getItem(1).matrix.a,
+      );
+      const readScroll = () => canvas.evaluate((element) => [element.scrollLeft, element.scrollTop, window.scrollY]);
+      await canvas.hover();
+      const scaleBefore = await readScale();
+      const scrollBefore = await readScroll();
+
+      await page.mouse.wheel(0, -100);
+      await expect.poll(readScale).toBeGreaterThan(scaleBefore);
+      expect(await readScale()).toBeLessThan(scaleBefore * 1.25);
+      expect(await readScroll()).toEqual(scrollBefore);
+
+      await page.mouse.wheel(0, 100);
+      await expect.poll(readScale).toBeCloseTo(scaleBefore, 6);
+      expect(await readScroll()).toEqual(scrollBefore);
+    }
     const fittedWidth = (await first.boundingBox())!.width;
     await page.getByRole("button", { name: "Acercar grafo" }).click();
     expect((await first.boundingBox())!.width).toBeGreaterThan(fittedWidth);

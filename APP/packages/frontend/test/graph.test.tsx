@@ -1,8 +1,11 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Investigation } from "@investia/core";
 import { buildWorkspaceGraph, workspaceGraphPage, type WorkspaceGraph, type WorkspaceNode } from "../src/pages/workspace-model";
-import { clientDeltaToSvgUnits, InvestigationGraph } from "../src/components/InvestigationGraph";
+import {
+  clientDeltaToSvgUnits, GRAPH_BUTTON_ZOOM_IN, GRAPH_BUTTON_ZOOM_OUT, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM,
+  InvestigationGraph, wheelZoomFactor,
+} from "../src/components/InvestigationGraph";
 import { workspaceHeadline } from "../src/pages/workspace-status";
 
 function node(id: string, x: number, y: number): WorkspaceNode {
@@ -204,14 +207,227 @@ it("keeps zoom centered using the SVG screen origin and resets to readable scale
   expect(select).toHaveBeenCalledWith(graph.nodes[0]);
 });
 
-describe("desplazamiento del lienzo", () => {
-  // jsdom has no PointerEvent: dispatch mouse events carrying the pointer fields the handlers read.
-  function pointer(target: Element, type: string, clientX: number, clientY: number) {
-    const event = new MouseEvent(type, { bubbles: true, clientX, clientY });
-    Object.defineProperty(event, "pointerId", { value: 1 });
-    fireEvent(target, event);
-  }
+// jsdom has no PointerEvent: dispatch mouse events carrying the pointer fields the handlers read.
+function pointer(target: Element, type: string, clientX: number, clientY: number, pointerId = 1) {
+  const event = new MouseEvent(type, { bubbles: true, clientX, clientY });
+  Object.defineProperty(event, "pointerId", { value: pointerId });
+  fireEvent(target, event);
+}
 
+function wheel(viewport: Element, init: WheelEventInit) {
+  const event = new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: 70, clientY: 105, ...init });
+  fireEvent(viewport, event);
+  return event;
+}
+
+function graphCanvas() {
+  const svg = screen.getByRole("group", { name: /grafo factual/i });
+  return { svg, viewport: svg.closest<HTMLDivElement>(".graph-viewport")! };
+}
+
+function expectWheelAnchor(svg: Element, x: number, y: number) {
+  const { x: panX, y: panY, zoom } = readGraphTransform(svg);
+  expect((x - panX) / zoom).toBeCloseTo(x, 8);
+  expect((y - panY) / zoom).toBeCloseTo(y, 8);
+}
+
+describe("wheelZoomFactor", () => {
+  it.each([0, NaN, Infinity, -Infinity])("returns 1 for delta %s", (deltaY) => {
+    expect(wheelZoomFactor(deltaY)).toBe(1);
+  });
+
+  it("changes zoom progressively with reciprocal steps gentler than the buttons", () => {
+    const zoomIn = wheelZoomFactor(-100);
+    const zoomOut = wheelZoomFactor(100);
+    expect(zoomIn).toBeCloseTo(Math.exp(0.08), 12);
+    expect(zoomOut).toBeCloseTo(Math.exp(-0.08), 12);
+    expect(zoomIn * zoomOut).toBeCloseTo(1, 12);
+    expect(wheelZoomFactor(-5)).toBeGreaterThan(1);
+    expect(wheelZoomFactor(-5)).toBeLessThan(zoomIn);
+    expect(wheelZoomFactor(5)).toBeGreaterThan(zoomOut);
+    expect(wheelZoomFactor(5)).toBeLessThan(1);
+  });
+
+  it("normalizes line and page deltas and clamps all modes below button speed", () => {
+    expect(wheelZoomFactor(-2, 1)).toBe(wheelZoomFactor(-64));
+    expect(wheelZoomFactor(0.25, 2, 128)).toBe(wheelZoomFactor(32));
+    expect(wheelZoomFactor(0.25, 2)).toBe(wheelZoomFactor(100));
+    for (const invalid of [0, -20, NaN, Infinity]) {
+      expect(wheelZoomFactor(0.25, 2, invalid)).toBe(wheelZoomFactor(100));
+    }
+    for (const mode of [0, 1, 2]) {
+      const zoomIn = wheelZoomFactor(-500, mode);
+      const zoomOut = wheelZoomFactor(500, mode);
+      expect(zoomIn).toBeCloseTo(Math.exp(0.16), 12);
+      expect(zoomOut).toBeCloseTo(Math.exp(-0.16), 12);
+      expect(zoomIn).toBeLessThan(GRAPH_BUTTON_ZOOM_IN);
+      expect(zoomOut).toBeGreaterThan(GRAPH_BUTTON_ZOOM_OUT);
+    }
+  });
+});
+
+describe("graph wheel zoom", () => {
+  it("zooms in under the pointer using the SVG screen matrix and cancels vertical scrolling", () => {
+    const select = vi.fn();
+    render(<InvestigationGraph graph={graph} selectedId="two" onSelect={select} />);
+    const { svg, viewport } = graphCanvas();
+    Object.defineProperty(svg, "getScreenCTM", { value: () => ({ a: 0.5, b: 0, c: 0, d: 0.5, e: 20, f: 30 }) });
+    expect(viewport).toHaveAttribute("aria-label", "Área del grafo; arrastrá el fondo para desplazarlo o usá la rueda del mouse para hacer zoom");
+    expect(screen.getByText(/Usá Centrar para ajustar el grafo completo a la vista, la rueda del mouse para hacer zoom progresivo, − para alejarlo y \+ para acercarlo\./u)).toBeInTheDocument();
+
+    expect(wheel(viewport, { deltaY: -100, ctrlKey: true }).defaultPrevented).toBe(true);
+
+    const { zoom } = readGraphTransform(svg);
+    expect(zoom).toBeGreaterThan(1);
+    expect(zoom).toBeLessThan(GRAPH_BUTTON_ZOOM_IN);
+    expectWheelAnchor(svg, 100, 150);
+    expect(within(svg).getByRole("button", { name: "Semilla: two" })).toHaveAttribute("aria-pressed", "true");
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("zooms out progressively, keeps batched ticks and stops at both bounds without pan drift", () => {
+    render(<InvestigationGraph graph={graph} selectedId={null} onSelect={vi.fn()} />);
+    const { svg, viewport } = graphCanvas();
+    const zoomOut = screen.getByRole("button", { name: "Alejar grafo" });
+    const zoomIn = screen.getByRole("button", { name: "Acercar grafo" });
+    const tick = (deltaY: number, clientX = 70) => {
+      expect(wheel(viewport, { deltaY, clientX }).defaultPrevented).toBe(true);
+    };
+
+    tick(100);
+    const first = readGraphTransform(svg).zoom;
+    expect(first).toBeGreaterThan(GRAPH_BUTTON_ZOOM_OUT);
+    expect(first).toBeLessThan(1);
+    act(() => { for (let i = 0; i < 3; i++) tick(100); });
+    expect(readGraphTransform(svg).zoom).toBeCloseTo(Math.exp(-0.32), 8);
+    expectWheelAnchor(svg, 200, 400);
+
+    act(() => { for (let i = 0; i < 20; i++) tick(100); });
+    const minView = readGraphTransform(svg);
+    expect(minView.zoom).toBe(GRAPH_MIN_ZOOM);
+    expect(zoomOut).toBeDisabled();
+    expect(zoomIn).toBeEnabled();
+    tick(100, 180);
+    expect(readGraphTransform(svg)).toEqual(minView);
+
+    act(() => { for (let i = 0; i < 30; i++) tick(-100); });
+    const maxView = readGraphTransform(svg);
+    expect(maxView.zoom).toBe(GRAPH_MAX_ZOOM);
+    expect(zoomIn).toBeDisabled();
+    expect(zoomOut).toBeEnabled();
+    tick(-100, 180);
+    expect(readGraphTransform(svg)).toEqual(maxView);
+  });
+
+  it("leaves horizontal-only and non-finite wheel events untouched", () => {
+    render(<InvestigationGraph graph={graph} selectedId={null} onSelect={vi.fn()} />);
+    const { svg, viewport } = graphCanvas();
+    fireEvent.click(screen.getByRole("button", { name: "Acercar grafo" }));
+    const before = readGraphTransform(svg);
+
+    expect(wheel(viewport, { deltaY: 0, deltaX: 120 }).defaultPrevented).toBe(false);
+    const invalid = new WheelEvent("wheel", { bubbles: true, cancelable: true });
+    Object.defineProperty(invalid, "deltaY", { value: Infinity });
+    fireEvent(viewport, invalid);
+    expect(invalid.defaultPrevented).toBe(false);
+    expect(readGraphTransform(svg)).toEqual(before);
+  });
+
+  it("cancels vertical scroll but does not zoom during an active background drag, even after resizing", () => {
+    const select = vi.fn();
+    const { rerender } = render(<InvestigationGraph graph={graph} selectedId={null} onSelect={select} />);
+    const { svg, viewport } = graphCanvas();
+    pointer(viewport, "pointerdown", 0, 0);
+    pointer(viewport, "pointermove", 30, 20);
+    const before = readGraphTransform(svg);
+
+    expect(wheel(viewport, { deltaY: -100 }).defaultPrevented).toBe(true);
+    expect(readGraphTransform(svg)).toEqual(before);
+    rerender(<InvestigationGraph graph={{ ...graph, width: 800 }} selectedId={null} onSelect={select} />);
+    expect(graphCanvas().viewport).toBe(viewport);
+    expect(wheel(viewport, { deltaY: -100 }).defaultPrevented).toBe(true);
+    expect(readGraphTransform(svg)).toEqual(before);
+    pointer(viewport, "pointermove", 50, 40);
+    expect(readGraphTransform(svg)).toEqual({ x: 50, y: 40, zoom: 1 });
+    pointer(viewport, "pointerup", 50, 40);
+    expect(wheel(viewport, { deltaY: -100 }).defaultPrevented).toBe(true);
+    expect(readGraphTransform(svg).zoom).toBeGreaterThan(1);
+  });
+
+  it("resumes wheel zoom on the replacement viewport after the graph empties during a drag", () => {
+    const select = vi.fn();
+    const { rerender } = render(<InvestigationGraph graph={graph} selectedId={null} onSelect={select} />);
+    const { viewport } = graphCanvas();
+    pointer(viewport, "pointerdown", 0, 0);
+
+    rerender(<InvestigationGraph graph={{ ...graph, nodes: [] }} selectedId={null} onSelect={select} />);
+    expect(viewport).not.toBeInTheDocument();
+    rerender(<InvestigationGraph graph={graph} selectedId={null} onSelect={select} />);
+    const { svg, viewport: replacement } = graphCanvas();
+    expect(replacement).not.toBe(viewport);
+
+    expect(wheel(replacement, { deltaY: -100 }).defaultPrevented).toBe(true);
+    expect(readGraphTransform(svg).zoom).toBeCloseTo(Math.exp(0.08), 8);
+  });
+
+  it("resumes wheel zoom when the active pointer loses capture without releasing it again", () => {
+    render(<InvestigationGraph graph={graph} selectedId={null} onSelect={vi.fn()} />);
+    const { svg, viewport } = graphCanvas();
+    const release = vi.fn();
+    Object.defineProperty(viewport, "releasePointerCapture", { value: release });
+    pointer(viewport, "pointerdown", 0, 0);
+    const before = readGraphTransform(svg);
+
+    pointer(viewport, "lostpointercapture", 0, 0, 2);
+    expect(wheel(viewport, { deltaY: -100 }).defaultPrevented).toBe(true);
+    expect(readGraphTransform(svg)).toEqual(before);
+
+    pointer(viewport, "lostpointercapture", 0, 0);
+    expect(release).not.toHaveBeenCalled();
+    expect(wheel(viewport, { deltaY: -100 }).defaultPrevented).toBe(true);
+    expect(readGraphTransform(svg).zoom).toBeCloseTo(Math.exp(0.08), 8);
+  });
+
+  it("uses the current SVG rectangle and viewBox after the graph becomes nonempty and resizes", () => {
+    const select = vi.fn();
+    const { rerender } = render(<InvestigationGraph graph={{ ...graph, nodes: [] }} selectedId={null} onSelect={select} />);
+    const smallGraph = { ...graph, height: 300 };
+    rerender(<InvestigationGraph graph={smallGraph} selectedId={null} onSelect={select} />);
+    const { svg, viewport } = graphCanvas();
+    Object.defineProperties(svg, {
+      getScreenCTM: { value: () => null },
+      getBoundingClientRect: { value: () => ({ left: 20, top: 30, width: 200, height: 350 }) },
+    });
+    Object.defineProperty(viewport, "clientHeight", { value: 128 });
+
+    expect(wheel(viewport, { deltaY: -0.25, deltaMode: 2 }).defaultPrevented).toBe(true);
+    expect(readGraphTransform(svg).zoom).toBeCloseTo(Math.exp(0.0256), 8);
+    expectWheelAnchor(svg, 100, 150);
+    wheel(viewport, { deltaY: 0.25, deltaMode: 2 });
+    rerender(<InvestigationGraph graph={{ ...smallGraph, width: 800, height: 1400 }} selectedId={null} onSelect={select} />);
+
+    expect(wheel(viewport, { deltaY: -100 }).defaultPrevented).toBe(true);
+    expect(readGraphTransform(svg).zoom).toBeCloseTo(Math.exp(0.08), 8);
+    expectWheelAnchor(svg, 200, 300);
+  });
+});
+
+it("resets zoom and pan when changing the graph page", () => {
+  const select = vi.fn();
+  const evidence = Array.from({ length: 51 }, (_, i) => ({ ...node(`e${i}`, 100, i * 138), kind: "evidence" as const }));
+  render(<InvestigationGraph graph={{ ...graph, nodes: evidence }} selectedId={null} onSelect={select} />);
+  const { svg } = graphCanvas();
+  fireEvent.click(screen.getByRole("button", { name: "Acercar grafo" }));
+  expect(readGraphTransform(svg)).not.toEqual({ x: 0, y: 0, zoom: 1 });
+
+  fireEvent.click(screen.getByRole("button", { name: "Siguiente página de resultados" }));
+
+  expect(readGraphTransform(svg)).toEqual({ x: 0, y: 0, zoom: 1 });
+  expect(screen.getByRole("status")).toHaveTextContent("Resultados 51–51 de 51");
+  expect(select).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "e50" }));
+});
+
+describe("desplazamiento del lienzo", () => {
   function transform(container: HTMLElement) {
     return container.querySelector(".investigation-graph > g")!.getAttribute("transform");
   }
