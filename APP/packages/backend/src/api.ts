@@ -173,15 +173,17 @@ const PUBLIC_RERUN_FAILURES = new Set([
   "The replacement returned no confirmed results.",
 ]);
 
-function publicFailureDetail(catalogId: GitHubCatalogAction["spec"]["catalogId"], message: string, allowRerunReason = false): string {
-  if (catalogId === "decodo.url.v1" && isPublicDecodoFailure(message)) return message;
-  if (allowRerunReason && PUBLIC_RERUN_FAILURES.has(message)) return message;
+function publicFailureDetail(message: string, catalogId: GitHubCatalogAction["spec"]["catalogId"] | undefined, allowRerunReason = false): string {
+  if (typeof message === "string") {
+    if (catalogId === "decodo.url.v1" && isPublicDecodoFailure(message)) return message;
+    if (allowRerunReason && PUBLIC_RERUN_FAILURES.has(message)) return message;
+  }
   return "Execution failed.";
 }
 
 function publicAction(action: GitHubCatalogAction): GitHubCatalogAction {
-  const failure = action.failure === undefined ? undefined : publicFailureDetail(action.spec.catalogId, action.failure);
-  const lastRerunFailure = action.lastRerunFailure === undefined ? undefined : publicFailureDetail(action.spec.catalogId, action.lastRerunFailure, true);
+  const failure = action.failure === undefined ? undefined : publicFailureDetail(action.failure, action.spec.catalogId);
+  const lastRerunFailure = action.lastRerunFailure === undefined ? undefined : publicFailureDetail(action.lastRerunFailure, action.spec.catalogId, true);
   if (failure === action.failure && lastRerunFailure === action.lastRerunFailure) return action;
   return {
     ...action,
@@ -191,7 +193,16 @@ function publicAction(action: GitHubCatalogAction): GitHubCatalogAction {
 }
 
 function publicInvestigation(investigation: Investigation): Investigation {
-  return { ...investigation, actions: investigation.actions.map(publicAction) };
+  const actionById = new Map(investigation.actions.map((action) => [action.id, action]));
+  return {
+    ...investigation,
+    actions: investigation.actions.map(publicAction),
+    audit: investigation.audit.map((event) => {
+      if (event.failure === undefined) return event;
+      const catalogId = event.actionId === undefined ? undefined : actionById.get(event.actionId)?.spec.catalogId;
+      return { ...event, failure: publicFailureDetail(event.failure, catalogId, true) };
+    }),
+  };
 }
 
 function filterValidNormalizations(

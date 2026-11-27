@@ -230,6 +230,8 @@ export interface AuditEvent {
   readonly evidenceId?: EvidenceId;
   readonly granted?: boolean;
   readonly decision?: ValidationStatus;
+  /** Per-attempt detail for an action failure; public views must sanitize it. */
+  readonly failure?: string;
   readonly unsupportedObservationCount?: number;
 }
 

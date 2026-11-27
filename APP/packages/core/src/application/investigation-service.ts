@@ -132,7 +132,7 @@ function auditEvent(
   actor: AuditEvent["actor"],
   kind: AuditKind,
   reason: string,
-  extra: Partial<Pick<AuditEvent, "actionId" | "evidenceId" | "granted" | "decision" | "unsupportedObservationCount">> = {},
+  extra: Partial<Pick<AuditEvent, "actionId" | "evidenceId" | "granted" | "decision" | "failure" | "unsupportedObservationCount">> = {},
 ): AuditEvent {
   return { id: newId(createId, "audit"), at, actor, kind, reason, ...extra };
 }
@@ -690,9 +690,9 @@ export class InvestigationService {
     result: CompleteActionInput["result"],
     reason: string,
   ): CompleteActionInput {
-    const successDetails = result.kind === "success"
+    const details = result.kind === "success"
       ? { unsupportedObservationCount: result.unsupportedObservationCount }
-      : {};
+      : typeof result.error === "string" && result.error.length > 0 ? { failure: result.error } : {};
     return {
       investigationId,
       actionId: claim.action.id,
@@ -705,7 +705,7 @@ export class InvestigationService {
         "system",
         result.kind === "success" ? "action_succeeded" : "action_failed",
         reason,
-        { actionId: claim.action.id, ...successDetails },
+        { actionId: claim.action.id, ...details },
       ),
     };
   }

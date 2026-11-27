@@ -178,14 +178,15 @@ test("a rerun keeps its previous results until successful completion commits the
   assert.deepEqual((await store.get(created.id))?.evidence, created.evidence);
   const followUp = { ...created.actions[0]!, id: "new-child", sourceSeedId: findingSeedNodeId(evidence.id) };
   const result = await store.completeAction({ investigationId: created.id, actionId: run.id, claimId: claimRequest.claimId,
-    completedAt: claimRequest.claimedAt, auditEvent: auditEvent("success", "action_succeeded"),
+    completedAt: claimRequest.claimedAt, auditEvent: { ...auditEvent("success", "action_succeeded"), failure: "Not a failure" },
     result: { kind: "success", evidence: [evidence], unsupportedObservationCount: 0 },
-    followUps: [{ action: followUp, auditEvent: { ...auditEvent("queue", "action_succeeded"), kind: "action_queued", actionId: followUp.id } }],
+    followUps: [{ action: followUp, auditEvent: { ...auditEvent("queue", "action_succeeded"), kind: "action_queued", actionId: followUp.id, failure: "Not a failure" } }],
   });
   assert.equal(result.revision, pending.revision + 2);
   assert.deepEqual(result.actions.map(({ id, status }) => [id, status]), [["root", "succeeded"], ["sibling", "succeeded"], ["new-child", "queued"]]);
   assert.deepEqual(result.evidence.map(({ id }) => id), ["sibling-result", "replacement"]);
   assert.equal(result.audit.find(({ id }) => id === "success")?.kind, "action_rerun_succeeded");
+  assert.ok(result.audit.every((event) => !Object.hasOwn(event, "failure")));
   assert.deepEqual(await store.get(created.id), result);
 });
 
@@ -205,17 +206,20 @@ test("a provider failure or a changed previous branch never discards prior resul
     assert.deepEqual(result.actions.filter(({ id }) => id !== run.id), before.actions.filter(({ id }) => id !== run.id));
     assert.equal(result.actions.find(({ id }) => id === run.id)?.status, "succeeded");
     assert.equal(result.actions.find(({ id }) => id === run.id)?.lastRerunFailed, true);
-    assert.equal(
-      result.actions.find(({ id }) => id === run.id)?.lastRerunFailure,
-      conflict ? "Prior results changed during execution; the replacement was not applied." : "fixture failure",
-    );
-    assert.equal(result.audit.at(-1)?.kind, "action_failed");
+    const failure = conflict ? "Prior results changed during execution; the replacement was not applied." : "fixture failure";
+    assert.equal(result.actions.find(({ id }) => id === run.id)?.lastRerunFailure, failure);
+    assert.deepEqual(result.audit.at(-1), {
+      ...auditEvent("terminal", "action_failed"), actionId: run.id, failure,
+      reason: conflict ? failure : "Replacement execution failed; prior results were retained.",
+    });
     assert.equal(result.revision, before.revision + 1);
+    assert.deepEqual(await store.get(created.id), result);
   }
 });
 
-test("a legacy failed action survives a rerun error at the Unicode storage boundary", async () => {
-  const { store, service, created, run, claimRequest } = await rerunFixture();
+test("failed rerun audit details survive subsequent attempts and a successful replacement", async () => {
+  const { store, service, created, run, claimRequest, evidence } = await rerunFixture();
+  const legacyEvent = { ...auditEvent("legacy", "action_failed"), actionId: run.id };
   const legacy = await store.transact(created.id, (current) => {
     const next: Investigation = {
       ...current,
@@ -223,27 +227,70 @@ test("a legacy failed action survives a rerun error at the Unicode storage bound
       actions: current.actions.map((action) => action.id === run.id
         ? { ...action, status: "failed", failure: "Prior failure", lastRerunFailed: true }
         : action),
+      audit: [legacyEvent],
     };
     return { next, result: next };
   });
   assert.deepEqual(await store.get(created.id), legacy);
-  const queued = await service.requestActionRerun(created.id, run.id, legacy.revision);
-  const queuedAction = queued.actions.find(({ id }) => id === run.id)!;
-  assert.equal(queuedAction.lastRerunFailed, undefined);
-  assert.equal(queuedAction.lastRerunFailure, undefined);
-  assert.equal((await store.claimNextAction(claimRequest))?.action.id, run.id);
+  const beginRerun = async (attempt: string, revision: number) => {
+    const queued = await service.requestActionRerun(created.id, run.id, revision);
+    const queuedAction = queued.actions.find(({ id }) => id === run.id)!;
+    assert.equal(queuedAction.lastRerunFailed, undefined);
+    assert.equal(queuedAction.lastRerunFailure, undefined);
+    const claimId = `claim-${attempt}`;
+    assert.equal((await store.claimNextAction({ ...claimRequest, claimId, auditEvent: auditEvent(claimId, "action_claimed") }))?.action.id, run.id);
+    return { investigationId: created.id, actionId: run.id, claimId, completedAt: claimRequest.claimedAt };
+  };
 
-  const result = await store.completeAction({
-    investigationId: created.id, actionId: run.id, claimId: claimRequest.claimId,
-    completedAt: claimRequest.claimedAt, auditEvent: auditEvent("unicode", "action_failed"),
-    result: { kind: "failure", error: "bad\u0000\uDC00\uD800" + "x".repeat(994) + "🚀" },
+  const expectedFailures = [legacyEvent];
+  let revision = legacy.revision;
+  for (const [attempt, error, failure] of [
+    ["unicode", "  bad\u0000\uDC00\uD800" + "x".repeat(994) + "🚀", "bad" + "x".repeat(994)],
+    ["second", "  A different failure 🚀  ", "A different failure 🚀"],
+  ] as const) {
+    const event = auditEvent(attempt, "action_failed");
+    const result = await store.completeAction({
+      ...await beginRerun(attempt, revision), auditEvent: event, result: { kind: "failure", error },
+    });
+    const restored = result.actions.find(({ id }) => id === run.id)!;
+    assert.equal(restored.status, "failed");
+    assert.equal(restored.failure, "Prior failure");
+    assert.equal(restored.lastRerunFailure, failure);
+    assert.deepEqual(result.evidence, legacy.evidence);
+    const expectedEvent = { ...event, actionId: run.id, reason: "Replacement execution failed; prior results were retained.", failure };
+    expectedFailures.push(expectedEvent);
+    assert.deepEqual(result.audit.at(-1), expectedEvent);
+    revision = result.revision;
+  }
+
+  const replaced = await store.completeAction({
+    ...await beginRerun("success", revision), auditEvent: auditEvent("success", "action_succeeded"),
+    result: { kind: "success", evidence: [evidence], unsupportedObservationCount: 0 },
   });
-  const restored = result.actions.find(({ id }) => id === run.id)!;
-  assert.equal(restored.status, "failed");
-  assert.equal(restored.failure, "Prior failure");
-  assert.deepEqual(result.evidence, legacy.evidence);
-  assert.ok(restored.lastRerunFailure);
-  assert.doesNotMatch(restored.lastRerunFailure, /\u0000|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  const reloaded = await store.get(created.id);
+  assert.deepEqual(reloaded, replaced);
+  assert.equal(reloaded?.actions.find(({ id }) => id === run.id)?.lastRerunFailure, undefined);
+  assert.deepEqual(reloaded?.audit.filter(({ kind }) => kind === "action_failed"), expectedFailures);
+});
+
+test("an initial failure with only invalid JSONB characters records a safe fallback", async () => {
+  const { store, service } = makeStoreHarness(undefined, {
+    id: "fixture", async execute() { throw new Error("\u0000\uDC00\uD800"); },
+  });
+  const { id } = await service.createInvestigation();
+  await service.addEmailSeed(id, "owner@example.org");
+  const before = await service.authorize(id, true, "Authorize the fixture");
+  const action = await service.executeNextAction(id);
+  assert.equal(action?.status, "failed");
+  assert.equal(action?.failure, "Execution failed.");
+  const reloaded = await store.get(id);
+  assert.equal(reloaded?.revision, before.revision + 2);
+  assert.deepEqual(reloaded?.actions, [action]);
+  const event = reloaded?.audit.at(-1);
+  assert.deepEqual(event, {
+    id: event?.id, at: action?.completedAt, actor: "system", kind: "action_failed", actionId: action?.id,
+    reason: "Execution failed; the terminal failure was retained and automatic retries are disabled.", failure: "Execution failed.",
+  });
 });
 
 test("prevents a rerun from overlapping an already-claimed child and leaves the snapshot unchanged", async () => {
@@ -294,8 +341,26 @@ test("a result consisting entirely of scanner errors cannot replace the previous
     assert.equal(completed?.lastRerunFailed, status === "error" ? true : undefined);
     assert.deepEqual(saved.evidence.map(({ id }) => id), status === "error" ? ["old", "sibling-result"] : ["sibling-result"]);
     assert.equal(saved.actions.some(({ id }) => id === "child"), status === "error");
-    assert.equal(saved.audit.some(({ kind }) => kind === "action_rerun_succeeded"), status === "not_registered");
+    const event = saved.audit.find(({ actionId, kind }) => actionId === run.id &&
+      (kind === "action_failed" || kind === "action_rerun_succeeded"));
+    assert.ok(event);
+    assert.equal(event.kind, status === "error" ? "action_failed" : "action_rerun_succeeded");
+    if (status === "error") assert.equal(event.failure, "The replacement returned no confirmed results.");
+    else assert.ok(!Object.hasOwn(event, "failure"));
   }
+});
+
+test("claim audit does not persist an extraneous failure field", async () => {
+  const { store, service, created, run, claimRequest } = await rerunFixture();
+  await service.requestActionRerun(created.id, run.id, created.revision);
+  const claim = await store.claimNextAction({
+    ...claimRequest,
+    auditEvent: { ...claimRequest.auditEvent, failure: "private\u0000detail" },
+  });
+  assert.equal(claim?.action.id, run.id);
+  const event = (await store.get(created.id))!.audit.at(-1)!;
+  assert.equal(event.kind, "action_claimed");
+  assert.equal(Object.hasOwn(event, "failure"), false);
 });
 
 test("a queued rerun cannot claim work after its authorization is revoked", async () => {

@@ -182,7 +182,7 @@ test("HTTP rerun queues only the confirmed action from a current local snapshot"
   assert.equal(harness.executions, 0, "posting the request does not bypass manual mode or execute a provider directly");
 });
 
-test("HTTP GET sanitizes lastRerunFailure while allowing public Decodo failure reasons", async (t) => {
+test("HTTP GET allows only public failure details on actions and audit events", async (t) => {
   const harness = makeHarness();
   const { app } = harness;
   t.after(() => app.close());
@@ -199,15 +199,38 @@ test("HTTP GET sanitizes lastRerunFailure while allowing public Decodo failure r
     spec: { catalogId: "user-scanner.email.v1", provider: "user-scanner", seed: { kind: "email", value: "a@example.org" } },
   };
   const id = "rerun-failure-mask";
-  await harness.store.create({
+  const decodoFailure = "Decodo scrape blocked by anti-bot protection (999)";
+  const conflict = "Prior results changed during execution; the replacement was not applied.";
+  const unconfirmed = "The replacement returned no confirmed results.";
+  const masked = "Execution failed.";
+  const failures = [
+    [decodoAction.id, decodoFailure, decodoFailure],
+    [decodoAction.id, "Decodo target requires login", "Decodo target requires login"],
+    [decodoAction.id, `${decodoFailure}: secret-token`, masked],
+    [leakedAction.id, "secret-token internal traceback", masked],
+    [leakedAction.id, decodoFailure, masked],
+    ["removed-action", decodoFailure, masked],
+    [leakedAction.id, conflict, conflict],
+    [decodoAction.id, unconfirmed, unconfirmed],
+  ] as const;
+  const legacyEvent = { id: "legacy", at, actor: "system", kind: "action_failed", actionId: decodoAction.id, reason: "Legacy failure" } as const;
+  const successEvent = { ...legacyEvent, id: "success", kind: "action_rerun_succeeded", reason: "Replaced prior results" } as const;
+  const audit = failures.map(([actionId, failure], index) => ({ ...legacyEvent, id: `attempt-${index}`, actionId, failure }));
+  const snapshot: Investigation = {
     ...createInitialInvestigation(id, at), revision: 2, advancementMode: "manual",
-    actions: [decodoAction, leakedAction],
-  });
+    actions: [decodoAction, leakedAction], audit: [legacyEvent, ...audit, successEvent],
+  };
+  await harness.store.create(snapshot);
   const response = await app.inject({ method: "GET", url: `/investigations/${id}` });
   assert.equal(response.statusCode, 200);
-  const body = response.json<Investigation>();
-  assert.equal(body.actions.find((a) => a.id === "decodo-1")?.lastRerunFailure, "Decodo scrape blocked by anti-bot protection (999)");
-  assert.equal(body.actions.find((a) => a.id === "scanner-1")?.lastRerunFailure, "Execution failed.");
+  assert.deepEqual(response.json<Investigation>(), {
+    ...snapshot,
+    actions: [decodoAction, { ...leakedAction, lastRerunFailure: masked }],
+    audit: [legacyEvent, ...audit.map((event, index) => ({ ...event, failure: failures[index]![2] })), successEvent],
+  });
+  assert.doesNotMatch(response.body, /secret-token/);
+  assert.deepEqual(await harness.store.get(id), snapshot);
+  assert.equal(harness.executions, 0);
 });
 
 test("HTTP username seeds queue Maigret and reject invalid or duplicate input without changes", async (t) => {
@@ -642,7 +665,13 @@ test("sanitizes executor failure details in load, run, and report responses", as
   assert.equal(run.json<{ action: { status: string; failure: string } }>().action.status, "failed");
   assert.equal(run.json<{ action: { failure: string } }>().action.failure, "Execution failed.");
   const loaded = await harness.app.inject({ method: "GET", url: `/investigations/${id}` });
-  assert.equal(loaded.json<Investigation>().actions[0]?.failure, "Execution failed.");
+  assert.equal(loaded.statusCode, 200);
+  const snapshot = loaded.json<Investigation>();
+  assert.equal(snapshot.actions[0]?.failure, "Execution failed.");
+  const event = snapshot.audit.at(-1);
+  assert.equal(event?.kind, "action_failed");
+  assert.equal(event?.actionId, action.id);
+  assert.equal(event?.failure, "Execution failed.");
   const report = await harness.app.inject({ method: "GET", url: `/investigations/${id}/report` });
   assert.match(report.body, /Execution failed/);
   for (const response of [run, loaded, report]) assert.doesNotMatch(response.body, /credentials|private/i);

@@ -208,6 +208,10 @@ const ACTION_SPECS: Readonly<Record<string, { readonly provider: string; readonl
 const HAS_INVALID_JSONB_CHAR = /\u0000|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/;
 const STRIP_INVALID_JSONB_CHAR = /\u0000|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g;
 
+function sanitizeStoredFailure(raw: string): string {
+  return raw.replace(/\u0000/g, "").trim().slice(0, 1_000).replace(STRIP_INVALID_JSONB_CHAR, "").trim() || "Execution failed.";
+}
+
 function isStoredAction(value: unknown): boolean {
   if (!isRecord(value) || !isNonEmptyString(value.id) || !isRecord(value.spec)) return false;
   const expected = Object.prototype.hasOwnProperty.call(ACTION_SPECS, String(value.spec.catalogId))
@@ -398,7 +402,8 @@ export class PostgresInvestigationStore implements InvestigationStore {
           gravatarFindingTargetsEmail(record.finding.target, candidate.spec.seed.value));
         if (finding !== undefined) return { ...candidate, sourceSeedId: findingSeedNodeId(finding.id) };
         const { queuedByCatalog: _legacyEligibility, ...legacy } = candidate;
-        proposedEvents.push({ ...input.auditEvent, id: `${input.auditEvent.id}:proposal:${candidate.id}`,
+        const { failure: _claimFailure, ...claimAudit } = input.auditEvent;
+        proposedEvents.push({ ...claimAudit, id: `${claimAudit.id}:proposal:${candidate.id}`,
           kind: "action_proposed", actionId: candidate.id, reason: proposalReason });
         return { ...legacy, status: "proposed" as const, proposalReason };
       });
@@ -420,9 +425,10 @@ export class PostgresInvestigationStore implements InvestigationStore {
         status: "claimed" as const,
         claim: { id: input.claimId, claimedAt: input.claimedAt },
       };
+      const { failure: _claimedAuditFailure, ...claimedAudit } = input.auditEvent;
       const next = revise(current, input.claimedAt, {
         actions: actions.map((candidate) => candidate.id === action.id ? claimedAction : candidate),
-        audit: [...current.audit, ...proposedEvents, { ...input.auditEvent, actionId: action.id }],
+        audit: [...current.audit, ...proposedEvents, { ...claimedAudit, actionId: action.id }],
       });
       return {
         next,
@@ -441,16 +447,19 @@ export class PostgresInvestigationStore implements InvestigationStore {
         throw new InvestigationClaimConflictError();
       }
       const { rerun, ...active } = action;
-      if (rerun !== undefined && (input.result.kind === "failure" || !canReplaceActionResults(current, action))) {
+      const { failure: _suppliedFailure, ...completionEvent } = input.auditEvent;
+      const result = input.result.kind === "failure"
+        ? { ...input.result, storedFailure: sanitizeStoredFailure(input.result.error) }
+        : input.result;
+      if (rerun !== undefined && (result.kind === "failure" || !canReplaceActionResults(current, action))) {
         const { claim: _replacementClaim, ...prior } = active;
-        const rerunFailure = input.result.kind === "failure"
-          ? (input.result.error.replace(/\u0000/g, "").trim().slice(0, 1_000).replace(STRIP_INVALID_JSONB_CHAR, "") || "Execution failed.")
-          : "Prior results changed during execution; the replacement was not applied.";
+        const conflictReason = "Prior results changed during execution; the replacement was not applied.";
+        const rerunFailure = result.kind === "failure" ? result.storedFailure : sanitizeStoredFailure(conflictReason);
         const restored = { ...prior, status: rerun.previousStatus, lastRerunFailed: true as const, lastRerunFailure: rerunFailure };
         const next = revise(current, input.completedAt, {
           actions: current.actions.map((candidate) => candidate.id === action.id ? restored : candidate),
-          audit: [...current.audit, { ...input.auditEvent, kind: "action_failed", actionId: action.id,
-            reason: input.result.kind === "failure" ? "Replacement execution failed; prior results were retained." : "Prior results changed during execution; the replacement was not applied." }],
+          audit: [...current.audit, { ...completionEvent, kind: "action_failed", actionId: action.id, failure: rerunFailure,
+            reason: result.kind === "failure" ? "Replacement execution failed; prior results were retained." : conflictReason }],
         });
         return { next, result: next };
       }
@@ -458,23 +467,25 @@ export class PostgresInvestigationStore implements InvestigationStore {
       const { failure: _priorFailure, unsupportedObservationCount: _priorCount, ...completedFields } = active;
       const completed = {
         ...(rerun === undefined ? active : completedFields),
-        status: input.result.kind === "success" ? "succeeded" as const : "failed" as const,
+        status: result.kind === "success" ? "succeeded" as const : "failed" as const,
         completedAt: input.completedAt,
-        ...(input.result.kind === "failure" ? { failure: input.result.error } : {
-          unsupportedObservationCount: input.result.unsupportedObservationCount,
+        // Preserve initial action detail unless it would prevent the JSONB update.
+        ...(result.kind === "failure" ? { failure: HAS_INVALID_JSONB_CHAR.test(result.error) ? result.storedFailure : result.error } : {
+          unsupportedObservationCount: result.unsupportedObservationCount,
         }),
       };
-      const followUps = input.result.kind === "success" ? (input.followUps ?? []).filter(({ action: followUp }, index, all) =>
+      const followUps = result.kind === "success" ? (input.followUps ?? []).filter(({ action: followUp }, index, all) =>
         all.findIndex(({ action: other }) => other.spec.catalogId === followUp.spec.catalogId &&
           other.spec.seed.kind === followUp.spec.seed.kind && other.spec.seed.value === followUp.spec.seed.value) === index) : [];
       const actions = basis.actions.map((candidate) => candidate.id === input.actionId ? completed : candidate);
       const followUpEvents: typeof input.auditEvent[] = [];
       for (const followUp of followUps) {
+        const { failure: _followUpFailure, ...event } = followUp.auditEvent;
         const existingIndex = actions.findIndex((existing) => existing.spec.catalogId === followUp.action.spec.catalogId &&
           existing.spec.seed.kind === followUp.action.spec.seed.kind && existing.spec.seed.value === followUp.action.spec.seed.value);
         if (existingIndex < 0) {
           actions.push(followUp.action);
-          followUpEvents.push(followUp.auditEvent);
+          followUpEvents.push(event);
           continue;
         }
         const existing = actions[existingIndex]!;
@@ -486,16 +497,16 @@ export class PostgresInvestigationStore implements InvestigationStore {
         actions[existingIndex] = { ...legacy, status: followUp.action.status, proposalReason: followUp.action.proposalReason,
           ...(followUp.action.sourceSeedId === undefined ? {} : { sourceSeedId: followUp.action.sourceSeedId }),
           ...(followUp.action.queuedByCatalog === true ? { queuedByCatalog: true as const } : {}) };
-        followUpEvents.push({ ...followUp.auditEvent, actionId: existing.id });
+        followUpEvents.push({ ...event, actionId: existing.id });
       }
-      const auditEvent = rerun === undefined ? input.auditEvent : {
-        ...input.auditEvent, kind: "action_rerun_succeeded" as const, reason: "Replacement succeeded; prior results and dependent branches were replaced.",
-      };
+      const auditEvent = result.kind === "failure"
+        ? { ...completionEvent, kind: "action_failed" as const, failure: result.storedFailure }
+        : rerun === undefined ? completionEvent : {
+          ...completionEvent, kind: "action_rerun_succeeded" as const, reason: "Replacement succeeded; prior results and dependent branches were replaced.",
+        };
       const next = revise(basis, input.completedAt, {
         actions,
-        evidence: input.result.kind === "success"
-          ? [...basis.evidence, ...input.result.evidence]
-          : basis.evidence,
+        evidence: result.kind === "success" ? [...basis.evidence, ...result.evidence] : basis.evidence,
         audit: [...basis.audit, { ...auditEvent, actionId: input.actionId }, ...followUpEvents],
       });
       return { next, result: next };
