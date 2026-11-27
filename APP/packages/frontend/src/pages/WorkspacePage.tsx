@@ -58,7 +58,7 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
   const [mobilePanel, setMobilePanel] = useState<MobilePanel>("graph");
   const [detailOpen, setDetailOpen] = useState(false);
   const [facecheckReview, setFacecheckReview] = useState<string | null>(null);
-  const [pauseReason, setPauseReason] = useState("");
+  const [resumeReason, setResumeReason] = useState("");
   const [formError, setFormError] = useState("");
   const graphTabRef = useRef<HTMLButtonElement>(null);
   const detailTabRef = useRef<HTMLButtonElement>(null);
@@ -214,17 +214,15 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
     (nextPanel === "graph" ? graphTabRef : detailTabRef).current?.focus();
   }
 
-  async function togglePause() {
-    if (pauseReason.trim() === "") {
-      setFormError("Escribí un motivo para pausar o reanudar el expediente.");
+  async function resumeInvestigation() {
+    if (!investigationPaused) return;
+    if (resumeReason.trim() === "") {
+      setFormError("Escribí un motivo para reanudar el expediente.");
       return;
     }
-    const wasPaused = investigationPaused;
-    const saved = await controller.mutate((api, investigationId) => wasPaused
-      ? api.resumeInvestigation(investigationId, pauseReason)
-      : api.pauseInvestigation(investigationId, pauseReason));
+    const saved = await controller.mutate((api, investigationId) => api.resumeInvestigation(investigationId, resumeReason));
     if (saved) {
-      setPauseReason("");
+      setResumeReason("");
       setFormError("");
     }
   }
@@ -270,25 +268,26 @@ export function WorkspacePage({ id }: WorkspacePageProps) {
               <UsernameSeedsPanel investigation={investigation} disabled={controlsDisabled} onAdd={addUsername} onDecide={decideUsername} />
             </div>
           </details>
-          <details className="workspace-pause-disclosure workspace-disclosure">
-            <summary>{investigation.paused ? "Reanudar" : "Pausar"}</summary>
-            <div className="workspace-popover workspace-pause-panel">
-              <label className="workspace-header-reason">
-                <span>Motivo para {investigation.paused ? "reanudar" : "pausar"}</span>
-                <input
-                  value={pauseReason}
-                  maxLength={2_000}
-                  onChange={(event) => { setPauseReason(event.currentTarget.value); setFormError(""); }}
-                  disabled={controlsDisabled}
-                  aria-label={`Motivo para ${investigation.paused ? "reanudar" : "pausar"} el expediente`}
-                />
-              </label>
-              <button className="workspace-button workspace-button--primary" type="button" disabled={controlsDisabled || pauseReason.trim() === ""} onClick={() => void togglePause()}>
-                {investigation.paused ? "Reanudar expediente" : "Pausar expediente"}
-              </button>
-              <p className="workspace-pause-note">Pausar impide nuevas reclamaciones; no cancela acciones en curso.</p>
-            </div>
-          </details>
+          {investigationPaused && (
+            <details className="workspace-pause-disclosure workspace-disclosure">
+              <summary>Reanudar</summary>
+              <div className="workspace-popover workspace-pause-panel">
+                <label className="workspace-header-reason">
+                  <span>Motivo para reanudar</span>
+                  <input
+                    value={resumeReason}
+                    maxLength={2_000}
+                    onChange={(event) => { setResumeReason(event.currentTarget.value); setFormError(""); }}
+                    disabled={controlsDisabled}
+                    aria-label="Motivo para reanudar el expediente"
+                  />
+                </label>
+                <button className="workspace-button workspace-button--primary" type="button" disabled={controlsDisabled || resumeReason.trim() === ""} onClick={() => void resumeInvestigation()}>
+                  Reanudar expediente
+                </button>
+              </div>
+            </details>
+          )}
           <button className="workspace-button workspace-button--report" type="button" disabled={controller.busy || controller.stale} onClick={() => void controller.loadReport()}>
             {controller.reportLoadingKind === "factual" ? "Obteniendo informe…" : "Obtener informe"}
           </button>

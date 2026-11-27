@@ -146,6 +146,7 @@ describe("creación nombrada y recuperación", () => {
     const advancement = screen.getByRole("region", { name: "Avance automático" });
     expect(advancement).toHaveTextContent(/semillas actuales y futuras/i);
     expect(advancement).toHaveTextContent(/Decodo.*URL públicas.*FaceCheck.*nunca.*foto/i);
+    expect(advancement).not.toHaveTextContent(/podés pausar el avance en cualquier momento desde el expediente/i);
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText(/nombre de la investigación/i), "Consentido");
     await user.type(screen.getByLabelText(/intención de la investigación/i), "Revisar exposición");

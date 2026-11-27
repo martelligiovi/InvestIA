@@ -105,7 +105,6 @@
   font-size: 17px;
 }
 .workspace-header-reason input:focus-visible { border-color: var(--ink); outline: none; box-shadow: inset 3px 0 0 var(--red); }
-.workspace-pause-note { color: var(--muted); font-size: 14px; }
 
 /* ── Execution queue ───────────────────────────────────── */
 .workspace-disclosure .workspace-queue-trigger { gap: 6px; padding-inline: 10px; }
